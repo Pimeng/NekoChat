@@ -270,9 +270,12 @@ class WebSocketChatTransport implements ChatTransport {
             : '${messageId}_$safeName',
       ),
     );
-    if (contentAddressed && await _matchesContent(destination, contentHash)) {
+    final existing = contentAddressed
+        ? await _findMatchingContent(directory, contentHash)
+        : null;
+    if (existing != null) {
       _log.info('复用已有图片 $contentHash');
-      return destination.path;
+      return existing.path;
     }
     final partial = File('${destination.path}.$messageId.part');
     final client = HttpClient();
@@ -310,9 +313,19 @@ class WebSocketChatTransport implements ChatTransport {
     }
   }
 
-  Future<bool> _matchesContent(File file, String expectedHash) async {
-    if (!await file.exists()) return false;
-    return sha256File(file).then((hash) => hash == expectedHash);
+  Future<File?> _findMatchingContent(
+    Directory directory,
+    String expectedHash,
+  ) async {
+    if (!await directory.exists()) return null;
+    await for (final entry in directory.list()) {
+      if (entry is! File) continue;
+      final name = p.basename(entry.path);
+      if (name.endsWith('.part')) continue;
+      if (name != expectedHash && !name.startsWith('$expectedHash.')) continue;
+      if (await sha256File(entry) == expectedHash) return entry;
+    }
+    return null;
   }
 
   Future<HttpClientResponse> _openFileResponse(

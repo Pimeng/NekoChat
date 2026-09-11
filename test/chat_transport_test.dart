@@ -133,9 +133,9 @@ void main() {
       port: 1,
       transferId: 'does-not-exist',
       messageId: 'image-message-2',
-      fileName: 'second.png',
+      fileName: 'renamed.jpg',
       expectedSize: await source.length(),
-      mimeType: 'image/png',
+      mimeType: 'image/jpeg',
       contentHash: hash,
     );
 

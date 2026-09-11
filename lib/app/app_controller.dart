@@ -1181,8 +1181,7 @@ class AppController extends ChangeNotifier {
         fileSize < 0 ||
         fileSize > NetworkConfig.maxFileSizeBytes ||
         mimeType is! String ||
-        (fileHash != null && (fileHash is! String || !isSha256Hex(fileHash))) ||
-        (mimeType.startsWith('image/') && fileHash is! String)) {
+        (fileHash != null && (fileHash is! String || !isSha256Hex(fileHash)))) {
       return null;
     }
     return ChatMessage(
