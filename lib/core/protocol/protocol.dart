@@ -9,10 +9,14 @@ enum MessageType {
   chatAccept('chat_accept'),
   chatReject('chat_reject'),
   message('message'),
+  fileOffer('file_offer'),
+  fileAccept('file_accept'),
+  fileReject('file_reject'),
   sessionClose('session_close'),
   groupInvite('group_invite'),
   groupInviteResponse('group_invite_response'),
   groupMessage('group_message'),
+  groupFileOffer('group_file_offer'),
   groupUpdate('group_update'),
   error('error');
 

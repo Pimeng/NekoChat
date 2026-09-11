@@ -1,7 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:logging/logging.dart';
+import 'package:mime/mime.dart';
+import 'package:path/path.dart' as p;
+import 'package:pasteboard/pasteboard.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/config/network_config.dart';
@@ -38,6 +45,7 @@ class AppController extends ChangeNotifier {
 
   AppStage stage = AppStage.booting;
   String? errorMessage;
+  String? topRightMessage;
   LocalIdentity? identity;
   Map<String, TrustedPeer> trustedPeers = {};
   List<DiscoveredPeer> peers = [];
@@ -45,6 +53,7 @@ class AppController extends ChangeNotifier {
   List<ChatGroup> groups = [];
   final Map<String, ChatRequest> chatRequests = {};
   final Map<String, Timer> _chatRequestTimers = {};
+  Timer? _topRightMessageTimer;
   final Map<String, GroupInvitation> groupInvitations = {};
   final Map<String, Map<String, dynamic>> _pendingGroupPayloads = {};
   final Map<String, ({String groupId, String peerDeviceId})>
@@ -303,6 +312,194 @@ class AppController extends ChangeNotifier {
     } on Object catch (error, stack) {
       _log.warning('消息发送失败', error, stack);
       await _setMessageStatus(message.messageId, MessageStatus.failed);
+    }
+  }
+
+  Future<void> pickAndSendFile() async {
+    final result = await FilePicker.pickFile(dialogTitle: '选择要发送的图片或文件');
+    final filePath = result?.path;
+    if (filePath == null) return;
+    await sendFile(filePath);
+  }
+
+  Future<bool> pasteAndSendAttachments() async {
+    try {
+      final clipboardFiles = await Pasteboard.files();
+      final files = <File>[];
+      for (final path in clipboardFiles) {
+        final file = File(path);
+        if (await file.exists()) files.add(file);
+      }
+      if (files.isNotEmpty) {
+        for (final file in files) {
+          await sendFile(file.path);
+        }
+        return true;
+      }
+
+      final imageBytes = await Pasteboard.image;
+      if (imageBytes == null || imageBytes.isEmpty) return false;
+      final temporaryDirectory = await getTemporaryDirectory();
+      final clipboardDirectory = Directory(
+        p.join(temporaryDirectory.path, 'neko_chat_clipboard'),
+      );
+      await clipboardDirectory.create(recursive: true);
+      final imageFile = File(
+        p.join(clipboardDirectory.path, '粘贴的图片_${_uuid.v4()}.png'),
+      );
+      await imageFile.writeAsBytes(imageBytes, flush: true);
+      await sendFile(imageFile.path);
+      return true;
+    } on Object catch (error, stack) {
+      _log.warning('读取剪贴板附件失败', error, stack);
+      return false;
+    }
+  }
+
+  Future<void> sendFile(String filePath) async {
+    final file = File(filePath);
+    if (!await file.exists()) {
+      errorMessage = '所选文件不存在';
+      notifyListeners();
+      return;
+    }
+    final fileSize = await file.length();
+    if (fileSize > NetworkConfig.maxFileSizeBytes) {
+      errorMessage = '文件不能超过 512 MB';
+      notifyListeners();
+      return;
+    }
+    if (selectedGroupId != null) {
+      await _sendGroupFile(selectedGroupId!, file, fileSize);
+      return;
+    }
+    final chat = chats
+        .where((value) => value.chatId == selectedChatId)
+        .firstOrNull;
+    if (chat == null ||
+        chat.state != ChatSessionState.active ||
+        chat.sessionId == null) {
+      return;
+    }
+    final peer = _onlinePeer(chat.peerDeviceId);
+    if (peer == null) {
+      errorMessage = '${chat.displayName} 当前离线，无法发送文件';
+      notifyListeners();
+      return;
+    }
+    final message = _localFileMessage(
+      chatId: chat.chatId,
+      file: file,
+      fileSize: fileSize,
+    );
+    await _database.saveMessage(message);
+    messages = [...messages, message];
+    notifyListeners();
+    try {
+      await _transport.offerFile(
+        transferId: message.transferId!,
+        filePath: file.path,
+        allowedAddresses: {peer.ip},
+      );
+      await _transport.send(
+        peer.ip,
+        peer.port,
+        ProtocolEnvelope(
+          type: MessageType.fileOffer,
+          payload: _filePayload(message, sessionId: chat.sessionId),
+        ),
+      );
+    } on Object catch (error, stack) {
+      _log.warning('文件发送失败', error, stack);
+      await _setMessageStatus(message.messageId, MessageStatus.failed);
+      errorMessage = '文件发送失败：$error';
+      notifyListeners();
+    }
+  }
+
+  ChatMessage _localFileMessage({
+    required String chatId,
+    required File file,
+    required int fileSize,
+    String? groupId,
+  }) {
+    final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+    return ChatMessage(
+      messageId: _uuid.v4(),
+      chatId: chatId,
+      groupId: groupId,
+      senderDeviceId: identity!.deviceId,
+      content: p.basename(file.path),
+      timestamp: DateTime.now(),
+      status: NetworkConfig.requiresFileAcceptance(fileSize)
+          ? MessageStatus.awaitingAcceptance
+          : MessageStatus.pending,
+      kind: mimeType.startsWith('image/')
+          ? MessageKind.image
+          : MessageKind.file,
+      fileName: p.basename(file.path),
+      filePath: file.path,
+      fileSize: fileSize,
+      mimeType: mimeType,
+      transferId: _uuid.v4(),
+    );
+  }
+
+  Map<String, dynamic> _filePayload(ChatMessage message, {String? sessionId}) =>
+      {
+        'sessionId': ?sessionId,
+        'groupId': ?message.groupId,
+        'messageId': message.messageId,
+        'senderDeviceId': identity!.deviceId,
+        'timestamp': message.timestamp.millisecondsSinceEpoch,
+        'transferId': message.transferId,
+        'fileName': message.fileName,
+        'fileSize': message.fileSize,
+        'mimeType': message.mimeType,
+      };
+
+  Future<void> retryFileDownload(ChatMessage message) async {
+    if (message.transferId == null ||
+        message.fileName == null ||
+        message.fileSize == null) {
+      return;
+    }
+    final peer = _onlinePeer(message.senderDeviceId);
+    if (peer == null) {
+      errorMessage = '发送方当前离线，无法重试下载';
+      notifyListeners();
+      return;
+    }
+    await _acceptIncomingFile(message, peer.ip, peer.port);
+  }
+
+  Future<void> openAttachment(ChatMessage message) async {
+    final path = message.filePath;
+    if (path == null || !await File(path).exists()) return;
+    if (!await launchUrl(Uri.file(path))) {
+      errorMessage = '无法打开文件';
+      notifyListeners();
+    }
+  }
+
+  Future<void> openAttachmentFolder(ChatMessage message) async {
+    final path = message.filePath;
+    if (path == null || !await File(path).exists()) return;
+    try {
+      if (Platform.isWindows) {
+        await Process.start('explorer.exe', [
+          '/select,',
+          path,
+        ], mode: ProcessStartMode.detached);
+        return;
+      }
+      if (!await launchUrl(Uri.directory(File(path).parent.path))) {
+        throw StateError('系统未能打开目录');
+      }
+    } on Object catch (error, stack) {
+      _log.warning('打开附件所在文件夹失败', error, stack);
+      errorMessage = '无法打开文件所在位置';
+      notifyListeners();
     }
   }
 
@@ -570,6 +767,62 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _sendGroupFile(String groupId, File file, int fileSize) async {
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
+    final recipients = members
+        .where((member) => member.deviceId != identity!.deviceId)
+        .map((member) => _onlinePeer(member.deviceId))
+        .whereType<DiscoveredPeer>()
+        .toList();
+    final message = _localFileMessage(
+      chatId: 'group:$groupId',
+      groupId: groupId,
+      file: file,
+      fileSize: fileSize,
+    );
+    await _database.saveMessage(message);
+    messages = [...messages, message];
+    notifyListeners();
+    if (recipients.isEmpty) {
+      await _setMessageStatus(message.messageId, MessageStatus.failed);
+      errorMessage = '当前没有在线群成员，文件未发送';
+      notifyListeners();
+      return;
+    }
+    try {
+      await _transport.offerFile(
+        transferId: message.transferId!,
+        filePath: file.path,
+        allowedAddresses: recipients.map((peer) => peer.ip).toSet(),
+      );
+      var delivered = 0;
+      for (final peer in recipients) {
+        try {
+          await _transport.send(
+            peer.ip,
+            peer.port,
+            ProtocolEnvelope(
+              type: MessageType.groupFileOffer,
+              payload: _filePayload(message),
+            ),
+          );
+          delivered++;
+        } on Object catch (error, stack) {
+          _log.warning('向群成员 ${peer.deviceId} 发送文件邀请失败', error, stack);
+        }
+      }
+      if (delivered == 0) {
+        await _setMessageStatus(message.messageId, MessageStatus.failed);
+      }
+    } on Object catch (error, stack) {
+      _log.warning('群文件发送失败', error, stack);
+      await _setMessageStatus(message.messageId, MessageStatus.failed);
+      errorMessage = '群文件发送失败：$error';
+      notifyListeners();
+    }
+  }
+
   Future<void> _fanOutGroupControl(
     String groupId,
     List<GroupMember> members,
@@ -609,6 +862,12 @@ class AppController extends ChangeNotifier {
           await _receiveChatReject(packet);
         case MessageType.message:
           await _receiveMessage(packet);
+        case MessageType.fileOffer:
+          await _receiveFileOffer(packet);
+        case MessageType.fileAccept:
+          await _receiveFileResponse(packet, accepted: true);
+        case MessageType.fileReject:
+          await _receiveFileResponse(packet, accepted: false);
         case MessageType.sessionClose:
           await _receiveSessionClose(packet);
         case MessageType.groupInvite:
@@ -617,6 +876,8 @@ class AppController extends ChangeNotifier {
           await _receiveGroupInviteResponse(packet);
         case MessageType.groupMessage:
           await _receiveGroupMessage(packet);
+        case MessageType.groupFileOffer:
+          await _receiveGroupFileOffer(packet);
         case MessageType.groupUpdate:
           await _receiveGroupUpdate(packet);
         case MessageType.announce || MessageType.hello || MessageType.error:
@@ -835,6 +1096,274 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _receiveFileOffer(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final sessionId = payload['sessionId'];
+    final senderDeviceId = payload['senderDeviceId'];
+    if (sessionId is! String || senderDeviceId is! String) return;
+    if (trustedPeers[senderDeviceId]?.blocked == true) return;
+    final chat = chats
+        .where(
+          (value) =>
+              value.sessionId == sessionId &&
+              value.peerDeviceId == senderDeviceId &&
+              value.state == ChatSessionState.active,
+        )
+        .firstOrNull;
+    if (chat == null) return;
+    final message = _incomingFileMessage(payload, chatId: chat.chatId);
+    if (message == null ||
+        await _database.loadMessage(message.messageId) != null) {
+      return;
+    }
+    await _database.saveMessage(message);
+    if (selectedChatId == chat.chatId) messages = [...messages, message];
+    await _reloadChats();
+    notifyListeners();
+    await _notifyIncomingFile(message, chat.displayName, chat.chatId);
+    if (message.status == MessageStatus.pending) {
+      await _acceptIncomingFile(
+        message,
+        packet.remoteAddress,
+        _onlinePeer(senderDeviceId)?.port ?? NetworkConfig.chatPort,
+      );
+    }
+  }
+
+  ChatMessage? _incomingFileMessage(
+    Map<String, dynamic> payload, {
+    required String chatId,
+    String? groupId,
+  }) {
+    final messageId = payload['messageId'];
+    final senderDeviceId = payload['senderDeviceId'];
+    final timestamp = payload['timestamp'];
+    final transferId = payload['transferId'];
+    final fileName = payload['fileName'];
+    final fileSize = payload['fileSize'];
+    final mimeType = payload['mimeType'];
+    if (messageId is! String ||
+        senderDeviceId is! String ||
+        timestamp is! int ||
+        transferId is! String ||
+        fileName is! String ||
+        fileName.isEmpty ||
+        fileName.length > 255 ||
+        fileSize is! int ||
+        fileSize < 0 ||
+        fileSize > NetworkConfig.maxFileSizeBytes ||
+        mimeType is! String) {
+      return null;
+    }
+    return ChatMessage(
+      messageId: messageId,
+      chatId: chatId,
+      groupId: groupId,
+      senderDeviceId: senderDeviceId,
+      content: fileName,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
+      status: NetworkConfig.requiresFileAcceptance(fileSize)
+          ? MessageStatus.awaitingAcceptance
+          : MessageStatus.pending,
+      kind: mimeType.startsWith('image/')
+          ? MessageKind.image
+          : MessageKind.file,
+      fileName: fileName,
+      fileSize: fileSize,
+      mimeType: mimeType,
+      transferId: transferId,
+    );
+  }
+
+  Future<void> acceptIncomingFile(ChatMessage message) async {
+    if (message.senderDeviceId == identity!.deviceId ||
+        message.status != MessageStatus.awaitingAcceptance) {
+      return;
+    }
+    final peer = _onlinePeer(message.senderDeviceId);
+    if (peer == null) {
+      errorMessage = '发送方当前离线，无法接收文件';
+      notifyListeners();
+      return;
+    }
+    await _acceptIncomingFile(message, peer.ip, peer.port);
+  }
+
+  Future<void> _acceptIncomingFile(
+    ChatMessage message,
+    String ip,
+    int port,
+  ) async {
+    await _setMessageStatus(message.messageId, MessageStatus.pending);
+    try {
+      await _sendFileResponse(message, ip, port, accepted: true);
+      await _downloadAttachment(message, ip, port);
+    } on Object catch (error, stack) {
+      _log.warning('发送文件接受响应失败', error, stack);
+      await _setMessageStatus(message.messageId, MessageStatus.failed);
+      errorMessage = '无法开始文件传输：$error';
+      notifyListeners();
+    }
+  }
+
+  Future<void> rejectIncomingFile(ChatMessage message) async {
+    if (message.senderDeviceId == identity!.deviceId ||
+        message.status != MessageStatus.awaitingAcceptance) {
+      return;
+    }
+    final peer = _onlinePeer(message.senderDeviceId);
+    try {
+      if (peer != null) {
+        await _sendFileResponse(message, peer.ip, peer.port, accepted: false);
+      }
+    } on Object catch (error, stack) {
+      _log.warning('发送文件拒绝响应失败', error, stack);
+    }
+    await _setMessageStatus(message.messageId, MessageStatus.rejected);
+    _showTopRightMessage(
+      '已拒收${message.kind == MessageKind.image ? '图片' : '文件'}“${message.fileName}”',
+    );
+  }
+
+  Future<void> _sendFileResponse(
+    ChatMessage message,
+    String ip,
+    int port, {
+    required bool accepted,
+  }) {
+    return _transport.send(
+      ip,
+      port,
+      ProtocolEnvelope(
+        type: accepted ? MessageType.fileAccept : MessageType.fileReject,
+        payload: {
+          'messageId': message.messageId,
+          'deviceId': identity!.deviceId,
+          'groupId': ?message.groupId,
+        },
+      ),
+    );
+  }
+
+  Future<void> _receiveFileResponse(
+    IncomingPacket packet, {
+    required bool accepted,
+  }) async {
+    final messageId = packet.envelope.payload['messageId'];
+    final deviceId = packet.envelope.payload['deviceId'];
+    if (messageId is! String || deviceId is! String) return;
+    final message = await _database.loadMessage(messageId);
+    if (message == null ||
+        message.senderDeviceId != identity!.deviceId ||
+        message.kind == MessageKind.text ||
+        message.transferId == null) {
+      return;
+    }
+    final expectedIp =
+        _onlinePeer(deviceId)?.ip ?? trustedPeers[deviceId]?.lastKnownIp;
+    if (expectedIp == null || expectedIp != packet.remoteAddress) return;
+    if (message.groupId == null) {
+      final chat = chats
+          .where((value) => value.chatId == message.chatId)
+          .firstOrNull;
+      if (chat?.peerDeviceId != deviceId) return;
+      if (accepted) {
+        await _transport.authorizeFileDownload(
+          transferId: message.transferId!,
+          remoteAddress: packet.remoteAddress,
+        );
+      }
+      await _setMessageStatus(
+        messageId,
+        accepted ? MessageStatus.sent : MessageStatus.rejected,
+      );
+      if (!accepted) {
+        _showTopRightMessage(
+          '${chat!.displayName} 已拒收${message.kind == MessageKind.image ? '图片' : '文件'}“${message.fileName}”',
+        );
+      }
+      return;
+    }
+    final members = await _database.loadGroupMembers(message.groupId!);
+    if (!members.any((member) => member.deviceId == deviceId)) return;
+    if (accepted) {
+      await _transport.authorizeFileDownload(
+        transferId: message.transferId!,
+        remoteAddress: packet.remoteAddress,
+      );
+      await _setMessageStatus(messageId, MessageStatus.sent);
+    } else {
+      final displayName =
+          trustedPeers[deviceId]?.displayName ??
+          _onlinePeer(deviceId)?.displayName ??
+          '一位群成员';
+      _showTopRightMessage(
+        '$displayName 已拒收${message.kind == MessageKind.image ? '图片' : '文件'}“${message.fileName}”',
+      );
+    }
+  }
+
+  Future<void> _downloadAttachment(
+    ChatMessage message,
+    String ip,
+    int port,
+  ) async {
+    await _setMessageStatus(message.messageId, MessageStatus.pending);
+    try {
+      final filePath = await _transport.downloadFile(
+        ip: ip,
+        port: port,
+        transferId: message.transferId!,
+        messageId: message.messageId,
+        fileName: message.fileName!,
+        expectedSize: message.fileSize!,
+      );
+      await _database.updateMessageAttachment(
+        message.messageId,
+        filePath: filePath,
+        status: MessageStatus.sent,
+      );
+      _replaceVisibleMessage(
+        message.messageId,
+        filePath: filePath,
+        status: MessageStatus.sent,
+      );
+    } on Object catch (error, stack) {
+      _log.warning('文件下载失败', error, stack);
+      await _database.updateMessageAttachment(
+        message.messageId,
+        filePath: null,
+        status: MessageStatus.failed,
+      );
+      _replaceVisibleMessage(message.messageId, status: MessageStatus.failed);
+    }
+    notifyListeners();
+  }
+
+  Future<void> _notifyIncomingFile(
+    ChatMessage message,
+    String senderName,
+    String conversationId,
+  ) async {
+    if (!shouldNotifyForConversation(
+      appIsFocused: _notifications.appIsFocused,
+      selectedConversationId: selectedGroupId == null
+          ? selectedChatId
+          : 'group:$selectedGroupId',
+      incomingConversationId: conversationId,
+    )) {
+      return;
+    }
+    await _notifications.show(
+      identifier: 'file:${message.messageId}',
+      title: senderName,
+      body: '${message.fileName}（${_formatFileSize(message.fileSize ?? 0)}）',
+      onClick: () => message.groupId == null
+          ? selectChat(message.chatId)
+          : selectGroup(message.groupId!),
+    );
+  }
+
   Future<void> _receiveSessionClose(IncomingPacket packet) async {
     final sessionId = packet.envelope.payload['sessionId'];
     final deviceId = packet.envelope.payload['deviceId'];
@@ -963,6 +1492,37 @@ class AppController extends ChangeNotifier {
         title: group.name,
         body: '${senderName ?? '群成员'}：${_notificationPreview(content)}',
         onClick: () => selectGroup(groupId),
+      );
+    }
+  }
+
+  Future<void> _receiveGroupFileOffer(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final groupId = payload['groupId'];
+    final senderDeviceId = payload['senderDeviceId'];
+    if (groupId is! String || senderDeviceId is! String) return;
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null || trustedPeers[senderDeviceId]?.blocked == true) return;
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == senderDeviceId)) return;
+    final message = _incomingFileMessage(
+      payload,
+      chatId: 'group:$groupId',
+      groupId: groupId,
+    );
+    if (message == null ||
+        await _database.loadMessage(message.messageId) != null) {
+      return;
+    }
+    await _database.saveMessage(message);
+    if (selectedGroupId == groupId) messages = [...messages, message];
+    notifyListeners();
+    await _notifyIncomingFile(message, group.name, 'group:$groupId');
+    if (message.status == MessageStatus.pending) {
+      await _acceptIncomingFile(
+        message,
+        packet.remoteAddress,
+        _onlinePeer(senderDeviceId)?.port ?? NetworkConfig.chatPort,
       );
     }
   }
@@ -1137,6 +1697,15 @@ class AppController extends ChangeNotifier {
 
   Future<void> _setMessageStatus(String id, MessageStatus status) async {
     await _database.updateMessageStatus(id, status);
+    _replaceVisibleMessage(id, status: status);
+    notifyListeners();
+  }
+
+  void _replaceVisibleMessage(
+    String id, {
+    required MessageStatus status,
+    String? filePath,
+  }) {
     messages = [
       for (final message in messages)
         if (message.messageId == id)
@@ -1148,11 +1717,16 @@ class AppController extends ChangeNotifier {
             content: message.content,
             timestamp: message.timestamp,
             status: status,
+            kind: message.kind,
+            fileName: message.fileName,
+            filePath: filePath ?? message.filePath,
+            fileSize: message.fileSize,
+            mimeType: message.mimeType,
+            transferId: message.transferId,
           )
         else
           message,
     ];
-    notifyListeners();
   }
 
   DiscoveredPeer? _onlinePeer(String deviceId) => peers
@@ -1173,6 +1747,12 @@ class AppController extends ChangeNotifier {
     return '${normalized.substring(0, 100)}…';
   }
 
+  static String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
   String _friendlyError(Object error) {
     if (error is ArgumentError) return error.message?.toString() ?? '输入无效';
     return '操作失败：$error';
@@ -1180,6 +1760,23 @@ class AppController extends ChangeNotifier {
 
   void clearError() {
     errorMessage = null;
+    notifyListeners();
+  }
+
+  void _showTopRightMessage(String message) {
+    _topRightMessageTimer?.cancel();
+    topRightMessage = message;
+    notifyListeners();
+    _topRightMessageTimer = Timer(const Duration(seconds: 4), () {
+      topRightMessage = null;
+      notifyListeners();
+    });
+  }
+
+  void clearTopRightMessage() {
+    _topRightMessageTimer?.cancel();
+    _topRightMessageTimer = null;
+    topRightMessage = null;
     notifyListeners();
   }
 
@@ -1203,6 +1800,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _topRightMessageTimer?.cancel();
     for (final timer in _chatRequestTimers.values) {
       timer.cancel();
     }

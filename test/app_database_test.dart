@@ -52,6 +52,21 @@ void main() {
         status: MessageStatus.sent,
       ),
     );
+    await first.saveMessage(
+      ChatMessage(
+        messageId: 'file-message-1',
+        chatId: 'private-chat',
+        senderDeviceId: 'peer-device',
+        content: '照片.png',
+        timestamp: createdAt.add(const Duration(seconds: 1)),
+        status: MessageStatus.awaitingAcceptance,
+        kind: MessageKind.image,
+        fileName: '照片.png',
+        fileSize: 12 * 1024 * 1024,
+        mimeType: 'image/png',
+        transferId: 'transfer-1',
+      ),
+    );
     final group = ChatGroup(
       groupId: 'group-1',
       name: '一班',
@@ -84,7 +99,15 @@ void main() {
       '192.168.10.23',
     );
     expect((await reopened.loadChats()).single.sessionId, 'session-1');
-    expect((await reopened.loadMessages('private-chat')).single.content, '你好');
+    final messages = await reopened.loadMessages('private-chat');
+    expect(messages, hasLength(2));
+    expect(messages.first.content, '你好');
+    expect(messages.last.kind, MessageKind.image);
+    expect(messages.last.status, MessageStatus.awaitingAcceptance);
+    expect(messages.last.fileName, '照片.png');
+    expect(messages.last.fileSize, 12 * 1024 * 1024);
+    expect(messages.last.mimeType, 'image/png');
+    expect(messages.last.transferId, 'transfer-1');
     expect((await reopened.loadGroups()).single.name, '一班');
     expect(await reopened.loadGroupMembers('group-1'), hasLength(2));
   });

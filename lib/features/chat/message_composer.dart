@@ -7,11 +7,13 @@ class MessageComposer extends StatelessWidget {
     required this.controller,
     required this.enabled,
     required this.onSend,
+    this.onPasteAttachments,
   });
 
   final TextEditingController controller;
   final bool enabled;
   final VoidCallback onSend;
+  final Future<bool> Function()? onPasteAttachments;
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +31,8 @@ class MessageComposer extends StatelessWidget {
                 LogicalKeyboardKey.numpadEnter,
                 control: true,
               ): _insertNewline,
+              const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+                  _paste,
             },
             child: TextField(
               controller: controller,
@@ -76,6 +80,33 @@ class MessageComposer extends StatelessWidget {
     controller.value = value.copyWith(
       text: updatedText,
       selection: TextSelection.collapsed(offset: selection.start + 1),
+      composing: TextRange.empty,
+    );
+  }
+
+  Future<void> _paste() async {
+    if (!enabled || _isComposing) return;
+    final attachmentHandled = await onPasteAttachments?.call() ?? false;
+    if (attachmentHandled) return;
+    final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = clipboard?.text;
+    if (text == null || text.isEmpty) return;
+    _insertText(text);
+  }
+
+  void _insertText(String text) {
+    final value = controller.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final updatedText = value.text.replaceRange(
+      selection.start,
+      selection.end,
+      text,
+    );
+    controller.value = value.copyWith(
+      text: updatedText,
+      selection: TextSelection.collapsed(offset: selection.start + text.length),
       composing: TextRange.empty,
     );
   }

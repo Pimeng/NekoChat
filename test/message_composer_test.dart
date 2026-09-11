@@ -58,4 +58,34 @@ void main() {
     expect(sendCount, 0);
     expect(controller.text, '第一行\n');
   });
+
+  testWidgets('Ctrl+V 优先处理剪贴板附件', (tester) async {
+    final controller = TextEditingController(text: '保留文本');
+    addTearDown(controller.dispose);
+    var pasteCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageComposer(
+            controller: controller,
+            enabled: true,
+            onSend: () {},
+            onPasteAttachments: () async {
+              pasteCount++;
+              return true;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byType(TextField));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+
+    expect(pasteCount, 1);
+    expect(controller.text, '保留文本');
+  });
 }

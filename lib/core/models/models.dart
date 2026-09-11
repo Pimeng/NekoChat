@@ -1,4 +1,6 @@
-enum MessageStatus { pending, sent, failed }
+enum MessageStatus { pending, awaitingAcceptance, sent, rejected, failed }
+
+enum MessageKind { text, image, file }
 
 enum ChatSessionState {
   none,
@@ -114,6 +116,12 @@ class ChatMessage {
     required this.timestamp,
     required this.status,
     this.groupId,
+    this.kind = MessageKind.text,
+    this.fileName,
+    this.filePath,
+    this.fileSize,
+    this.mimeType,
+    this.transferId,
   });
   final String messageId;
   final String chatId;
@@ -122,6 +130,12 @@ class ChatMessage {
   final DateTime timestamp;
   final MessageStatus status;
   final String? groupId;
+  final MessageKind kind;
+  final String? fileName;
+  final String? filePath;
+  final int? fileSize;
+  final String? mimeType;
+  final String? transferId;
 }
 
 class ChatGroup {

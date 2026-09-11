@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
@@ -28,11 +30,24 @@ class _MainShellState extends State<MainShell> {
     final controller = widget.controller;
     return Scaffold(
       body: SafeArea(
-        child: Row(
+        child: Stack(
           children: [
-            SizedBox(width: 340, child: _buildSidebar(controller)),
-            const VerticalDivider(width: 1),
-            Expanded(child: _buildContent(controller)),
+            Row(
+              children: [
+                SizedBox(width: 340, child: _buildSidebar(controller)),
+                const VerticalDivider(width: 1),
+                Expanded(child: _buildContent(controller)),
+              ],
+            ),
+            if (controller.topRightMessage != null)
+              Positioned(
+                top: 14,
+                right: 18,
+                child: _TopRightSnackBar(
+                  message: controller.topRightMessage!,
+                  onClose: controller.clearTopRightMessage,
+                ),
+              ),
           ],
         ),
       ),
@@ -192,6 +207,13 @@ class _MainShellState extends State<MainShell> {
           composer: _composer,
           enabled: online && chat.state == ChatSessionState.active,
           onSend: () => _send(controller),
+          onAttach: controller.pickAndSendFile,
+          onPasteAttachments: controller.pasteAndSendAttachments,
+          onOpenAttachment: controller.openAttachment,
+          onOpenAttachmentFolder: controller.openAttachmentFolder,
+          onAcceptFile: controller.acceptIncomingFile,
+          onRejectFile: controller.rejectIncomingFile,
+          onRetryFile: controller.retryFileDownload,
           actions: [
             PopupMenuButton<String>(
               tooltip: '会话操作',
@@ -244,6 +266,13 @@ class _MainShellState extends State<MainShell> {
           composer: _composer,
           enabled: true,
           onSend: () => _send(controller),
+          onAttach: controller.pickAndSendFile,
+          onPasteAttachments: controller.pasteAndSendAttachments,
+          onOpenAttachment: controller.openAttachment,
+          onOpenAttachmentFolder: controller.openAttachmentFolder,
+          onAcceptFile: controller.acceptIncomingFile,
+          onRejectFile: controller.rejectIncomingFile,
+          onRetryFile: controller.retryFileDownload,
           actions: [
             if (group.ownerDeviceId == controller.identity!.deviceId)
               IconButton(
@@ -830,6 +859,13 @@ class _ConversationPane extends StatelessWidget {
     required this.composer,
     required this.enabled,
     required this.onSend,
+    required this.onAttach,
+    required this.onPasteAttachments,
+    required this.onOpenAttachment,
+    required this.onOpenAttachmentFolder,
+    required this.onAcceptFile,
+    required this.onRejectFile,
+    required this.onRetryFile,
     required this.actions,
   });
   final String title;
@@ -840,6 +876,13 @@ class _ConversationPane extends StatelessWidget {
   final TextEditingController composer;
   final bool enabled;
   final VoidCallback onSend;
+  final Future<void> Function() onAttach;
+  final Future<bool> Function() onPasteAttachments;
+  final Future<void> Function(ChatMessage) onOpenAttachment;
+  final Future<void> Function(ChatMessage) onOpenAttachmentFolder;
+  final Future<void> Function(ChatMessage) onAcceptFile;
+  final Future<void> Function(ChatMessage) onRejectFile;
+  final Future<void> Function(ChatMessage) onRetryFile;
   final List<Widget> actions;
 
   @override
@@ -906,6 +949,11 @@ class _ConversationPane extends StatelessWidget {
                     message: message,
                     mine: mine,
                     senderName: peerName(message.senderDeviceId),
+                    onOpen: onOpenAttachment,
+                    onOpenFolder: onOpenAttachmentFolder,
+                    onAccept: onAcceptFile,
+                    onReject: onRejectFile,
+                    onRetry: onRetryFile,
                   );
                 },
               ),
@@ -913,10 +961,24 @@ class _ConversationPane extends StatelessWidget {
       Container(
         padding: const EdgeInsets.fromLTRB(20, 14, 20, 18),
         color: Theme.of(context).colorScheme.surface,
-        child: MessageComposer(
-          controller: composer,
-          enabled: enabled,
-          onSend: onSend,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            IconButton(
+              tooltip: '发送图片或文件',
+              onPressed: enabled ? onAttach : null,
+              icon: const Icon(Icons.attach_file),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: MessageComposer(
+                controller: composer,
+                enabled: enabled,
+                onSend: onSend,
+                onPasteAttachments: onPasteAttachments,
+              ),
+            ),
+          ],
         ),
       ),
     ],
@@ -928,10 +990,21 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.mine,
     required this.senderName,
+    required this.onOpen,
+    required this.onOpenFolder,
+    required this.onAccept,
+    required this.onReject,
+    required this.onRetry,
   });
   final ChatMessage message;
   final bool mine;
   final String senderName;
+  final Future<void> Function(ChatMessage) onOpen;
+  final Future<void> Function(ChatMessage) onOpenFolder;
+  final Future<void> Function(ChatMessage) onAccept;
+  final Future<void> Function(ChatMessage) onReject;
+  final Future<void> Function(ChatMessage) onRetry;
+
   @override
   Widget build(BuildContext context) => Align(
     alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
@@ -947,7 +1020,9 @@ class _MessageBubble extends StatelessWidget {
         border: mine ? null : Border.all(color: Theme.of(context).dividerColor),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: mine
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         children: [
           if (!mine)
             Text(
@@ -958,7 +1033,15 @@ class _MessageBubble extends StatelessWidget {
                 color: Theme.of(context).colorScheme.primary,
               ),
             ),
-          Text(message.content),
+          if (message.kind == MessageKind.text)
+            SelectionArea(
+              child: Text(
+                message.content,
+                textAlign: mine ? TextAlign.right : TextAlign.left,
+              ),
+            )
+          else
+            _buildAttachment(context),
           const SizedBox(height: 4),
           Row(
             mainAxisSize: MainAxisSize.min,
@@ -970,20 +1053,236 @@ class _MessageBubble extends StatelessWidget {
               if (mine) ...[
                 const SizedBox(width: 5),
                 Icon(
-                  message.status == MessageStatus.failed
-                      ? Icons.error_outline
-                      : message.status == MessageStatus.pending
-                      ? Icons.schedule
-                      : Icons.check,
+                  _statusIcon(message.status),
                   size: 13,
-                  color: message.status == MessageStatus.failed
+                  color:
+                      message.status == MessageStatus.failed ||
+                          message.status == MessageStatus.rejected
                       ? Theme.of(context).colorScheme.error
                       : null,
                 ),
+                if (message.kind != MessageKind.text) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    _statusLabel(message.status, mine: mine),
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
               ],
             ],
           ),
         ],
+      ),
+    ),
+  );
+
+  Widget _buildAttachment(BuildContext context) {
+    final path = message.filePath;
+    final hasLocalFile = path != null && File(path).existsSync();
+    final canDecide =
+        !mine && message.status == MessageStatus.awaitingAcceptance;
+    final canRetry = !mine && message.status == MessageStatus.failed;
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        minWidth: message.kind == MessageKind.image && hasLocalFile ? 0 : 250,
+        maxWidth: 360,
+      ),
+      child: Column(
+        crossAxisAlignment: mine
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
+        children: [
+          if (message.kind == MessageKind.image && hasLocalFile)
+            GestureDetector(
+              onSecondaryTapDown: (details) =>
+                  _showImageMenu(context, details.globalPosition),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(9),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 360,
+                    maxHeight: 360,
+                  ),
+                  child: Image.file(
+                    File(path),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            ),
+          if (message.kind != MessageKind.image || !hasLocalFile)
+            Row(
+              textDirection: mine ? TextDirection.rtl : TextDirection.ltr,
+              children: [
+                Icon(
+                  message.kind == MessageKind.image
+                      ? Icons.image_outlined
+                      : Icons.insert_drive_file_outlined,
+                  size: 34,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: mine
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    children: [
+                      SelectionArea(
+                        child: Text(
+                          message.fileName ?? message.content,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: mine ? TextAlign.right : TextAlign.left,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      Text(
+                        _formatFileSize(message.fileSize ?? 0),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          if (canDecide) ...[
+            const SizedBox(height: 10),
+            Text(
+              '这是一个大文件，接受后才会开始传输。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                OutlinedButton(
+                  onPressed: () => onReject(message),
+                  child: const Text('拒绝'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: () => onAccept(message),
+                  icon: const Icon(Icons.download, size: 18),
+                  label: const Text('接受并下载'),
+                ),
+              ],
+            ),
+          ] else if (message.status == MessageStatus.rejected) ...[
+            const SizedBox(height: 8),
+            Text(
+              mine ? '对方已拒收，请重新发送。' : '已拒收，如需接收请让对方重新发送。',
+              textAlign: mine ? TextAlign.right : TextAlign.left,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ] else if (message.status == MessageStatus.pending && !mine) ...[
+            const SizedBox(height: 8),
+            const Row(
+              children: [
+                SizedBox.square(
+                  dimension: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 8),
+                Text('正在接收…'),
+              ],
+            ),
+          ] else if (canRetry) ...[
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => onRetry(message),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重试接收'),
+            ),
+          ] else if (message.kind == MessageKind.file &&
+              hasLocalFile &&
+              message.status == MessageStatus.sent) ...[
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () => onOpen(message),
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('打开文件'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showImageMenu(BuildContext context, Offset position) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final localPosition = overlay.globalToLocal(position);
+    final selection = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(localPosition.dx, localPosition.dy, 0, 0),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem(
+          value: 'open',
+          child: ListTile(
+            leading: Icon(Icons.open_in_new),
+            title: Text('打开图片'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'folder',
+          child: ListTile(
+            leading: Icon(Icons.folder_open),
+            title: Text('打开所在文件夹'),
+          ),
+        ),
+      ],
+    );
+    if (selection == 'open') await onOpen(message);
+    if (selection == 'folder') await onOpenFolder(message);
+  }
+}
+
+class _TopRightSnackBar extends StatelessWidget {
+  const _TopRightSnackBar({required this.message, required this.onClose});
+
+  final String message;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    elevation: 8,
+    color: Theme.of(context).colorScheme.inverseSurface,
+    borderRadius: BorderRadius.circular(10),
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 420),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.block,
+              size: 20,
+              color: Theme.of(context).colorScheme.onInverseSurface,
+            ),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                message,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onInverseSurface,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: '关闭',
+              onPressed: onClose,
+              icon: Icon(
+                Icons.close,
+                size: 18,
+                color: Theme.of(context).colorScheme.onInverseSurface,
+              ),
+            ),
+          ],
+        ),
       ),
     ),
   );
@@ -1099,3 +1398,26 @@ String _avatarText(String name) =>
 String _machine(String ip) => '${ip.split('.').last}号机';
 String _time(DateTime value) =>
     '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+
+IconData _statusIcon(MessageStatus status) => switch (status) {
+  MessageStatus.pending => Icons.schedule,
+  MessageStatus.awaitingAcceptance => Icons.hourglass_top,
+  MessageStatus.sent => Icons.check,
+  MessageStatus.rejected => Icons.block,
+  MessageStatus.failed => Icons.error_outline,
+};
+
+String _statusLabel(MessageStatus status, {required bool mine}) =>
+    switch (status) {
+      MessageStatus.pending => '等待接收',
+      MessageStatus.awaitingAcceptance => '等待对方接受',
+      MessageStatus.sent => mine ? '已接受' : '已接收',
+      MessageStatus.rejected => '已拒绝',
+      MessageStatus.failed => '失败',
+    };
+
+String _formatFileSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}

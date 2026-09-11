@@ -12,6 +12,7 @@ abstract interface class DatabaseBackend {
     required String path,
     required List<int> key,
     required OnDatabaseCreateFn onCreate,
+    required OnDatabaseVersionChangeFn onUpgrade,
   });
 }
 
@@ -23,10 +24,15 @@ class PlainSqliteBackend implements DatabaseBackend {
     required String path,
     required List<int> key,
     required OnDatabaseCreateFn onCreate,
+    required OnDatabaseVersionChangeFn onUpgrade,
   }) {
     return databaseFactoryFfi.openDatabase(
       path,
-      options: OpenDatabaseOptions(version: 1, onCreate: onCreate),
+      options: OpenDatabaseOptions(
+        version: 2,
+        onCreate: onCreate,
+        onUpgrade: onUpgrade,
+      ),
     );
   }
 }
@@ -55,6 +61,7 @@ class AppDatabase {
       path: p.join(directory.path, 'neko_chat.db'),
       key: databaseKey,
       onCreate: _createSchema,
+      onUpgrade: _upgradeSchema,
     );
     _log.info('数据库已打开');
   }
@@ -96,7 +103,13 @@ class AppDatabase {
         sender_device_id TEXT NOT NULL,
         content TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
-        status TEXT NOT NULL
+        status TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'text',
+        file_name TEXT,
+        file_path TEXT,
+        file_size INTEGER,
+        mime_type TEXT,
+        transfer_id TEXT
       )
     ''');
     await db.execute(
@@ -132,6 +145,24 @@ class AppDatabase {
       'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
     );
     _log.info('数据库 Schema v$version 已创建');
+  }
+
+  Future<void> _upgradeSchema(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    if (oldVersion < 2) {
+      await db.execute(
+        "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'",
+      );
+      await db.execute('ALTER TABLE messages ADD COLUMN file_name TEXT');
+      await db.execute('ALTER TABLE messages ADD COLUMN file_path TEXT');
+      await db.execute('ALTER TABLE messages ADD COLUMN file_size INTEGER');
+      await db.execute('ALTER TABLE messages ADD COLUMN mime_type TEXT');
+      await db.execute('ALTER TABLE messages ADD COLUMN transfer_id TEXT');
+    }
+    _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
 
   Future<LocalIdentity?> loadIdentity() async {
@@ -230,6 +261,12 @@ class AppDatabase {
       'content': message.content,
       'timestamp': message.timestamp.millisecondsSinceEpoch,
       'status': message.status.name,
+      'kind': message.kind.name,
+      'file_name': message.fileName,
+      'file_path': message.filePath,
+      'file_size': message.fileSize,
+      'mime_type': message.mimeType,
+      'transfer_id': message.transferId,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     if (message.groupId == null) {
       await database.update(
@@ -249,6 +286,17 @@ class AppDatabase {
         whereArgs: [messageId],
       );
 
+  Future<void> updateMessageAttachment(
+    String messageId, {
+    required String? filePath,
+    required MessageStatus status,
+  }) => database.update(
+    'messages',
+    {'file_path': filePath, 'status': status.name},
+    where: 'message_id = ?',
+    whereArgs: [messageId],
+  );
+
   Future<List<ChatMessage>> loadMessages(String chatId) async {
     final rows = await database.query(
       'messages',
@@ -259,6 +307,16 @@ class AppDatabase {
     return rows.map(_messageFromRow).toList();
   }
 
+  Future<ChatMessage?> loadMessage(String messageId) async {
+    final rows = await database.query(
+      'messages',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : _messageFromRow(rows.first);
+  }
+
   ChatMessage _messageFromRow(Map<String, Object?> row) => ChatMessage(
     messageId: row['message_id'] as String,
     chatId: row['chat_id'] as String,
@@ -267,6 +325,12 @@ class AppDatabase {
     content: row['content'] as String,
     timestamp: DateTime.fromMillisecondsSinceEpoch(row['timestamp'] as int),
     status: MessageStatus.values.byName(row['status'] as String),
+    kind: MessageKind.values.byName(row['kind'] as String),
+    fileName: row['file_name'] as String?,
+    filePath: row['file_path'] as String?,
+    fileSize: row['file_size'] as int?,
+    mimeType: row['mime_type'] as String?,
+    transferId: row['transfer_id'] as String?,
   );
 
   Future<List<ChatGroup>> loadGroups() async {
