@@ -1,19 +1,29 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
+import 'package:window_manager/window_manager.dart';
 
+import '../core/single_instance/single_instance_service.dart';
 import '../features/chat/main_shell.dart';
 import '../features/onboarding/auth_page.dart';
 import 'app_controller.dart';
 
 class NekoChatApp extends StatefulWidget {
-  const NekoChatApp({super.key});
+  const NekoChatApp({super.key, this.singleInstanceService});
+
+  /// 可注入的单实例服务，便于测试；默认使用平台实现。
+  final SingleInstanceService? singleInstanceService;
 
   @override
   State<NekoChatApp> createState() => _NekoChatAppState();
 }
 
 class _NekoChatAppState extends State<NekoChatApp> {
+  final _log = Logger('NekoChatApp');
   late final AppController controller;
+  late final SingleInstanceService _singleInstance;
+  StreamSubscription<void>? _singleInstanceSubscription;
 
   @override
   void initState() {
@@ -26,10 +36,30 @@ class _NekoChatAppState extends State<NekoChatApp> {
       if (record.error != null) debugPrint('  ${record.error}');
     });
     controller = AppController()..initialize();
+    _singleInstance = widget.singleInstanceService ?? SingleInstanceService();
+    _singleInstanceSubscription = _singleInstance.onAlreadyRunning.listen(
+      (_) => _bringWindowToFront(),
+    );
+    unawaited(_singleInstance.initialize());
+  }
+
+  /// 用户重复启动程序时，把已有的窗口置前。
+  Future<void> _bringWindowToFront() async {
+    try {
+      await windowManager.show();
+      if (await windowManager.isMinimized()) {
+        await windowManager.restore();
+      }
+      await windowManager.focus();
+    } on Object catch (error, stack) {
+      _log.warning('无法将现有窗口置前', error, stack);
+    }
   }
 
   @override
   void dispose() {
+    _singleInstanceSubscription?.cancel();
+    unawaited(_singleInstance.dispose());
     controller.dispose();
     super.dispose();
   }

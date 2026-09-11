@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "flutter_window.h"
+#include "single_instance.h"
 #include "utils.h"
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
@@ -11,6 +12,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
     CreateAndAttachConsole();
+  }
+
+  // If NekoChat is already running, bring the existing window to the front
+  // instead of starting a second copy of the application.
+  if (neko_chat::FocusExistingInstanceOrStart()) {
+    return EXIT_SUCCESS;
   }
 
   // Initialize COM, so that it is available for use in the library and/or
