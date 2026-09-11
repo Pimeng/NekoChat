@@ -1,0 +1,1216 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:logging/logging.dart';
+import 'package:uuid/uuid.dart';
+
+import '../core/config/network_config.dart';
+import '../core/database/app_database.dart';
+import '../core/identity/database_key_provider.dart';
+import '../core/identity/identity_service.dart';
+import '../core/models/models.dart';
+import '../core/networking/chat_transport.dart';
+import '../core/networking/discovery_service.dart';
+import '../core/notifications/system_notification_service.dart';
+import '../core/protocol/protocol.dart';
+import '../features/chat/chat_state_machine.dart';
+
+enum AppStage { booting, setup, locked, ready, error }
+
+class AppController extends ChangeNotifier {
+  AppController({
+    LocalDatabaseKeyProvider? keyProvider,
+    AppDatabase? database,
+    ChatTransport? transport,
+    SystemNotificationService? notifications,
+  }) : _keyProvider = keyProvider ?? EncryptedFileDatabaseKeyProvider(),
+       _database = database ?? AppDatabase(),
+       _transport = transport ?? WebSocketChatTransport(),
+       _notifications = notifications ?? DesktopSystemNotificationService();
+
+  static const _uuid = Uuid();
+  final LocalDatabaseKeyProvider _keyProvider;
+  final AppDatabase _database;
+  final ChatTransport _transport;
+  final SystemNotificationService _notifications;
+  final _log = Logger('AppController');
+  DiscoveryService? _discovery;
+
+  AppStage stage = AppStage.booting;
+  String? errorMessage;
+  LocalIdentity? identity;
+  Map<String, TrustedPeer> trustedPeers = {};
+  List<DiscoveredPeer> peers = [];
+  List<ChatSummary> chats = [];
+  List<ChatGroup> groups = [];
+  final Map<String, ChatRequest> chatRequests = {};
+  final Map<String, Timer> _chatRequestTimers = {};
+  final Map<String, GroupInvitation> groupInvitations = {};
+  final Map<String, Map<String, dynamic>> _pendingGroupPayloads = {};
+  final Map<String, ({String groupId, String peerDeviceId})>
+  _outgoingGroupInvites = {};
+  String? selectedChatId;
+  String? selectedGroupId;
+  List<ChatMessage> messages = [];
+
+  Future<void> initialize() async {
+    try {
+      stage = await _keyProvider.hasExistingKey()
+          ? AppStage.locked
+          : AppStage.setup;
+    } on Object catch (error, stack) {
+      _fail('无法读取本地身份数据', error, stack);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setup({
+    required String displayName,
+    required String password,
+  }) async {
+    if (stage != AppStage.setup) return;
+    try {
+      final key = await _keyProvider.create(password);
+      await _database.open(key);
+      identity = await IdentityService(_database).create(displayName);
+      await _enterReady();
+    } on Object catch (error, stack) {
+      _fail(_friendlyError(error), error, stack, keepStage: AppStage.setup);
+    }
+  }
+
+  Future<void> unlock(String password) async {
+    if (stage != AppStage.locked) return;
+    try {
+      final key = await _keyProvider.unlock(password);
+      await _database.open(key);
+      identity = await IdentityService(_database).restore();
+      if (identity == null) throw StateError('身份数据库为空，未生成新身份以保护原数据');
+      await _enterReady();
+    } on InvalidPasswordException {
+      errorMessage = '密码错误';
+      stage = AppStage.locked;
+      notifyListeners();
+    } on Object catch (error, stack) {
+      _fail(_friendlyError(error), error, stack, keepStage: AppStage.locked);
+    }
+  }
+
+  Future<void> _enterReady() async {
+    trustedPeers = await _database.loadTrustedPeers();
+    chats = await _database.loadChats();
+    await _recoverInterruptedRequests();
+    groups = await _database.loadGroups();
+    final localIdentity = identity!;
+    await _notifications.initialize();
+    await _transport.start(_onPacket);
+    _discovery = DiscoveryService(
+      identity: localIdentity,
+      trustLookup: (id) => trustedPeers[id],
+      onPeersChanged: (value) {
+        peers = value;
+        notifyListeners();
+      },
+    );
+    await _discovery!.start();
+    errorMessage = null;
+    stage = AppStage.ready;
+    _log.info('应用已就绪，deviceId=${localIdentity.deviceId}');
+    notifyListeners();
+  }
+
+  Future<void> requestChat(DiscoveredPeer peer) async {
+    final existing = chats
+        .where(
+          (chat) =>
+              chat.peerDeviceId == peer.deviceId &&
+              chat.state == ChatSessionState.active,
+        )
+        .firstOrNull;
+    if (existing != null) {
+      await selectChat(existing.chatId);
+      return;
+    }
+    final hasPending = chatRequests.values.any(
+      (request) => request.peerDeviceId == peer.deviceId,
+    );
+    if (!ChatStateMachine.canStartRequest(
+      online: peer.online,
+      blocked: trustedPeers[peer.deviceId]?.blocked == true,
+      active: false,
+      hasPendingRequest: hasPending,
+    )) {
+      return;
+    }
+    final requestId = _uuid.v4();
+    final request = ChatRequest(
+      requestId: requestId,
+      peerDeviceId: peer.deviceId,
+      displayName: peer.displayName,
+      ip: peer.ip,
+      verificationCode: verificationCode(
+        requestId: requestId,
+        requesterDeviceId: identity!.deviceId,
+        recipientDeviceId: peer.deviceId,
+      ),
+      incoming: false,
+    );
+    chatRequests[requestId] = request;
+    _scheduleRequestTimeout(request);
+    await _upsertChat(
+      peer.deviceId,
+      peer.displayName,
+      ChatSessionState.pendingOutgoing,
+    );
+    notifyListeners();
+    try {
+      await _transport.send(
+        peer.ip,
+        peer.port,
+        ProtocolEnvelope(
+          type: MessageType.chatRequest,
+          payload: {
+            'requestId': requestId,
+            'deviceId': identity!.deviceId,
+            'displayName': identity!.displayName,
+          },
+        ),
+      );
+      _log.info('已向 ${peer.deviceId} 发送聊天邀请 $requestId');
+    } on Object catch (error, stack) {
+      _removeChatRequest(requestId);
+      await _upsertChat(peer.deviceId, peer.displayName, ChatSessionState.none);
+      _log.warning('聊天邀请发送失败', error, stack);
+      errorMessage = '无法连接 ${peer.displayName}';
+      notifyListeners();
+    }
+  }
+
+  Future<void> acceptChatRequest(ChatRequest request) async {
+    if (!request.incoming ||
+        !identical(chatRequests[request.requestId], request)) {
+      return;
+    }
+    _removeChatRequest(request.requestId);
+    final sessionId = _uuid.v4();
+    final peer = TrustedPeer(
+      deviceId: request.peerDeviceId,
+      displayName: request.displayName,
+      lastKnownIp: request.ip,
+      verifiedAt: DateTime.now(),
+    );
+    trustedPeers[peer.deviceId] = peer;
+    await _database.saveTrustedPeer(peer);
+    await _upsertChat(
+      peer.deviceId,
+      peer.displayName,
+      ChatSessionState.active,
+      sessionId: sessionId,
+    );
+    _discovery?.refreshTrust();
+    notifyListeners();
+    await _sendToAddress(
+      request.ip,
+      ProtocolEnvelope(
+        type: MessageType.chatAccept,
+        payload: {
+          'requestId': request.requestId,
+          'sessionId': sessionId,
+          'deviceId': identity!.deviceId,
+          'displayName': identity!.displayName,
+        },
+      ),
+    );
+  }
+
+  Future<void> rejectChatRequest(ChatRequest request) async {
+    if (!identical(chatRequests[request.requestId], request)) return;
+    _removeChatRequest(request.requestId);
+    await _upsertChat(
+      request.peerDeviceId,
+      request.displayName,
+      ChatSessionState.rejected,
+    );
+    notifyListeners();
+    if (request.incoming) {
+      await _sendToAddress(
+        request.ip,
+        ProtocolEnvelope(
+          type: MessageType.chatReject,
+          payload: {
+            'requestId': request.requestId,
+            'deviceId': identity!.deviceId,
+          },
+        ),
+      );
+    }
+  }
+
+  Future<void> selectChat(String chatId) async {
+    selectedGroupId = null;
+    selectedChatId = chatId;
+    messages = await _database.loadMessages(chatId);
+    notifyListeners();
+  }
+
+  Future<void> sendMessage(String content) async {
+    final normalized = content.trim();
+    if (normalized.isEmpty) return;
+    if (selectedGroupId != null) {
+      await _sendGroupMessage(selectedGroupId!, normalized);
+      return;
+    }
+    final chat = chats
+        .where((value) => value.chatId == selectedChatId)
+        .firstOrNull;
+    if (chat == null ||
+        chat.state != ChatSessionState.active ||
+        chat.sessionId == null) {
+      return;
+    }
+    final message = ChatMessage(
+      messageId: _uuid.v4(),
+      chatId: chat.chatId,
+      senderDeviceId: identity!.deviceId,
+      content: normalized,
+      timestamp: DateTime.now(),
+      status: MessageStatus.pending,
+    );
+    await _database.saveMessage(message);
+    messages = [...messages, message];
+    notifyListeners();
+    final peer = _onlinePeer(chat.peerDeviceId);
+    if (peer == null) {
+      await _setMessageStatus(message.messageId, MessageStatus.failed);
+      return;
+    }
+    try {
+      await _transport.send(
+        peer.ip,
+        peer.port,
+        ProtocolEnvelope(
+          type: MessageType.message,
+          payload: {
+            'sessionId': chat.sessionId,
+            'messageId': message.messageId,
+            'senderDeviceId': identity!.deviceId,
+            'timestamp': message.timestamp.millisecondsSinceEpoch,
+            'content': normalized,
+          },
+        ),
+      );
+      await _setMessageStatus(message.messageId, MessageStatus.sent);
+    } on Object catch (error, stack) {
+      _log.warning('消息发送失败', error, stack);
+      await _setMessageStatus(message.messageId, MessageStatus.failed);
+    }
+  }
+
+  Future<void> closeChat(ChatSummary chat) async {
+    if (selectedChatId == chat.chatId) {
+      selectedChatId = null;
+      messages = [];
+    }
+    notifyListeners();
+  }
+
+  Future<void> setBlocked(String deviceId, bool blocked) async {
+    final old = trustedPeers[deviceId];
+    if (old == null) return;
+    final updated = TrustedPeer(
+      deviceId: old.deviceId,
+      displayName: old.displayName,
+      lastKnownIp: old.lastKnownIp,
+      verifiedAt: old.verifiedAt,
+      blocked: blocked,
+    );
+    trustedPeers[deviceId] = updated;
+    await _database.saveTrustedPeer(updated);
+    final chat = chats
+        .where((value) => value.peerDeviceId == deviceId)
+        .firstOrNull;
+    if (chat != null) {
+      await _upsertChat(
+        deviceId,
+        chat.displayName,
+        blocked ? ChatSessionState.blocked : ChatSessionState.none,
+      );
+    }
+    _discovery?.refreshTrust();
+    notifyListeners();
+  }
+
+  Future<ChatGroup> createGroup(
+    String name,
+    List<DiscoveredPeer> invitees,
+  ) async {
+    final normalized = name.trim();
+    if (normalized.isEmpty) throw ArgumentError('群名不能为空');
+    final group = ChatGroup(
+      groupId: _uuid.v4(),
+      name: normalized,
+      ownerDeviceId: identity!.deviceId,
+      createdAt: DateTime.now(),
+    );
+    final members = [
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: identity!.deviceId,
+        displayName: identity!.displayName,
+        role: GroupRole.owner,
+      ),
+    ];
+    await _database.saveGroup(group, members);
+    groups = [group, ...groups];
+    notifyListeners();
+    for (final peer in invitees.where(
+      (value) => value.online && value.trusted,
+    )) {
+      await inviteToGroup(group, peer);
+    }
+    return group;
+  }
+
+  Future<void> inviteToGroup(ChatGroup group, DiscoveredPeer peer) async {
+    if (group.ownerDeviceId != identity!.deviceId || !peer.online) return;
+    final inviteId = _uuid.v4();
+    _outgoingGroupInvites[inviteId] = (
+      groupId: group.groupId,
+      peerDeviceId: peer.deviceId,
+    );
+    final members = await _database.loadGroupMembers(group.groupId);
+    await _transport.send(
+      peer.ip,
+      peer.port,
+      ProtocolEnvelope(
+        type: MessageType.groupInvite,
+        payload: {
+          'inviteId': inviteId,
+          'groupId': group.groupId,
+          'groupName': group.name,
+          'ownerDeviceId': identity!.deviceId,
+          'ownerDisplayName': identity!.displayName,
+          'members': members
+              .map(
+                (member) => {
+                  'deviceId': member.deviceId,
+                  'displayName': member.displayName,
+                  'role': member.role.name,
+                },
+              )
+              .toList(),
+        },
+      ),
+    );
+  }
+
+  Future<void> respondToGroupInvitation(
+    GroupInvitation invitation,
+    bool accepted,
+  ) async {
+    final payload = _pendingGroupPayloads.remove(invitation.inviteId);
+    groupInvitations.remove(invitation.inviteId);
+    if (accepted && payload != null) {
+      final group = ChatGroup(
+        groupId: invitation.groupId,
+        name: invitation.groupName,
+        ownerDeviceId: invitation.ownerDeviceId,
+        createdAt: DateTime.now(),
+      );
+      final rawMembers = payload['members'];
+      final members = <GroupMember>[];
+      if (rawMembers is List) {
+        for (final raw in rawMembers.whereType<Map>()) {
+          final map = Map<String, dynamic>.from(raw);
+          if (map['deviceId'] is String &&
+              map['displayName'] is String &&
+              map['role'] is String) {
+            members.add(
+              GroupMember(
+                groupId: group.groupId,
+                deviceId: map['deviceId'] as String,
+                displayName: map['displayName'] as String,
+                role: GroupRole.values.byName(map['role'] as String),
+              ),
+            );
+          }
+        }
+      }
+      members.removeWhere((member) => member.deviceId == identity!.deviceId);
+      members.add(
+        GroupMember(
+          groupId: group.groupId,
+          deviceId: identity!.deviceId,
+          displayName: identity!.displayName,
+          role: GroupRole.member,
+        ),
+      );
+      await _database.saveGroup(group, members);
+      groups = [
+        group,
+        ...groups.where((value) => value.groupId != group.groupId),
+      ];
+    }
+    notifyListeners();
+    await _sendToAddress(
+      invitation.ip,
+      ProtocolEnvelope(
+        type: MessageType.groupInviteResponse,
+        payload: {
+          'inviteId': invitation.inviteId,
+          'groupId': invitation.groupId,
+          'accepted': accepted,
+          'deviceId': identity!.deviceId,
+          'displayName': identity!.displayName,
+        },
+      ),
+    );
+  }
+
+  Future<void> selectGroup(String groupId) async {
+    selectedChatId = null;
+    selectedGroupId = groupId;
+    messages = await _database.loadMessages('group:$groupId');
+    notifyListeners();
+  }
+
+  Future<List<GroupMember>> groupMembers(String groupId) =>
+      _database.loadGroupMembers(groupId);
+
+  Future<void> renameGroup(ChatGroup group, String name) async {
+    final normalized = name.trim();
+    if (group.ownerDeviceId != identity!.deviceId || normalized.isEmpty) return;
+    final members = await _database.loadGroupMembers(group.groupId);
+    final updated = ChatGroup(
+      groupId: group.groupId,
+      name: normalized,
+      ownerDeviceId: group.ownerDeviceId,
+      createdAt: group.createdAt,
+    );
+    await _database.saveGroup(updated, members);
+    groups = [
+      for (final value in groups)
+        if (value.groupId == group.groupId) updated else value,
+    ];
+    notifyListeners();
+    await _fanOutGroupControl(group.groupId, members, 'rename', {
+      'name': normalized,
+    });
+  }
+
+  Future<void> removeGroupMember(ChatGroup group, GroupMember member) async {
+    if (group.ownerDeviceId != identity!.deviceId ||
+        member.deviceId == identity!.deviceId) {
+      return;
+    }
+    final members = await _database.loadGroupMembers(group.groupId);
+    await _database.removeGroupMember(group.groupId, member.deviceId);
+    await _fanOutGroupControl(group.groupId, members, 'remove', {
+      'targetDeviceId': member.deviceId,
+    });
+    notifyListeners();
+  }
+
+  Future<void> leaveOrDisbandGroup(ChatGroup group) async {
+    final members = await _database.loadGroupMembers(group.groupId);
+    final isOwner = group.ownerDeviceId == identity!.deviceId;
+    await _fanOutGroupControl(
+      group.groupId,
+      members,
+      isOwner ? 'disband' : 'leave',
+      {'targetDeviceId': identity!.deviceId},
+    );
+    await _database.deleteGroup(group.groupId);
+    groups = groups.where((value) => value.groupId != group.groupId).toList();
+    if (selectedGroupId == group.groupId) {
+      selectedGroupId = null;
+      messages = [];
+    }
+    notifyListeners();
+  }
+
+  Future<void> _sendGroupMessage(String groupId, String content) async {
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
+    final message = ChatMessage(
+      messageId: _uuid.v4(),
+      chatId: 'group:$groupId',
+      groupId: groupId,
+      senderDeviceId: identity!.deviceId,
+      content: content,
+      timestamp: DateTime.now(),
+      status: MessageStatus.sent,
+    );
+    await _database.saveMessage(message);
+    messages = [...messages, message];
+    notifyListeners();
+    for (final member in members.where(
+      (value) => value.deviceId != identity!.deviceId,
+    )) {
+      final peer = _onlinePeer(member.deviceId);
+      if (peer == null) continue;
+      try {
+        await _transport.send(
+          peer.ip,
+          peer.port,
+          ProtocolEnvelope(
+            type: MessageType.groupMessage,
+            payload: {
+              'groupId': groupId,
+              'messageId': message.messageId,
+              'senderDeviceId': identity!.deviceId,
+              'timestamp': message.timestamp.millisecondsSinceEpoch,
+              'content': content,
+            },
+          ),
+        );
+      } on Object catch (error, stack) {
+        _log.warning('向群成员 ${member.deviceId} 发送失败', error, stack);
+      }
+    }
+  }
+
+  Future<void> _fanOutGroupControl(
+    String groupId,
+    List<GroupMember> members,
+    String action,
+    Map<String, dynamic> extra,
+  ) async {
+    final envelope = ProtocolEnvelope(
+      type: MessageType.groupUpdate,
+      payload: {
+        'groupId': groupId,
+        'action': action,
+        'senderDeviceId': identity!.deviceId,
+        ...extra,
+      },
+    );
+    for (final member in members.where(
+      (value) => value.deviceId != identity!.deviceId,
+    )) {
+      final peer = _onlinePeer(member.deviceId);
+      if (peer == null) continue;
+      try {
+        await _transport.send(peer.ip, peer.port, envelope);
+      } on Object catch (error, stack) {
+        _log.warning('群控制消息发送失败', error, stack);
+      }
+    }
+  }
+
+  Future<void> _onPacket(IncomingPacket packet) async {
+    try {
+      switch (packet.envelope.type) {
+        case MessageType.chatRequest:
+          await _receiveChatRequest(packet);
+        case MessageType.chatAccept:
+          await _receiveChatAccept(packet);
+        case MessageType.chatReject:
+          await _receiveChatReject(packet);
+        case MessageType.message:
+          await _receiveMessage(packet);
+        case MessageType.sessionClose:
+          await _receiveSessionClose(packet);
+        case MessageType.groupInvite:
+          await _receiveGroupInvite(packet);
+        case MessageType.groupInviteResponse:
+          await _receiveGroupInviteResponse(packet);
+        case MessageType.groupMessage:
+          await _receiveGroupMessage(packet);
+        case MessageType.groupUpdate:
+          await _receiveGroupUpdate(packet);
+        case MessageType.announce || MessageType.hello || MessageType.error:
+          break;
+      }
+    } on Object catch (error, stack) {
+      _log.warning(
+        '处理来自 ${packet.remoteAddress} 的 ${packet.envelope.type.wireName} 失败',
+        error,
+        stack,
+      );
+    }
+  }
+
+  Future<void> _receiveChatRequest(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final requestId = payload['requestId'];
+    final deviceId = payload['deviceId'];
+    final displayName = payload['displayName'];
+    if (requestId is! String ||
+        deviceId is! String ||
+        displayName is! String ||
+        deviceId == identity!.deviceId) {
+      return;
+    }
+    if (trustedPeers[deviceId]?.blocked == true ||
+        chatRequests.containsKey(requestId)) {
+      return;
+    }
+    final currentChat = chats
+        .where((value) => value.peerDeviceId == deviceId)
+        .firstOrNull;
+    final trusted = trustedPeers[deviceId];
+    if (currentChat?.state == ChatSessionState.active) {
+      if (trusted != null && currentChat?.sessionId != null) {
+        await _sendChatAccept(
+          ip: packet.remoteAddress,
+          requestId: requestId,
+          sessionId: currentChat!.sessionId!,
+        );
+      }
+      return;
+    }
+
+    final pendingForPeer = chatRequests.values
+        .where((value) => value.peerDeviceId == deviceId)
+        .firstOrNull;
+    if (pendingForPeer?.incoming == true) return;
+    if (pendingForPeer != null &&
+        ChatStateMachine.resolveCollision(
+              localDeviceId: identity!.deviceId,
+              remoteDeviceId: deviceId,
+            ) ==
+            CollisionDecision.keepOutgoing) {
+      return;
+    }
+    if (pendingForPeer != null) {
+      _removeChatRequest(pendingForPeer.requestId);
+    }
+
+    if (trusted != null) {
+      final sessionId = _uuid.v4();
+      await _upsertChat(
+        deviceId,
+        displayName,
+        ChatSessionState.active,
+        sessionId: sessionId,
+        allowTrustedReconnect: true,
+      );
+      await _sendChatAccept(
+        ip: packet.remoteAddress,
+        requestId: requestId,
+        sessionId: sessionId,
+      );
+      _log.info('已自动恢复与已验证设备 $deviceId 的会话');
+      notifyListeners();
+      return;
+    }
+
+    final request = ChatRequest(
+      requestId: requestId,
+      peerDeviceId: deviceId,
+      displayName: displayName,
+      ip: packet.remoteAddress,
+      verificationCode: verificationCode(
+        requestId: requestId,
+        requesterDeviceId: deviceId,
+        recipientDeviceId: identity!.deviceId,
+      ),
+      incoming: true,
+    );
+    chatRequests[requestId] = request;
+    await _upsertChat(deviceId, displayName, ChatSessionState.pendingIncoming);
+    notifyListeners();
+    if (!_notifications.appIsFocused) {
+      await _notifications.show(
+        identifier: 'chat-request:$requestId',
+        title: '新的聊天邀请',
+        body: '$displayName 请求与你聊天，验证码 ${request.verificationCode}',
+        onClick: () {},
+      );
+    }
+  }
+
+  Future<void> _receiveChatAccept(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final requestId = payload['requestId'];
+    final sessionId = payload['sessionId'];
+    final deviceId = payload['deviceId'];
+    final displayName = payload['displayName'];
+    if (requestId is! String ||
+        sessionId is! String ||
+        deviceId is! String ||
+        displayName is! String) {
+      return;
+    }
+    final request = chatRequests[requestId];
+    if (request == null ||
+        request.incoming ||
+        request.peerDeviceId != deviceId) {
+      return;
+    }
+    final existingTrust = trustedPeers[deviceId];
+    final peer = TrustedPeer(
+      deviceId: deviceId,
+      displayName: displayName,
+      lastKnownIp: packet.remoteAddress,
+      verifiedAt: existingTrust?.verifiedAt ?? DateTime.now(),
+    );
+    trustedPeers[deviceId] = peer;
+    await _database.saveTrustedPeer(peer);
+    _removeChatRequest(requestId);
+    await _upsertChat(
+      deviceId,
+      displayName,
+      ChatSessionState.active,
+      sessionId: sessionId,
+    );
+    _discovery?.refreshTrust();
+    notifyListeners();
+    if (!_notifications.appIsFocused) {
+      final chatId = _privateChatId(identity!.deviceId, deviceId);
+      await _notifications.show(
+        identifier: 'chat-accept:$sessionId',
+        title: '$displayName 已接受聊天邀请',
+        body: '点击进入会话',
+        onClick: () => selectChat(chatId),
+      );
+    }
+  }
+
+  Future<void> _receiveChatReject(IncomingPacket packet) async {
+    final requestId = packet.envelope.payload['requestId'];
+    if (requestId is! String) return;
+    final request = _removeChatRequest(requestId);
+    if (request != null) {
+      await _upsertChat(
+        request.peerDeviceId,
+        request.displayName,
+        ChatSessionState.rejected,
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<void> _receiveMessage(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final sessionId = payload['sessionId'];
+    final messageId = payload['messageId'];
+    final senderDeviceId = payload['senderDeviceId'];
+    final timestamp = payload['timestamp'];
+    final content = payload['content'];
+    if (sessionId is! String ||
+        messageId is! String ||
+        senderDeviceId is! String ||
+        timestamp is! int ||
+        content is! String) {
+      return;
+    }
+    if (trustedPeers[senderDeviceId]?.blocked == true) return;
+    final chat = chats
+        .where(
+          (value) =>
+              value.sessionId == sessionId &&
+              value.peerDeviceId == senderDeviceId &&
+              value.state == ChatSessionState.active,
+        )
+        .firstOrNull;
+    if (chat == null) {
+      _log.warning('忽略未知 sessionId=$sessionId 的消息');
+      return;
+    }
+    final message = ChatMessage(
+      messageId: messageId,
+      chatId: chat.chatId,
+      senderDeviceId: senderDeviceId,
+      content: content,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
+      status: MessageStatus.sent,
+    );
+    await _database.saveMessage(message);
+    if (selectedChatId == chat.chatId) messages = [...messages, message];
+    await _reloadChats();
+    notifyListeners();
+    if (shouldNotifyForConversation(
+      appIsFocused: _notifications.appIsFocused,
+      selectedConversationId: selectedChatId,
+      incomingConversationId: chat.chatId,
+    )) {
+      await _notifications.show(
+        identifier: 'message:$messageId',
+        title: chat.displayName,
+        body: _notificationPreview(content),
+        onClick: () => selectChat(chat.chatId),
+      );
+    }
+  }
+
+  Future<void> _receiveSessionClose(IncomingPacket packet) async {
+    final sessionId = packet.envelope.payload['sessionId'];
+    final deviceId = packet.envelope.payload['deviceId'];
+    if (sessionId is! String || deviceId is! String) return;
+    final chat = chats
+        .where(
+          (value) =>
+              value.sessionId == sessionId && value.peerDeviceId == deviceId,
+        )
+        .firstOrNull;
+    if (chat != null) {
+      await _upsertChat(deviceId, chat.displayName, ChatSessionState.none);
+    }
+    notifyListeners();
+  }
+
+  Future<void> _receiveGroupInvite(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final inviteId = payload['inviteId'];
+    final groupId = payload['groupId'];
+    final groupName = payload['groupName'];
+    final ownerDeviceId = payload['ownerDeviceId'];
+    final ownerDisplayName = payload['ownerDisplayName'];
+    if (inviteId is! String ||
+        groupId is! String ||
+        groupName is! String ||
+        ownerDeviceId is! String ||
+        ownerDisplayName is! String) {
+      return;
+    }
+    if (trustedPeers[ownerDeviceId] == null ||
+        trustedPeers[ownerDeviceId]!.blocked ||
+        groupInvitations.containsKey(inviteId)) {
+      return;
+    }
+    groupInvitations[inviteId] = GroupInvitation(
+      inviteId: inviteId,
+      groupId: groupId,
+      groupName: groupName,
+      ownerDeviceId: ownerDeviceId,
+      ownerDisplayName: ownerDisplayName,
+      ip: packet.remoteAddress,
+    );
+    _pendingGroupPayloads[inviteId] = payload;
+    notifyListeners();
+    if (!_notifications.appIsFocused) {
+      await _notifications.show(
+        identifier: 'group-invite:$inviteId',
+        title: '新的群聊邀请',
+        body: '$ownerDisplayName 邀请你加入“$groupName”',
+        onClick: () {},
+      );
+    }
+  }
+
+  Future<void> _receiveGroupInviteResponse(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final inviteId = payload['inviteId'];
+    final accepted = payload['accepted'];
+    final deviceId = payload['deviceId'];
+    final displayName = payload['displayName'];
+    if (inviteId is! String ||
+        accepted is! bool ||
+        deviceId is! String ||
+        displayName is! String) {
+      return;
+    }
+    final pending = _outgoingGroupInvites.remove(inviteId);
+    if (pending == null || pending.peerDeviceId != deviceId || !accepted) {
+      return;
+    }
+    await _database.saveGroupMember(
+      GroupMember(
+        groupId: pending.groupId,
+        deviceId: deviceId,
+        displayName: displayName,
+        role: GroupRole.member,
+      ),
+    );
+    notifyListeners();
+  }
+
+  Future<void> _receiveGroupMessage(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final groupId = payload['groupId'];
+    final messageId = payload['messageId'];
+    final senderDeviceId = payload['senderDeviceId'];
+    final timestamp = payload['timestamp'];
+    final content = payload['content'];
+    if (groupId is! String ||
+        messageId is! String ||
+        senderDeviceId is! String ||
+        timestamp is! int ||
+        content is! String) {
+      return;
+    }
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null || trustedPeers[senderDeviceId]?.blocked == true) return;
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == senderDeviceId)) return;
+    final message = ChatMessage(
+      messageId: messageId,
+      chatId: 'group:$groupId',
+      groupId: groupId,
+      senderDeviceId: senderDeviceId,
+      content: content,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
+      status: MessageStatus.sent,
+    );
+    await _database.saveMessage(message);
+    if (selectedGroupId == groupId) messages = [...messages, message];
+    notifyListeners();
+    if (shouldNotifyForConversation(
+      appIsFocused: _notifications.appIsFocused,
+      selectedConversationId: selectedGroupId == null
+          ? selectedChatId
+          : 'group:$selectedGroupId',
+      incomingConversationId: 'group:$groupId',
+    )) {
+      final senderName = members
+          .where((member) => member.deviceId == senderDeviceId)
+          .firstOrNull
+          ?.displayName;
+      await _notifications.show(
+        identifier: 'group-message:$messageId',
+        title: group.name,
+        body: '${senderName ?? '群成员'}：${_notificationPreview(content)}',
+        onClick: () => selectGroup(groupId),
+      );
+    }
+  }
+
+  Future<void> _receiveGroupUpdate(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final groupId = payload['groupId'];
+    final action = payload['action'];
+    final senderDeviceId = payload['senderDeviceId'];
+    if (groupId is! String || action is! String || senderDeviceId is! String) {
+      return;
+    }
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null) return;
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == senderDeviceId)) return;
+
+    switch (action) {
+      case 'rename':
+        if (senderDeviceId != group.ownerDeviceId ||
+            payload['name'] is! String) {
+          return;
+        }
+        final updated = ChatGroup(
+          groupId: group.groupId,
+          name: payload['name'] as String,
+          ownerDeviceId: group.ownerDeviceId,
+          createdAt: group.createdAt,
+        );
+        await _database.saveGroup(updated, members);
+        groups = [
+          for (final value in groups)
+            if (value.groupId == groupId) updated else value,
+        ];
+      case 'remove':
+        if (senderDeviceId != group.ownerDeviceId ||
+            payload['targetDeviceId'] is! String) {
+          return;
+        }
+        final target = payload['targetDeviceId'] as String;
+        if (target == identity!.deviceId) {
+          await _database.deleteGroup(groupId);
+          groups = groups.where((value) => value.groupId != groupId).toList();
+          if (selectedGroupId == groupId) {
+            selectedGroupId = null;
+            messages = [];
+          }
+        } else {
+          await _database.removeGroupMember(groupId, target);
+        }
+      case 'disband':
+        if (senderDeviceId != group.ownerDeviceId) return;
+        await _database.deleteGroup(groupId);
+        groups = groups.where((value) => value.groupId != groupId).toList();
+        if (selectedGroupId == groupId) {
+          selectedGroupId = null;
+          messages = [];
+        }
+      case 'leave':
+        final target = payload['targetDeviceId'];
+        if (target != senderDeviceId) return;
+        await _database.removeGroupMember(groupId, senderDeviceId);
+      default:
+        return;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _recoverInterruptedRequests() async {
+    final interrupted = chats
+        .where(
+          (chat) =>
+              chat.state == ChatSessionState.pendingIncoming ||
+              chat.state == ChatSessionState.pendingOutgoing,
+        )
+        .toList();
+    for (final chat in interrupted) {
+      await _database.saveChat(
+        ChatSummary(
+          chatId: chat.chatId,
+          peerDeviceId: chat.peerDeviceId,
+          displayName: chat.displayName,
+          state: ChatSessionState.none,
+          lastMessageAt: chat.lastMessageAt,
+        ),
+      );
+    }
+    if (interrupted.isNotEmpty) await _reloadChats();
+  }
+
+  void _scheduleRequestTimeout(ChatRequest request) {
+    _chatRequestTimers[request.requestId]?.cancel();
+    _chatRequestTimers[request.requestId] = Timer(
+      NetworkConfig.requestTimeout,
+      () => unawaited(_expireChatRequest(request)),
+    );
+  }
+
+  Future<void> _expireChatRequest(ChatRequest request) async {
+    if (!identical(chatRequests[request.requestId], request)) return;
+    _removeChatRequest(request.requestId);
+    await _upsertChat(
+      request.peerDeviceId,
+      request.displayName,
+      ChatSessionState.none,
+    );
+    errorMessage = '与 ${request.displayName} 的连接请求已超时，可以重试';
+    notifyListeners();
+  }
+
+  ChatRequest? _removeChatRequest(String requestId) {
+    _chatRequestTimers.remove(requestId)?.cancel();
+    return chatRequests.remove(requestId);
+  }
+
+  Future<void> _sendChatAccept({
+    required String ip,
+    required String requestId,
+    required String sessionId,
+  }) {
+    return _sendToAddress(
+      ip,
+      ProtocolEnvelope(
+        type: MessageType.chatAccept,
+        payload: {
+          'requestId': requestId,
+          'sessionId': sessionId,
+          'deviceId': identity!.deviceId,
+          'displayName': identity!.displayName,
+        },
+      ),
+    );
+  }
+
+  Future<void> _upsertChat(
+    String peerDeviceId,
+    String displayName,
+    ChatSessionState state, {
+    String? sessionId,
+    bool allowTrustedReconnect = false,
+  }) async {
+    final existing = chats
+        .where((value) => value.peerDeviceId == peerDeviceId)
+        .firstOrNull;
+    final isTrustedReconnect =
+        allowTrustedReconnect &&
+        ChatStateMachine.canRestoreTrustedSession(
+          trusted: trustedPeers[peerDeviceId] != null,
+          blocked: trustedPeers[peerDeviceId]?.blocked == true,
+        ) &&
+        state == ChatSessionState.active;
+    if (existing != null &&
+        !isTrustedReconnect &&
+        !ChatStateMachine.canTransition(existing.state, state)) {
+      _log.warning('拒绝非法会话状态迁移 ${existing.state.name} -> ${state.name}');
+      return;
+    }
+    final chat = ChatSummary(
+      chatId:
+          existing?.chatId ?? _privateChatId(identity!.deviceId, peerDeviceId),
+      peerDeviceId: peerDeviceId,
+      displayName: displayName,
+      state: state,
+      sessionId: sessionId,
+      lastMessageAt: existing?.lastMessageAt,
+    );
+    await _database.saveChat(chat);
+    await _reloadChats();
+  }
+
+  Future<void> _reloadChats() async => chats = await _database.loadChats();
+
+  Future<void> _setMessageStatus(String id, MessageStatus status) async {
+    await _database.updateMessageStatus(id, status);
+    messages = [
+      for (final message in messages)
+        if (message.messageId == id)
+          ChatMessage(
+            messageId: message.messageId,
+            chatId: message.chatId,
+            groupId: message.groupId,
+            senderDeviceId: message.senderDeviceId,
+            content: message.content,
+            timestamp: message.timestamp,
+            status: status,
+          )
+        else
+          message,
+    ];
+    notifyListeners();
+  }
+
+  DiscoveredPeer? _onlinePeer(String deviceId) => peers
+      .where((peer) => peer.deviceId == deviceId && peer.online)
+      .firstOrNull;
+
+  Future<void> _sendToAddress(String ip, ProtocolEnvelope envelope) =>
+      _transport.send(ip, NetworkConfig.chatPort, envelope);
+
+  static String _privateChatId(String a, String b) {
+    final ids = [a, b]..sort();
+    return 'private:${ids[0]}:${ids[1]}';
+  }
+
+  static String _notificationPreview(String content) {
+    final normalized = content.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.length <= 100) return normalized;
+    return '${normalized.substring(0, 100)}…';
+  }
+
+  String _friendlyError(Object error) {
+    if (error is ArgumentError) return error.message?.toString() ?? '输入无效';
+    return '操作失败：$error';
+  }
+
+  void clearError() {
+    errorMessage = null;
+    notifyListeners();
+  }
+
+  Future<void> showTestNotification() => _notifications.show(
+    identifier: 'neko-chat:test',
+    title: 'NekoChat 系统通知已启用',
+    body: '新的聊天邀请和消息会通过这里提醒你。',
+    onClick: () {},
+  );
+
+  void _fail(
+    String message,
+    Object error,
+    StackTrace stack, {
+    AppStage? keepStage,
+  }) {
+    _log.severe(message, error, stack);
+    errorMessage = message;
+    stage = keepStage ?? AppStage.error;
+  }
+
+  @override
+  void dispose() {
+    for (final timer in _chatRequestTimers.values) {
+      timer.cancel();
+    }
+    _chatRequestTimers.clear();
+    unawaited(_discovery?.stop());
+    unawaited(_transport.stop());
+    unawaited(_database.close());
+    unawaited(_notifications.dispose());
+    super.dispose();
+  }
+}
