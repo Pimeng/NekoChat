@@ -13,6 +13,7 @@ import 'package:uuid/uuid.dart';
 
 import '../core/config/network_config.dart';
 import '../core/database/app_database.dart';
+import '../core/files/content_hash.dart';
 import '../core/identity/database_key_provider.dart';
 import '../core/identity/identity_service.dart';
 import '../core/models/models.dart';
@@ -339,15 +340,18 @@ class AppController extends ChangeNotifier {
 
       final imageBytes = await Pasteboard.image;
       if (imageBytes == null || imageBytes.isEmpty) return false;
+      final contentHash = await sha256Bytes(imageBytes);
       final temporaryDirectory = await getTemporaryDirectory();
       final clipboardDirectory = Directory(
         p.join(temporaryDirectory.path, 'neko_chat_clipboard'),
       );
       await clipboardDirectory.create(recursive: true);
       final imageFile = File(
-        p.join(clipboardDirectory.path, '粘贴的图片_${_uuid.v4()}.png'),
+        p.join(clipboardDirectory.path, '$contentHash.png'),
       );
-      await imageFile.writeAsBytes(imageBytes, flush: true);
+      if (!await imageFile.exists()) {
+        await imageFile.writeAsBytes(imageBytes, flush: true);
+      }
       await sendFile(imageFile.path);
       return true;
     } on Object catch (error, stack) {
@@ -369,8 +373,18 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+    final fileHash = mimeType.startsWith('image/')
+        ? await sha256File(file)
+        : null;
     if (selectedGroupId != null) {
-      await _sendGroupFile(selectedGroupId!, file, fileSize);
+      await _sendGroupFile(
+        selectedGroupId!,
+        file,
+        fileSize,
+        mimeType,
+        fileHash,
+      );
       return;
     }
     final chat = chats
@@ -391,6 +405,8 @@ class AppController extends ChangeNotifier {
       chatId: chat.chatId,
       file: file,
       fileSize: fileSize,
+      mimeType: mimeType,
+      fileHash: fileHash,
     );
     await _database.saveMessage(message);
     messages = [...messages, message];
@@ -421,9 +437,10 @@ class AppController extends ChangeNotifier {
     required String chatId,
     required File file,
     required int fileSize,
+    required String mimeType,
+    required String? fileHash,
     String? groupId,
   }) {
-    final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
     return ChatMessage(
       messageId: _uuid.v4(),
       chatId: chatId,
@@ -442,6 +459,7 @@ class AppController extends ChangeNotifier {
       fileSize: fileSize,
       mimeType: mimeType,
       transferId: _uuid.v4(),
+      fileHash: fileHash,
     );
   }
 
@@ -456,6 +474,7 @@ class AppController extends ChangeNotifier {
         'fileName': message.fileName,
         'fileSize': message.fileSize,
         'mimeType': message.mimeType,
+        'fileHash': ?message.fileHash,
       };
 
   Future<void> retryFileDownload(ChatMessage message) async {
@@ -767,7 +786,13 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> _sendGroupFile(String groupId, File file, int fileSize) async {
+  Future<void> _sendGroupFile(
+    String groupId,
+    File file,
+    int fileSize,
+    String mimeType,
+    String? fileHash,
+  ) async {
     final members = await _database.loadGroupMembers(groupId);
     if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
     final recipients = members
@@ -780,6 +805,8 @@ class AppController extends ChangeNotifier {
       groupId: groupId,
       file: file,
       fileSize: fileSize,
+      mimeType: mimeType,
+      fileHash: fileHash,
     );
     await _database.saveMessage(message);
     messages = [...messages, message];
@@ -1142,6 +1169,7 @@ class AppController extends ChangeNotifier {
     final fileName = payload['fileName'];
     final fileSize = payload['fileSize'];
     final mimeType = payload['mimeType'];
+    final fileHash = payload['fileHash'];
     if (messageId is! String ||
         senderDeviceId is! String ||
         timestamp is! int ||
@@ -1152,7 +1180,9 @@ class AppController extends ChangeNotifier {
         fileSize is! int ||
         fileSize < 0 ||
         fileSize > NetworkConfig.maxFileSizeBytes ||
-        mimeType is! String) {
+        mimeType is! String ||
+        (fileHash != null && (fileHash is! String || !isSha256Hex(fileHash))) ||
+        (mimeType.startsWith('image/') && fileHash is! String)) {
       return null;
     }
     return ChatMessage(
@@ -1172,6 +1202,7 @@ class AppController extends ChangeNotifier {
       fileSize: fileSize,
       mimeType: mimeType,
       transferId: transferId,
+      fileHash: fileHash as String?,
     );
   }
 
@@ -1317,6 +1348,8 @@ class AppController extends ChangeNotifier {
         messageId: message.messageId,
         fileName: message.fileName!,
         expectedSize: message.fileSize!,
+        mimeType: message.mimeType,
+        contentHash: message.fileHash,
       );
       await _database.updateMessageAttachment(
         message.messageId,
@@ -1723,6 +1756,7 @@ class AppController extends ChangeNotifier {
             fileSize: message.fileSize,
             mimeType: message.mimeType,
             transferId: message.transferId,
+            fileHash: message.fileHash,
           )
         else
           message,

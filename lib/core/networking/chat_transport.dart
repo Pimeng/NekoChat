@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../config/network_config.dart';
+import '../files/content_hash.dart';
 import '../protocol/protocol.dart';
 
 class IncomingPacket {
@@ -34,6 +35,8 @@ abstract interface class ChatTransport {
     required String messageId,
     required String fileName,
     required int expectedSize,
+    String? mimeType,
+    String? contentHash,
   });
   Future<void> stop();
 }
@@ -239,16 +242,39 @@ class WebSocketChatTransport implements ChatTransport {
     required String messageId,
     required String fileName,
     required int expectedSize,
+    String? mimeType,
+    String? contentHash,
   }) async {
     if (expectedSize < 0 || expectedSize > NetworkConfig.maxFileSizeBytes) {
       throw StateError('文件大小无效');
     }
     final baseDirectory = await _downloadsDirectory();
-    final directory = Directory(p.join(baseDirectory.path, 'received_files'));
+    if (contentHash != null && !isSha256Hex(contentHash)) {
+      throw StateError('文件哈希无效');
+    }
+    final contentAddressed = contentHash != null;
+    final directory = Directory(
+      p.join(
+        baseDirectory.path,
+        contentAddressed ? 'received_images' : 'received_files',
+      ),
+    );
     await directory.create(recursive: true);
     final safeName = _safeFileName(fileName);
-    final destination = File(p.join(directory.path, '${messageId}_$safeName'));
-    final partial = File('${destination.path}.part');
+    final extension = mimeType == null ? null : extensionFromMime(mimeType);
+    final destination = File(
+      p.join(
+        directory.path,
+        contentAddressed
+            ? '$contentHash${extension == null ? '' : '.$extension'}'
+            : '${messageId}_$safeName',
+      ),
+    );
+    if (contentAddressed && await _matchesContent(destination, contentHash)) {
+      _log.info('复用已有图片 $contentHash');
+      return destination.path;
+    }
+    final partial = File('${destination.path}.$messageId.part');
     final client = HttpClient();
     try {
       final response = await _openFileResponse(
@@ -271,6 +297,9 @@ class WebSocketChatTransport implements ChatTransport {
       if (actualSize != expectedSize) {
         throw const HttpException('文件接收不完整');
       }
+      if (contentHash != null && await sha256File(partial) != contentHash) {
+        throw const HttpException('文件 SHA-256 与声明不一致');
+      }
       if (await destination.exists()) await destination.delete();
       await partial.rename(destination.path);
       _log.info('文件 $transferId 已保存到 ${destination.path}');
@@ -279,6 +308,11 @@ class WebSocketChatTransport implements ChatTransport {
       client.close(force: true);
       if (await partial.exists()) await partial.delete();
     }
+  }
+
+  Future<bool> _matchesContent(File file, String expectedHash) async {
+    if (!await file.exists()) return false;
+    return sha256File(file).then((hash) => hash == expectedHash);
   }
 
   Future<HttpClientResponse> _openFileResponse(

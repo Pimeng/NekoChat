@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:neko_chat/core/files/content_hash.dart';
 import 'package:neko_chat/core/networking/chat_transport.dart';
 import 'package:neko_chat/core/protocol/protocol.dart';
+import 'package:path/path.dart' as p;
 
 void main() {
   test('WebSocket 传输保留协议消息并提供实际来源地址', () async {
@@ -86,6 +88,64 @@ void main() {
         expectedSize: bytes.length,
       ),
       throwsA(isA<HttpException>()),
+    );
+  });
+
+  test('相同 SHA-256 的图片复用同一份本地文件', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-image-dedup-test-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final source = File('${directory.path}${Platform.pathSeparator}image.png');
+    await source.writeAsBytes(List<int>.generate(4096, (index) => index % 199));
+    final hash = await sha256File(source);
+    final downloads = Directory(
+      '${directory.path}${Platform.pathSeparator}downloads',
+    );
+    final transport = WebSocketChatTransport(
+      port: 0,
+      downloadsDirectory: () async => downloads,
+    );
+    await transport.start((_) {});
+    addTearDown(transport.stop);
+    await transport.offerFile(
+      transferId: 'image-transfer-1',
+      filePath: source.path,
+      allowedAddresses: {'127.0.0.1'},
+    );
+    await transport.authorizeFileDownload(
+      transferId: 'image-transfer-1',
+      remoteAddress: '127.0.0.1',
+    );
+
+    final firstPath = await transport.downloadFile(
+      ip: '127.0.0.1',
+      port: transport.listeningPort,
+      transferId: 'image-transfer-1',
+      messageId: 'image-message-1',
+      fileName: 'first.png',
+      expectedSize: await source.length(),
+      mimeType: 'image/png',
+      contentHash: hash,
+    );
+    final reusedPath = await transport.downloadFile(
+      ip: '127.0.0.1',
+      port: 1,
+      transferId: 'does-not-exist',
+      messageId: 'image-message-2',
+      fileName: 'second.png',
+      expectedSize: await source.length(),
+      mimeType: 'image/png',
+      contentHash: hash,
+    );
+
+    expect(reusedPath, firstPath);
+    expect(p.basename(firstPath), '$hash.png');
+    expect(
+      await Directory(
+        '${downloads.path}${Platform.pathSeparator}received_images',
+      ).list().where((entry) => entry is File).length,
+      1,
     );
   });
 }

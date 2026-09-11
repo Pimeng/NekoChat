@@ -122,6 +122,7 @@ class ChatMessage {
     this.fileSize,
     this.mimeType,
     this.transferId,
+    this.fileHash,
   });
   final String messageId;
   final String chatId;
@@ -136,6 +137,7 @@ class ChatMessage {
   final int? fileSize;
   final String? mimeType;
   final String? transferId;
+  final String? fileHash;
 }
 
 class ChatGroup {

@@ -29,7 +29,7 @@ class PlainSqliteBackend implements DatabaseBackend {
     return databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 2,
+        version: 3,
         onCreate: onCreate,
         onUpgrade: onUpgrade,
       ),
@@ -109,7 +109,8 @@ class AppDatabase {
         file_path TEXT,
         file_size INTEGER,
         mime_type TEXT,
-        transfer_id TEXT
+        transfer_id TEXT,
+        file_hash TEXT
       )
     ''');
     await db.execute(
@@ -161,6 +162,9 @@ class AppDatabase {
       await db.execute('ALTER TABLE messages ADD COLUMN file_size INTEGER');
       await db.execute('ALTER TABLE messages ADD COLUMN mime_type TEXT');
       await db.execute('ALTER TABLE messages ADD COLUMN transfer_id TEXT');
+    }
+    if (oldVersion < 3) {
+      await db.execute('ALTER TABLE messages ADD COLUMN file_hash TEXT');
     }
     _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
@@ -267,6 +271,7 @@ class AppDatabase {
       'file_size': message.fileSize,
       'mime_type': message.mimeType,
       'transfer_id': message.transferId,
+      'file_hash': message.fileHash,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     if (message.groupId == null) {
       await database.update(
@@ -331,6 +336,7 @@ class AppDatabase {
     fileSize: row['file_size'] as int?,
     mimeType: row['mime_type'] as String?,
     transferId: row['transfer_id'] as String?,
+    fileHash: row['file_hash'] as String?,
   );
 
   Future<List<ChatGroup>> loadGroups() async {

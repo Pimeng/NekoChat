@@ -65,6 +65,8 @@ void main() {
         fileSize: 12 * 1024 * 1024,
         mimeType: 'image/png',
         transferId: 'transfer-1',
+        fileHash:
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       ),
     );
     final group = ChatGroup(
@@ -108,6 +110,10 @@ void main() {
     expect(messages.last.fileSize, 12 * 1024 * 1024);
     expect(messages.last.mimeType, 'image/png');
     expect(messages.last.transferId, 'transfer-1');
+    expect(
+      messages.last.fileHash,
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
     expect((await reopened.loadGroups()).single.name, '一班');
     expect(await reopened.loadGroupMembers('group-1'), hasLength(2));
   });
