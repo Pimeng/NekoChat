@@ -72,16 +72,38 @@ class _MainShellState extends State<MainShell> {
               controller.trustedPeers[request.peerDeviceId] == null,
         )
         .toList();
-    final groups = controller.groups
-        .where(
-          (group) => query.isEmpty || group.name.toLowerCase().contains(query),
-        )
-        .toList();
+    final groups =
+        controller.groups
+            .where(
+              (group) =>
+                  query.isEmpty || group.name.toLowerCase().contains(query),
+            )
+            .toList()
+          ..sort((a, b) {
+            final aTime =
+                a.lastMessageAt?.millisecondsSinceEpoch ??
+                a.createdAt.millisecondsSinceEpoch;
+            final bTime =
+                b.lastMessageAt?.millisecondsSinceEpoch ??
+                b.createdAt.millisecondsSinceEpoch;
+            return bTime.compareTo(aTime);
+          });
     return ColoredBox(
       color: Theme.of(context).colorScheme.surface,
       child: Column(
         children: [
-          _IdentityHeader(identity: controller.identity!),
+          _IdentityHeader(
+            identity: controller.identity!,
+            unreadCount:
+                controller.chats.fold(
+                  0,
+                  (sum, chat) => sum + chat.unreadCount,
+                ) +
+                controller.groups.fold(
+                  0,
+                  (sum, group) => sum + group.unreadCount,
+                ),
+          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
             child: TextField(
@@ -170,10 +192,21 @@ class _MainShellState extends State<MainShell> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        group.ownerDeviceId == controller.identity!.deviceId
-                            ? '我创建的群聊'
-                            : '已加入',
+                        group.lastMessagePreview ??
+                            (group.ownerDeviceId ==
+                                    controller.identity!.deviceId
+                                ? '我创建的群聊'
+                                : '已加入'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
+                      trailing:
+                          group.unreadCount > 0 || group.lastMessageAt != null
+                          ? _ConversationMeta(
+                              time: group.lastMessageAt,
+                              unreadCount: group.unreadCount,
+                            )
+                          : null,
                       onTap: () => controller.selectGroup(group.groupId),
                     ),
               ],
@@ -228,6 +261,10 @@ class _MainShellState extends State<MainShell> {
           onRetryFile: controller.retryFileDownload,
           onRelocateFile: controller.relocateAttachment,
           missingHintFor: controller.attachmentMissingHint,
+          replyingTo: controller.replyingTo,
+          onCancelReply: controller.cancelReply,
+          onCopyMessage: controller.copyMessage,
+          onReplyMessage: controller.beginReply,
           actions: [
             PopupMenuButton<String>(
               tooltip: '会话操作',
@@ -289,6 +326,12 @@ class _MainShellState extends State<MainShell> {
           onRetryFile: controller.retryFileDownload,
           onRelocateFile: controller.relocateAttachment,
           missingHintFor: controller.attachmentMissingHint,
+          replyingTo: controller.replyingTo,
+          onCancelReply: controller.cancelReply,
+          onCopyMessage: controller.copyMessage,
+          onReplyMessage: controller.beginReply,
+          onMention: _insertMention,
+          onPickMentionMember: () => _pickMentionMember(controller),
           actions: [
             if (group.ownerDeviceId == controller.identity!.deviceId)
               IconButton(
@@ -354,6 +397,56 @@ class _MainShellState extends State<MainShell> {
     if (text.trim().isEmpty) return;
     _composer.clear();
     await controller.sendMessage(text);
+  }
+
+  /// 把“@昵称 ”插到输入框光标处。
+  void _insertMention(String name) {
+    final value = _composer.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final mention = '@$name ';
+    final updated = value.text.replaceRange(
+      selection.start,
+      selection.end,
+      mention,
+    );
+    _composer.value = value.copyWith(
+      text: updated,
+      selection: TextSelection.collapsed(
+        offset: selection.start + mention.length,
+      ),
+      composing: TextRange.empty,
+    );
+  }
+
+  Future<void> _pickMentionMember(AppController controller) async {
+    final groupId = controller.selectedGroupId;
+    if (groupId == null) return;
+    final members = await controller.groupMembers(groupId);
+    final candidates = members
+        .where((member) => member.deviceId != controller.identity!.deviceId)
+        .toList();
+    if (!mounted || candidates.isEmpty) return;
+    final selected = await showDialog<GroupMember>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('选择要 @ 的成员'),
+        children: [
+          for (final member in candidates)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(dialogContext, member),
+              child: ListTile(
+                leading: CircleAvatar(
+                  child: Text(_avatarText(member.displayName)),
+                ),
+                title: Text(member.displayName),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (selected != null) _insertMention(selected.displayName);
   }
 
   Future<void> _showCreateGroup(AppController controller) async {
@@ -575,8 +668,9 @@ class _MainShellState extends State<MainShell> {
 }
 
 class _IdentityHeader extends StatelessWidget {
-  const _IdentityHeader({required this.identity});
+  const _IdentityHeader({required this.identity, this.unreadCount = 0});
   final LocalIdentity identity;
+  final int unreadCount;
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.fromLTRB(18, 18, 14, 14),
@@ -613,11 +707,62 @@ class _IdentityHeader extends StatelessWidget {
           ),
         ),
         Tooltip(
-          message: '局域网发现已开启',
-          child: Icon(Icons.lan, color: Theme.of(context).colorScheme.primary),
+          message: unreadCount > 0 ? '有 $unreadCount 条未读消息' : '局域网发现已开启',
+          child: unreadCount > 0
+              ? _UnreadBadge(count: unreadCount)
+              : Icon(Icons.lan, color: Theme.of(context).colorScheme.primary),
         ),
       ],
     ),
+  );
+}
+
+/// 未读消息徽标，样式参考聊天软件的红色圆角计数。
+class _UnreadBadge extends StatelessWidget {
+  const _UnreadBadge({required this.count});
+  final int count;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    constraints: const BoxConstraints(minWidth: 22),
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.error,
+      borderRadius: BorderRadius.circular(11),
+    ),
+    child: Text(
+      count > 99 ? '99+' : '$count',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: Theme.of(context).colorScheme.onError,
+      ),
+    ),
+  );
+}
+
+/// 会话条目右侧的最近消息时间与未读徽标。
+class _ConversationMeta extends StatelessWidget {
+  const _ConversationMeta({required this.time, required this.unreadCount});
+  final DateTime? time;
+  final int unreadCount;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.end,
+    children: [
+      if (time != null)
+        Text(
+          _friendlyTime(time!),
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
+      if (unreadCount > 0) ...[
+        const SizedBox(height: 4),
+        _UnreadBadge(count: unreadCount),
+      ],
+    ],
   );
 }
 
@@ -731,7 +876,7 @@ class _UnifiedPeerTile extends StatelessWidget {
         ],
       ),
       subtitle: Text(
-        _unifiedPeerSubtitle(entry),
+        entry.chat?.lastMessagePreview ?? _unifiedPeerSubtitle(entry),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
@@ -739,6 +884,11 @@ class _UnifiedPeerTile extends StatelessWidget {
           ? const SizedBox.square(
               dimension: 16,
               child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : (chat?.unreadCount ?? 0) > 0 || chat?.lastMessageAt != null
+          ? _ConversationMeta(
+              time: chat?.lastMessageAt,
+              unreadCount: chat?.unreadCount ?? 0,
             )
           : Icon(
               chat?.state == ChatSessionState.active
@@ -885,6 +1035,12 @@ class _ConversationPane extends StatelessWidget {
     required this.onRelocateFile,
     required this.missingHintFor,
     required this.actions,
+    this.replyingTo,
+    this.onCancelReply,
+    this.onCopyMessage,
+    this.onReplyMessage,
+    this.onMention,
+    this.onPickMentionMember,
   });
   final String title;
   final String subtitle;
@@ -904,6 +1060,18 @@ class _ConversationPane extends StatelessWidget {
   final Future<void> Function(ChatMessage) onRelocateFile;
   final String Function(ChatMessage) missingHintFor;
   final List<Widget> actions;
+
+  /// 当前引用的消息，非空时输入框上方展示引用横幅。
+  final ChatMessage? replyingTo;
+  final VoidCallback? onCancelReply;
+  final Future<void> Function(ChatMessage)? onCopyMessage;
+  final void Function(ChatMessage)? onReplyMessage;
+
+  /// 右键“@TA”时把昵称插进输入框。
+  final void Function(String name)? onMention;
+
+  /// 群聊里点击按钮选择要 @ 的成员。
+  final Future<void> Function()? onPickMentionMember;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -965,10 +1133,15 @@ class _ConversationPane extends StatelessWidget {
                 itemBuilder: (context, reverseIndex) {
                   final message = messages[messages.length - 1 - reverseIndex];
                   final mine = message.senderDeviceId == localDeviceId;
+                  final mentioned = message.mentionsDevice(localDeviceId);
                   return _MessageBubble(
                     message: message,
                     mine: mine,
                     senderName: peerName(message.senderDeviceId),
+                    mentioned: mentioned,
+                    replySenderName: message.replyToSenderId == null
+                        ? null
+                        : peerName(message.replyToSenderId!),
                     missingHint: missingHintFor(message),
                     onOpen: onOpenAttachment,
                     onOpenFolder: onOpenAttachmentFolder,
@@ -976,34 +1149,128 @@ class _ConversationPane extends StatelessWidget {
                     onReject: onRejectFile,
                     onRetry: onRetryFile,
                     onRelocate: onRelocateFile,
+                    onReply: onReplyMessage == null
+                        ? null
+                        : () => onReplyMessage!(message),
+                    onCopy: onCopyMessage == null
+                        ? null
+                        : () => onCopyMessage!(message),
+                    onMention: message.senderDeviceId == localDeviceId
+                        ? null
+                        : onMention == null
+                        ? null
+                        : () => onMention!(peerName(message.senderDeviceId)),
                   );
                 },
               ),
       ),
       Container(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 18),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
         color: Theme.of(context).colorScheme.surface,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            IconButton(
-              tooltip: '发送图片或文件',
-              onPressed: enabled ? onAttach : null,
-              icon: const Icon(Icons.attach_file),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: MessageComposer(
-                controller: composer,
-                enabled: enabled,
-                onSend: onSend,
-                onPasteAttachments: onPasteAttachments,
+            if (replyingTo != null)
+              _ReplyBanner(
+                senderName: replyingTo!.senderDeviceId == localDeviceId
+                    ? '我'
+                    : peerName(replyingTo!.senderDeviceId),
+                preview: AppController.replyPreview(replyingTo!),
+                onCancel: onCancelReply,
               ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                IconButton(
+                  tooltip: '发送图片或文件',
+                  onPressed: enabled ? onAttach : null,
+                  icon: const Icon(Icons.attach_file),
+                ),
+                if (onPickMentionMember != null)
+                  IconButton(
+                    tooltip: '@ 群成员',
+                    onPressed: enabled ? onPickMentionMember : null,
+                    icon: const Icon(Icons.alternate_email),
+                  ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: MessageComposer(
+                    controller: composer,
+                    enabled: enabled,
+                    onSend: onSend,
+                    onPasteAttachments: onPasteAttachments,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
     ],
+  );
+}
+
+class _ReplyBanner extends StatelessWidget {
+  const _ReplyBanner({
+    required this.senderName,
+    required this.preview,
+    this.onCancel,
+  });
+
+  final String senderName;
+  final String preview;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 8),
+    padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(10),
+      border: Border(
+        left: BorderSide(
+          color: Theme.of(context).colorScheme.primary,
+          width: 3,
+        ),
+      ),
+    ),
+    child: Row(
+      children: [
+        Icon(
+          Icons.reply,
+          size: 18,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '引用 $senderName',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+              Text(
+                preview,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          tooltip: '取消引用',
+          onPressed: onCancel,
+          icon: const Icon(Icons.close, size: 18),
+        ),
+      ],
+    ),
   );
 }
 
@@ -1019,6 +1286,11 @@ class _MessageBubble extends StatelessWidget {
     required this.onReject,
     required this.onRetry,
     required this.onRelocate,
+    this.mentioned = false,
+    this.replySenderName,
+    this.onReply,
+    this.onCopy,
+    this.onMention,
   });
   final ChatMessage message;
   final bool mine;
@@ -1031,73 +1303,120 @@ class _MessageBubble extends StatelessWidget {
   final Future<void> Function(ChatMessage) onRetry;
   final Future<void> Function(ChatMessage) onRelocate;
 
+  /// 本条消息是否 @ 了本机用户。
+  final bool mentioned;
+
+  /// 引用块显示的发送者昵称，消息没有引用时为 null。
+  final String? replySenderName;
+  final VoidCallback? onReply;
+  final Future<void> Function()? onCopy;
+  final VoidCallback? onMention;
+
   @override
   Widget build(BuildContext context) => Align(
     alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-    child: Container(
-      constraints: const BoxConstraints(maxWidth: 560),
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: mine
-            ? Theme.of(context).colorScheme.primaryContainer
-            : Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: mine ? null : Border.all(color: Theme.of(context).dividerColor),
-      ),
-      child: Column(
-        crossAxisAlignment: mine
-            ? CrossAxisAlignment.end
-            : CrossAxisAlignment.start,
-        children: [
-          if (!mine)
-            Text(
-              senderName,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-            ),
-          if (message.kind == MessageKind.text)
-            SelectionArea(
-              child: Text(
-                message.content,
-                textAlign: mine ? TextAlign.right : TextAlign.left,
-              ),
-            )
-          else
-            _buildAttachment(context),
-          const SizedBox(height: 4),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _time(message.timestamp),
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-              if (mine) ...[
-                const SizedBox(width: 5),
-                Icon(
-                  _statusIcon(message.status),
-                  size: 13,
-                  color:
-                      message.status == MessageStatus.failed ||
-                          message.status == MessageStatus.rejected
-                      ? Theme.of(context).colorScheme.error
-                      : null,
-                ),
-                if (message.kind != MessageKind.text) ...[
-                  const SizedBox(width: 4),
+    child: GestureDetector(
+      onSecondaryTapDown: (details) =>
+          _showContextMenu(context, details.globalPosition),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 560),
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: mine
+              ? Theme.of(context).colorScheme.primaryContainer
+              : Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: mentioned
+                ? Theme.of(context).colorScheme.error
+                : mine
+                ? Colors.transparent
+                : Theme.of(context).dividerColor,
+            width: mentioned ? 1.6 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: mine
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
+          children: [
+            if (!mine)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   Text(
-                    _statusLabel(message.status, mine: mine),
-                    style: Theme.of(context).textTheme.labelSmall,
+                    senderName,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
+                  if (mentioned) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.errorContainer,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        '@我',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Theme.of(context).colorScheme.onErrorContainer,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            if (message.isReply) _buildQuoted(context),
+            if (message.kind == MessageKind.text)
+              SelectionArea(
+                child: Text(
+                  message.content,
+                  textAlign: mine ? TextAlign.right : TextAlign.left,
+                ),
+              )
+            else
+              _buildAttachment(context),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _time(message.timestamp),
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+                if (mine) ...[
+                  const SizedBox(width: 5),
+                  Icon(
+                    _statusIcon(message.status),
+                    size: 13,
+                    color:
+                        message.status == MessageStatus.failed ||
+                            message.status == MessageStatus.rejected
+                        ? Theme.of(context).colorScheme.error
+                        : null,
+                  ),
+                  if (message.kind != MessageKind.text) ...[
+                    const SizedBox(width: 4),
+                    Text(
+                      _statusLabel(message.status, mine: mine),
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                  ],
                 ],
               ],
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     ),
   );
@@ -1119,21 +1438,17 @@ class _MessageBubble extends StatelessWidget {
             : CrossAxisAlignment.start,
         children: [
           if (message.kind == MessageKind.image && hasLocalFile)
-            GestureDetector(
-              onSecondaryTapDown: (details) =>
-                  _showImageMenu(context, details.globalPosition),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(9),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxWidth: 360,
-                    maxHeight: 360,
-                  ),
-                  child: Image.file(
-                    File(path),
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                  ),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(9),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: 360,
+                  maxHeight: 360,
+                ),
+                child: Image.file(
+                  File(path),
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 ),
               ),
             ),
@@ -1249,7 +1564,49 @@ class _MessageBubble extends StatelessWidget {
     );
   }
 
-  Future<void> _showImageMenu(BuildContext context, Offset position) async {
+  /// 引用块：展示被引用消息的发送者与摘要。
+  Widget _buildQuoted(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 6),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest
+          .withValues(alpha: .7),
+      borderRadius: BorderRadius.circular(8),
+      border: Border(
+        left: BorderSide(
+          color: Theme.of(context).colorScheme.primary,
+          width: 3,
+        ),
+      ),
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          replySenderName ?? '被引用的消息',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+        ),
+        Text(
+          message.replyToPreview ?? '',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    ),
+  );
+
+  /// 消息右键菜单：复制、引用、@ 以及附件打开操作。
+  Future<void> _showContextMenu(BuildContext context, Offset position) async {
+    final path = message.filePath;
+    final hasLocalFile = path != null && File(path).existsSync();
+    final isImage = message.kind == MessageKind.image;
+    final isFile = message.kind == MessageKind.file;
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     final localPosition = overlay.globalToLocal(position);
@@ -1259,25 +1616,69 @@ class _MessageBubble extends StatelessWidget {
         Rect.fromLTWH(localPosition.dx, localPosition.dy, 0, 0),
         Offset.zero & overlay.size,
       ),
-      items: const [
+      items: [
         PopupMenuItem(
-          value: 'open',
+          value: 'copy',
+          enabled: onCopy != null,
           child: ListTile(
-            leading: Icon(Icons.open_in_new),
-            title: Text('打开图片'),
+            leading: const Icon(Icons.copy),
+            title: Text(message.kind == MessageKind.text ? '复制' : '复制文件路径'),
           ),
         ),
         PopupMenuItem(
-          value: 'folder',
-          child: ListTile(
-            leading: Icon(Icons.folder_open),
-            title: Text('打开所在文件夹'),
+          value: 'reply',
+          enabled: onReply != null,
+          child: const ListTile(
+            leading: Icon(Icons.reply),
+            title: Text('引用回复'),
           ),
         ),
+        if (onMention != null)
+          PopupMenuItem(
+            value: 'mention',
+            child: ListTile(
+              leading: const Icon(Icons.alternate_email),
+              title: Text('@$senderName'),
+            ),
+          ),
+        if (isImage && hasLocalFile)
+          const PopupMenuItem(
+            value: 'open',
+            child: ListTile(
+              leading: Icon(Icons.open_in_new),
+              title: Text('打开图片'),
+            ),
+          ),
+        if (isFile && hasLocalFile)
+          const PopupMenuItem(
+            value: 'open',
+            child: ListTile(
+              leading: Icon(Icons.open_in_new),
+              title: Text('打开文件'),
+            ),
+          ),
+        if (hasLocalFile)
+          const PopupMenuItem(
+            value: 'folder',
+            child: ListTile(
+              leading: Icon(Icons.folder_open),
+              title: Text('打开所在文件夹'),
+            ),
+          ),
       ],
     );
-    if (selection == 'open') await onOpen(message);
-    if (selection == 'folder') await onOpenFolder(message);
+    switch (selection) {
+      case 'copy':
+        await onCopy?.call();
+      case 'reply':
+        onReply?.call();
+      case 'mention':
+        onMention?.call();
+      case 'open':
+        await onOpen(message);
+      case 'folder':
+        await onOpenFolder(message);
+    }
   }
 }
 
@@ -1444,6 +1845,16 @@ String _avatarText(String name) =>
 String _machine(String ip) => '${ip.split('.').last}号机';
 String _time(DateTime value) =>
     '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+
+/// 列表里展示的简短时间：今天显示时分，否则显示月/日。
+String _friendlyTime(DateTime value) {
+  final now = DateTime.now();
+  final sameDay =
+      value.year == now.year &&
+      value.month == now.month &&
+      value.day == now.day;
+  return sameDay ? _time(value) : '${value.month}/${value.day}';
+}
 
 IconData _statusIcon(MessageStatus status) => switch (status) {
   MessageStatus.pending => Icons.schedule,

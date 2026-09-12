@@ -18,6 +18,9 @@ enum MessageType {
   groupMessage('group_message'),
   groupFileOffer('group_file_offer'),
   groupUpdate('group_update'),
+  groupHistoryRequest('group_history_request'),
+  groupHistoryResponse('group_history_response'),
+  groupMembersRequest('group_members_request'),
   error('error');
 
   const MessageType(this.wireName);
@@ -97,6 +100,26 @@ bool isValidGroupName(String value) {
 /// 入站文本消息必须非空且不超过 [NetworkConfig.maxTextMessageLength]。
 bool isValidTextContent(String value) =>
     value.isNotEmpty && value.length <= NetworkConfig.maxTextMessageLength;
+
+/// 引用摘要可以为空，但长度不能超过 [NetworkConfig.maxReplyPreviewLength]。
+bool isValidReplyPreview(String value) =>
+    value.length <= NetworkConfig.maxReplyPreviewLength;
+
+/// 入站消息 ID、设备号等标识符必须非空且不过长。
+bool isValidIdentifier(String value) => value.isNotEmpty && value.length <= 128;
+
+/// 解析 @ 提及的设备号列表，过滤非法项并限制总数量。
+List<String> parseMentions(Object? value) {
+  if (value is! List) return const [];
+  final mentions = <String>[];
+  for (final item in value) {
+    if (item is! String || item.isEmpty || item.length > 128) continue;
+    if (mentions.contains(item)) continue;
+    mentions.add(item);
+    if (mentions.length >= NetworkConfig.maxMentionCount) break;
+  }
+  return mentions;
+}
 
 String verificationCode({
   required String requestId,

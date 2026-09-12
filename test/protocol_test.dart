@@ -53,6 +53,25 @@ void main() {
       expect(isValidTextContent('a' * 10000), isTrue);
       expect(isValidTextContent('a' * 10001), isFalse);
     });
+
+    test('引用摘要长度受限', () {
+      expect(isValidReplyPreview(''), isTrue);
+      expect(isValidReplyPreview('a' * 200), isTrue);
+      expect(isValidReplyPreview('a' * 201), isFalse);
+    });
+
+    test('标识符非空且不过长', () {
+      expect(isValidIdentifier('device-1'), isTrue);
+      expect(isValidIdentifier(''), isFalse);
+      expect(isValidIdentifier('a' * 128), isTrue);
+      expect(isValidIdentifier('a' * 129), isFalse);
+    });
+
+    test('@ 提及会过滤非法项并去重', () {
+      expect(parseMentions(['a', 'b', 'a', 1, '', 'c']), ['a', 'b', 'c']);
+      expect(parseMentions('not-a-list'), isEmpty);
+      expect(parseMentions(null), isEmpty);
+    });
   });
 
   group('verificationCode', () {

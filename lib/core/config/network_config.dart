@@ -14,6 +14,14 @@ abstract final class NetworkConfig {
   static const int maxDisplayNameLength = 32;
   static const int maxGroupNameLength = 40;
   static const int maxTextMessageLength = 10000;
+  static const int maxReplyPreviewLength = 200;
+  static const int maxMentionCount = 64;
+
+  /// 断线重连时一次最多补发的消息条数。
+  static const int maxHistoryBatchSize = 300;
+
+  /// 重连补发的最大时间跨度，避免一次同步过多历史。
+  static const Duration historySyncWindow = Duration(days: 3);
 
   static bool requiresFileAcceptance(int fileSize) =>
       fileSize >= largeFileThresholdBytes;

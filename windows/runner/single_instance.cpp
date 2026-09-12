@@ -15,7 +15,7 @@ constexpr const wchar_t kMutexName[] = L"Local\\NekoChat.SingleInstance";
 // Window class used by the Flutter Windows runner and the title passed to
 // Win32Window::Create() from main.cpp.
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
-constexpr const wchar_t kWindowTitle[] = L"neko_chat";
+constexpr const wchar_t kWindowTitle[] = L"NekoChat";
 
 // Kept alive for the lifetime of the process so the mutex stays owned by the
 // primary instance.

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:logging/logging.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
@@ -83,6 +84,12 @@ class AppController extends ChangeNotifier {
   String? selectedGroupId;
   List<ChatMessage> messages = [];
 
+  /// 当前正在引用的消息。存在时下一条消息会带上引用信息，发送后自动清空。
+  ChatMessage? replyingTo;
+
+  /// 本次上线后已经触发过群历史补发的设备，避免重复请求。
+  final Set<String> _historySyncedDevices = {};
+
   Future<void> initialize() async {
     try {
       stage = await _keyProvider.hasExistingKey()
@@ -137,10 +144,7 @@ class AppController extends ChangeNotifier {
     _discovery = _discoveryFactory(
       identity: localIdentity,
       trustLookup: (id) => trustedPeers[id],
-      onPeersChanged: (value) {
-        peers = value;
-        notifyListeners();
-      },
+      onPeersChanged: _handlePeersChanged,
     );
     await _discovery!.start();
     errorMessage = null;
@@ -280,6 +284,8 @@ class AppController extends ChangeNotifier {
   Future<void> selectChat(String chatId) async {
     selectedGroupId = null;
     selectedChatId = chatId;
+    replyingTo = null;
+    await _clearUnread(chatId: chatId);
     messages = await _database.loadMessages(chatId);
     notifyListeners();
   }
@@ -299,6 +305,7 @@ class AppController extends ChangeNotifier {
         chat.sessionId == null) {
       return;
     }
+    final reply = replyingTo;
     final message = ChatMessage(
       messageId: _uuid.v4(),
       chatId: chat.chatId,
@@ -306,9 +313,14 @@ class AppController extends ChangeNotifier {
       content: normalized,
       timestamp: DateTime.now(),
       status: MessageStatus.pending,
+      replyToMessageId: reply?.messageId,
+      replyToSenderId: reply?.senderDeviceId,
+      replyToPreview: reply == null ? null : replyPreview(reply),
     );
+    replyingTo = null;
     await _database.saveMessage(message);
     messages = [...messages, message];
+    await _reloadChats();
     notifyListeners();
     final peer = _onlinePeer(chat.peerDeviceId);
     if (peer == null) {
@@ -327,6 +339,7 @@ class AppController extends ChangeNotifier {
             'senderDeviceId': identity!.deviceId,
             'timestamp': message.timestamp.millisecondsSinceEpoch,
             'content': normalized,
+            ..._replyPayload(reply),
           },
         ),
       );
@@ -335,6 +348,16 @@ class AppController extends ChangeNotifier {
       _log.warning('消息发送失败', error, stack);
       await _setMessageStatus(message.messageId, MessageStatus.failed);
     }
+  }
+
+  /// 把被引用消息的元数据放进协议载荷；没有引用时返回空表。
+  Map<String, dynamic> _replyPayload(ChatMessage? source) {
+    if (source == null) return const {};
+    return {
+      'replyToMessageId': source.messageId,
+      'replyToSenderId': source.senderDeviceId,
+      'replyToPreview': replyPreview(source),
+    };
   }
 
   Future<void> pickAndSendFile() async {
@@ -429,6 +452,7 @@ class AppController extends ChangeNotifier {
       mimeType: mimeType,
       fileHash: fileHash,
     );
+    replyingTo = null;
     await _database.saveMessage(message);
     messages = [...messages, message];
     notifyListeners();
@@ -462,6 +486,7 @@ class AppController extends ChangeNotifier {
     required String? fileHash,
     String? groupId,
   }) {
+    final reply = replyingTo;
     return ChatMessage(
       messageId: _uuid.v4(),
       chatId: chatId,
@@ -481,6 +506,9 @@ class AppController extends ChangeNotifier {
       mimeType: mimeType,
       transferId: _uuid.v4(),
       fileHash: fileHash,
+      replyToMessageId: reply?.messageId,
+      replyToSenderId: reply?.senderDeviceId,
+      replyToPreview: reply == null ? null : replyPreview(reply),
     );
   }
 
@@ -496,6 +524,9 @@ class AppController extends ChangeNotifier {
         'fileSize': message.fileSize,
         'mimeType': message.mimeType,
         'fileHash': ?message.fileHash,
+        'replyToMessageId': ?message.replyToMessageId,
+        'replyToSenderId': ?message.replyToSenderId,
+        'replyToPreview': ?message.replyToPreview,
       };
 
   Future<void> retryFileDownload(ChatMessage message) async {
@@ -784,8 +815,73 @@ class AppController extends ChangeNotifier {
   Future<void> selectGroup(String groupId) async {
     selectedChatId = null;
     selectedGroupId = groupId;
+    replyingTo = null;
+    await _clearUnread(groupId: groupId);
     messages = await _database.loadMessages('group:$groupId');
     notifyListeners();
+  }
+
+  /// 开始引用一条消息，下一条发出的消息会带上引用。再次点击可取消。
+  void beginReply(ChatMessage message) {
+    replyingTo = identical(replyingTo, message) ? null : message;
+    notifyListeners();
+  }
+
+  void cancelReply() {
+    if (replyingTo == null) return;
+    replyingTo = null;
+    notifyListeners();
+  }
+
+  /// 复制一条消息：文本复制内容，附件复制本地路径（没有则复制文件名）。
+  Future<void> copyMessage(ChatMessage message) async {
+    final isText = message.kind == MessageKind.text;
+    final text = isText
+        ? message.content
+        : (message.filePath ?? message.fileName ?? message.content);
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    _showTopRightMessage(isText ? '已复制消息内容' : '已复制文件路径', icon: Icons.copy);
+  }
+
+  /// 引用框里展示的摘要文本。
+  static String replyPreview(ChatMessage message) {
+    final raw = message.kind == MessageKind.text
+        ? message.content
+        : (message.fileName ?? message.content);
+    final normalized = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.length <= NetworkConfig.maxReplyPreviewLength) {
+      return normalized;
+    }
+    return '${normalized.substring(0, NetworkConfig.maxReplyPreviewLength)}…';
+  }
+
+  /// 由控制器统一维护未读，界面只读取即可。
+  ///
+  /// 用数据库原子自增而不是「读内存再 +1」，避免多条消息几乎同时到达时
+  /// 两次读改写互相覆盖导致少计。
+  Future<void> _markUnread({String? chatId, String? groupId}) async {
+    if (chatId != null) {
+      await _database.incrementChatUnread(chatId);
+    } else if (groupId != null) {
+      await _database.incrementGroupUnread(groupId);
+    }
+  }
+
+  Future<void> _clearUnread({String? chatId, String? groupId}) async {
+    if (chatId != null) {
+      final chat = chats.where((value) => value.chatId == chatId).firstOrNull;
+      if (chat == null || chat.unreadCount == 0) return;
+      await _database.setChatUnread(chatId, 0);
+      await _reloadChats();
+    } else if (groupId != null) {
+      final group = groups
+          .where((value) => value.groupId == groupId)
+          .firstOrNull;
+      if (group == null || group.unreadCount == 0) return;
+      await _database.setGroupUnread(groupId, 0);
+      await _reloadGroups();
+    }
   }
 
   Future<List<GroupMember>> groupMembers(String groupId) =>
@@ -850,6 +946,8 @@ class AppController extends ChangeNotifier {
   Future<void> _sendGroupMessage(String groupId, String content) async {
     final members = await _database.loadGroupMembers(groupId);
     if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
+    final reply = replyingTo;
+    final mentions = _resolveMentions(content, members);
     final message = ChatMessage(
       messageId: _uuid.v4(),
       chatId: 'group:$groupId',
@@ -858,9 +956,15 @@ class AppController extends ChangeNotifier {
       content: content,
       timestamp: DateTime.now(),
       status: MessageStatus.sent,
+      mentions: mentions,
+      replyToMessageId: reply?.messageId,
+      replyToSenderId: reply?.senderDeviceId,
+      replyToPreview: reply == null ? null : replyPreview(reply),
     );
+    replyingTo = null;
     await _database.saveMessage(message);
     messages = [...messages, message];
+    await _reloadGroups();
     notifyListeners();
     for (final member in members.where(
       (value) => value.deviceId != identity!.deviceId,
@@ -879,6 +983,8 @@ class AppController extends ChangeNotifier {
               'senderDeviceId': identity!.deviceId,
               'timestamp': message.timestamp.millisecondsSinceEpoch,
               'content': content,
+              if (mentions.isNotEmpty) 'mentions': mentions,
+              ..._replyPayload(reply),
             },
           ),
         );
@@ -886,6 +992,19 @@ class AppController extends ChangeNotifier {
         _log.warning('向群成员 ${member.deviceId} 发送失败', error, stack);
       }
     }
+  }
+
+  /// 按群成员昵称解析消息中的 @ 提及，返回被提及的成员设备号。
+  List<String> _resolveMentions(String content, List<GroupMember> members) {
+    final mentions = <String>[];
+    for (final member in members) {
+      if (member.deviceId == identity!.deviceId) continue;
+      if (mentions.length >= NetworkConfig.maxMentionCount) break;
+      if (content.contains('@${member.displayName}')) {
+        mentions.add(member.deviceId);
+      }
+    }
+    return mentions;
   }
 
   Future<void> _sendGroupFile(
@@ -910,8 +1029,10 @@ class AppController extends ChangeNotifier {
       mimeType: mimeType,
       fileHash: fileHash,
     );
+    replyingTo = null;
     await _database.saveMessage(message);
     messages = [...messages, message];
+    await _reloadGroups();
     notifyListeners();
     if (recipients.isEmpty) {
       await _setMessageStatus(message.messageId, MessageStatus.failed);
@@ -980,6 +1101,23 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  /// Owner 把最新成员名单广播给所有成员。
+  Future<void> _broadcastGroupMembers(String groupId) async {
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null || group.ownerDeviceId != identity!.deviceId) return;
+    final members = await _database.loadGroupMembers(groupId);
+    await _fanOutGroupControl(groupId, members, 'members', {
+      'members': [
+        for (final member in members)
+          {
+            'deviceId': member.deviceId,
+            'displayName': member.displayName,
+            'role': member.role.name,
+          },
+      ],
+    });
+  }
+
   Future<void> _onPacket(IncomingPacket packet) async {
     try {
       switch (packet.envelope.type) {
@@ -1009,6 +1147,12 @@ class AppController extends ChangeNotifier {
           await _receiveGroupFileOffer(packet);
         case MessageType.groupUpdate:
           await _receiveGroupUpdate(packet);
+        case MessageType.groupHistoryRequest:
+          await _receiveGroupHistoryRequest(packet);
+        case MessageType.groupHistoryResponse:
+          await _receiveGroupHistoryResponse(packet);
+        case MessageType.groupMembersRequest:
+          await _receiveGroupMembersRequest(packet);
         case MessageType.announce || MessageType.hello || MessageType.error:
           break;
       }
@@ -1203,6 +1347,7 @@ class AppController extends ChangeNotifier {
       _log.warning('忽略未知 sessionId=$sessionId 的消息');
       return;
     }
+    final reply = _incomingReply(payload);
     final message = ChatMessage(
       messageId: messageId,
       chatId: chat.chatId,
@@ -1210,9 +1355,18 @@ class AppController extends ChangeNotifier {
       content: content,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
       status: MessageStatus.sent,
+      replyToMessageId: reply.$1,
+      replyToSenderId: reply.$2,
+      replyToPreview: reply.$3,
     );
+    final viewing =
+        _notifications.appIsFocused && selectedChatId == chat.chatId;
     await _database.saveMessage(message);
-    if (selectedChatId == chat.chatId) messages = [...messages, message];
+    if (viewing) {
+      messages = [...messages, message];
+    } else {
+      await _markUnread(chatId: chat.chatId);
+    }
     await _reloadChats();
     notifyListeners();
     if (shouldNotifyForConversation(
@@ -1227,6 +1381,22 @@ class AppController extends ChangeNotifier {
         onClick: () => selectChat(chat.chatId),
       );
     }
+  }
+
+  /// 解析入站消息的引用字段，非法时返回全空。
+  (String?, String?, String?) _incomingReply(Map<String, dynamic> payload) {
+    final id = payload['replyToMessageId'];
+    final sender = payload['replyToSenderId'];
+    final preview = payload['replyToPreview'];
+    if (id is! String || sender is! String || preview is! String) {
+      return (null, null, null);
+    }
+    if (!isValidIdentifier(id) ||
+        !isValidIdentifier(sender) ||
+        !isValidReplyPreview(preview)) {
+      return (null, null, null);
+    }
+    return (id, sender, preview);
   }
 
   Future<void> _receiveFileOffer(IncomingPacket packet) async {
@@ -1250,7 +1420,13 @@ class AppController extends ChangeNotifier {
       return;
     }
     await _database.saveMessage(message);
-    if (selectedChatId == chat.chatId) messages = [...messages, message];
+    final viewing =
+        _notifications.appIsFocused && selectedChatId == chat.chatId;
+    if (viewing) {
+      messages = [...messages, message];
+    } else {
+      await _markUnread(chatId: chat.chatId);
+    }
     await _reloadChats();
     notifyListeners();
     await _notifyIncomingFile(message, chat.displayName, chat.chatId);
@@ -1290,6 +1466,7 @@ class AppController extends ChangeNotifier {
         (fileHash != null && (fileHash is! String || !isSha256Hex(fileHash)))) {
       return null;
     }
+    final reply = _incomingReply(payload);
     return ChatMessage(
       messageId: messageId,
       chatId: chatId,
@@ -1308,6 +1485,9 @@ class AppController extends ChangeNotifier {
       mimeType: mimeType,
       transferId: transferId,
       fileHash: fileHash as String?,
+      replyToMessageId: reply.$1,
+      replyToSenderId: reply.$2,
+      replyToPreview: reply.$3,
     );
   }
 
@@ -1585,6 +1765,8 @@ class AppController extends ChangeNotifier {
       ),
     );
     notifyListeners();
+    // 新成员加入后把完整名单广播给所有人，否则成员之间彼此不可见。
+    await _broadcastGroupMembers(pending.groupId);
   }
 
   Future<void> _receiveGroupMessage(IncomingPacket packet) async {
@@ -1606,6 +1788,8 @@ class AppController extends ChangeNotifier {
     if (group == null || trustedPeers[senderDeviceId]?.blocked == true) return;
     final members = await _database.loadGroupMembers(groupId);
     if (!members.any((member) => member.deviceId == senderDeviceId)) return;
+    final mentions = parseMentions(payload['mentions']);
+    final reply = _incomingReply(payload);
     final message = ChatMessage(
       messageId: messageId,
       chatId: 'group:$groupId',
@@ -1614,25 +1798,47 @@ class AppController extends ChangeNotifier {
       content: content,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
       status: MessageStatus.sent,
+      mentions: mentions,
+      replyToMessageId: reply.$1,
+      replyToSenderId: reply.$2,
+      replyToPreview: reply.$3,
     );
+    final mentionMe = mentions.contains(identity!.deviceId);
+    final viewing = _notifications.appIsFocused && selectedGroupId == groupId;
     await _database.saveMessage(message);
-    if (selectedGroupId == groupId) messages = [...messages, message];
+    if (viewing) {
+      messages = [...messages, message];
+    } else {
+      await _markUnread(groupId: groupId);
+    }
+    await _reloadGroups();
     notifyListeners();
-    if (shouldNotifyForConversation(
-      appIsFocused: _notifications.appIsFocused,
-      selectedConversationId: selectedGroupId == null
-          ? selectedChatId
-          : 'group:$selectedGroupId',
-      incomingConversationId: 'group:$groupId',
-    )) {
-      final senderName = members
-          .where((member) => member.deviceId == senderDeviceId)
-          .firstOrNull
-          ?.displayName;
+    final senderName =
+        members
+            .where((member) => member.deviceId == senderDeviceId)
+            .firstOrNull
+            ?.displayName ??
+        '群成员';
+    if (mentionMe) {
+      _showTopRightMessage(
+        '$senderName 在“${group.name}”里 @ 了你',
+        icon: Icons.alternate_email,
+      );
+    }
+    final shouldNotify = mentionMe
+        ? !viewing
+        : shouldNotifyForConversation(
+            appIsFocused: _notifications.appIsFocused,
+            selectedConversationId: selectedGroupId == null
+                ? selectedChatId
+                : 'group:$selectedGroupId',
+            incomingConversationId: 'group:$groupId',
+          );
+    if (shouldNotify) {
       await _notifications.show(
         identifier: 'group-message:$messageId',
-        title: group.name,
-        body: '${senderName ?? '群成员'}：${_notificationPreview(content)}',
+        title: mentionMe ? '${group.name} · @你' : group.name,
+        body: '$senderName：${_notificationPreview(content)}',
         onClick: () => selectGroup(groupId),
       );
     }
@@ -1657,7 +1863,13 @@ class AppController extends ChangeNotifier {
       return;
     }
     await _database.saveMessage(message);
-    if (selectedGroupId == groupId) messages = [...messages, message];
+    final viewing = _notifications.appIsFocused && selectedGroupId == groupId;
+    if (viewing) {
+      messages = [...messages, message];
+    } else {
+      await _markUnread(groupId: groupId);
+    }
+    await _reloadGroups();
     notifyListeners();
     await _notifyIncomingFile(message, group.name, 'group:$groupId');
     if (message.status == MessageStatus.pending) {
@@ -1727,6 +1939,47 @@ class AppController extends ChangeNotifier {
         final target = payload['targetDeviceId'];
         if (target != senderDeviceId) return;
         await _database.removeGroupMember(groupId, senderDeviceId);
+      case 'members':
+        if (senderDeviceId != group.ownerDeviceId) return;
+        final rawMembers = payload['members'];
+        if (rawMembers is! List) return;
+        final incoming = <GroupMember>[];
+        for (final raw in rawMembers.whereType<Map>()) {
+          final map = Map<String, dynamic>.from(raw);
+          final memberId = map['deviceId'];
+          final memberName = map['displayName'];
+          final memberRole = map['role'];
+          if (memberId is! String ||
+              memberName is! String ||
+              memberRole is! String ||
+              !isValidIdentifier(memberId) ||
+              !isValidDisplayName(memberName) ||
+              !GroupRole.values.any((role) => role.name == memberRole)) {
+            continue;
+          }
+          incoming.add(
+            GroupMember(
+              groupId: groupId,
+              deviceId: memberId,
+              displayName: memberName,
+              role: GroupRole.values.byName(memberRole),
+            ),
+          );
+        }
+        if (incoming.isEmpty ||
+            !incoming.any((member) => member.deviceId == group.ownerDeviceId)) {
+          return;
+        }
+        if (!incoming.any((member) => member.deviceId == identity!.deviceId)) {
+          await _database.deleteGroup(groupId);
+          groups = groups.where((value) => value.groupId != groupId).toList();
+          if (selectedGroupId == groupId) {
+            selectedGroupId = null;
+            messages = [];
+          }
+          break;
+        }
+        await _database.saveGroup(group, incoming);
       default:
         return;
     }
@@ -1845,6 +2098,8 @@ class AppController extends ChangeNotifier {
 
   Future<void> _reloadChats() async => chats = await _database.loadChats();
 
+  Future<void> _reloadGroups() async => groups = await _database.loadGroups();
+
   Future<void> _setMessageStatus(String id, MessageStatus status) async {
     await _database.updateMessageStatus(id, status);
     _replaceVisibleMessage(id, status: status);
@@ -1859,22 +2114,7 @@ class AppController extends ChangeNotifier {
     messages = [
       for (final message in messages)
         if (message.messageId == id)
-          ChatMessage(
-            messageId: message.messageId,
-            chatId: message.chatId,
-            groupId: message.groupId,
-            senderDeviceId: message.senderDeviceId,
-            content: message.content,
-            timestamp: message.timestamp,
-            status: status ?? message.status,
-            kind: message.kind,
-            fileName: message.fileName,
-            filePath: filePath ?? message.filePath,
-            fileSize: message.fileSize,
-            mimeType: message.mimeType,
-            transferId: message.transferId,
-            fileHash: message.fileHash,
-          )
+          message.copyWith(status: status, filePath: filePath)
         else
           message,
     ];
@@ -1883,6 +2123,227 @@ class AppController extends ChangeNotifier {
   DiscoveredPeer? _onlinePeer(String deviceId) => peers
       .where((peer) => peer.deviceId == deviceId && peer.online)
       .firstOrNull;
+
+  /// 设备上下线时刷新列表；新上线的设备会触发一次群历史补发。
+  void _handlePeersChanged(List<DiscoveredPeer> value) {
+    final previouslyOnline = {
+      for (final peer in peers) peer.deviceId: peer.online,
+    };
+    peers = value;
+    for (final peer in value) {
+      if (!peer.online) {
+        _historySyncedDevices.remove(peer.deviceId);
+        continue;
+      }
+      if (previouslyOnline[peer.deviceId] == true) continue;
+      if (_historySyncedDevices.add(peer.deviceId)) {
+        unawaited(_syncGroupHistoryWith(peer));
+      }
+    }
+    notifyListeners();
+  }
+
+  /// 向刚上线的设备请求共享群中我们缺失的消息。
+  Future<void> _syncGroupHistoryWith(DiscoveredPeer peer) async {
+    if (groups.isEmpty) return;
+    final myDeviceId = identity?.deviceId;
+    if (myDeviceId == null) return;
+    for (final group in groups.toList()) {
+      try {
+        final members = await _database.loadGroupMembers(group.groupId);
+        if (!members.any((member) => member.deviceId == myDeviceId)) continue;
+        if (!members.any((member) => member.deviceId == peer.deviceId)) {
+          continue;
+        }
+        // 向 Owner 拉取最新成员名单，保证成员之间彼此可见。
+        if (group.ownerDeviceId == peer.deviceId) {
+          await _transport.send(
+            peer.ip,
+            peer.port,
+            ProtocolEnvelope(
+              type: MessageType.groupMembersRequest,
+              payload: {
+                'groupId': group.groupId,
+                'requesterDeviceId': myDeviceId,
+              },
+            ),
+          );
+        }
+        final fallback = DateTime.now()
+            .subtract(NetworkConfig.historySyncWindow)
+            .millisecondsSinceEpoch;
+        final since = await _database.latestMessageTimestamp(
+          'group:${group.groupId}',
+          fallback,
+        );
+        await _transport.send(
+          peer.ip,
+          peer.port,
+          ProtocolEnvelope(
+            type: MessageType.groupHistoryRequest,
+            payload: {
+              'groupId': group.groupId,
+              'since': since,
+              'requesterDeviceId': myDeviceId,
+            },
+          ),
+        );
+      } on Object catch (error, stack) {
+        _log.warning('向 ${peer.deviceId} 请求群历史失败', error, stack);
+      }
+    }
+  }
+
+  Future<void> _receiveGroupHistoryRequest(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final groupId = payload['groupId'];
+    final since = payload['since'];
+    final requesterDeviceId = payload['requesterDeviceId'];
+    if (groupId is! String ||
+        since is! int ||
+        since < 0 ||
+        requesterDeviceId is! String ||
+        !isValidIdentifier(requesterDeviceId) ||
+        requesterDeviceId == identity!.deviceId) {
+      return;
+    }
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null) return;
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
+    if (!members.any((member) => member.deviceId == requesterDeviceId)) return;
+    if (trustedPeers[requesterDeviceId]?.blocked == true) return;
+    final messages = await _database.loadMessagesAfter(
+      'group:$groupId',
+      since,
+      limit: NetworkConfig.maxHistoryBatchSize,
+    );
+    final data = [
+      for (final message in messages)
+        if (message.kind == MessageKind.text)
+          {
+            'messageId': message.messageId,
+            'senderDeviceId': message.senderDeviceId,
+            'timestamp': message.timestamp.millisecondsSinceEpoch,
+            'content': message.content,
+            if (message.mentions.isNotEmpty) 'mentions': message.mentions,
+            'replyToMessageId': ?message.replyToMessageId,
+            'replyToSenderId': ?message.replyToSenderId,
+            'replyToPreview': ?message.replyToPreview,
+          },
+    ];
+    if (data.isEmpty) return;
+    await _sendToAddress(
+      packet.remoteAddress,
+      ProtocolEnvelope(
+        type: MessageType.groupHistoryResponse,
+        payload: {
+          'groupId': groupId,
+          'senderDeviceId': identity!.deviceId,
+          'messages': data,
+        },
+      ),
+    );
+  }
+
+  /// 成员重连后向 Owner 请求最新名单，Owner 直接回发成员列表。
+  Future<void> _receiveGroupMembersRequest(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final groupId = payload['groupId'];
+    final requesterDeviceId = payload['requesterDeviceId'];
+    if (groupId is! String ||
+        requesterDeviceId is! String ||
+        !isValidIdentifier(requesterDeviceId)) {
+      return;
+    }
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null || group.ownerDeviceId != identity!.deviceId) return;
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == requesterDeviceId)) return;
+    if (trustedPeers[requesterDeviceId]?.blocked == true) return;
+    await _sendToAddress(
+      packet.remoteAddress,
+      ProtocolEnvelope(
+        type: MessageType.groupUpdate,
+        payload: {
+          'groupId': groupId,
+          'action': 'members',
+          'senderDeviceId': identity!.deviceId,
+          'members': [
+            for (final member in members)
+              {
+                'deviceId': member.deviceId,
+                'displayName': member.displayName,
+                'role': member.role.name,
+              },
+          ],
+        },
+      ),
+    );
+  }
+
+  Future<void> _receiveGroupHistoryResponse(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final groupId = payload['groupId'];
+    final rawMessages = payload['messages'];
+    final senderDeviceId = payload['senderDeviceId'];
+    if (groupId is! String ||
+        rawMessages is! List ||
+        senderDeviceId is! String ||
+        !isValidIdentifier(senderDeviceId)) {
+      return;
+    }
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null) return;
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == identity!.deviceId) ||
+        !members.any((member) => member.deviceId == senderDeviceId) ||
+        trustedPeers[senderDeviceId]?.blocked == true) {
+      return;
+    }
+    var added = false;
+    for (final raw in rawMessages.whereType<Map>()) {
+      final item = Map<String, dynamic>.from(raw);
+      final messageId = item['messageId'];
+      final messageSender = item['senderDeviceId'];
+      final timestamp = item['timestamp'];
+      final content = item['content'];
+      if (messageId is! String ||
+          messageSender is! String ||
+          timestamp is! int ||
+          content is! String ||
+          !isValidTextContent(content) ||
+          !isValidIdentifier(messageId) ||
+          !members.any((member) => member.deviceId == messageSender) ||
+          await _database.loadMessage(messageId) != null) {
+        continue;
+      }
+      final reply = _incomingReply(item);
+      await _database.saveMessage(
+        ChatMessage(
+          messageId: messageId,
+          chatId: 'group:$groupId',
+          groupId: groupId,
+          senderDeviceId: messageSender,
+          content: content,
+          timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
+          status: MessageStatus.sent,
+          mentions: parseMentions(item['mentions']),
+          replyToMessageId: reply.$1,
+          replyToSenderId: reply.$2,
+          replyToPreview: reply.$3,
+        ),
+      );
+      added = true;
+    }
+    if (!added) return;
+    if (selectedGroupId == groupId) {
+      messages = await _database.loadMessages('group:$groupId');
+    }
+    await _reloadGroups();
+    notifyListeners();
+    _showTopRightMessage('已同步“${group.name}”的离线消息', icon: Icons.sync);
+  }
 
   Future<void> _sendToAddress(String ip, ProtocolEnvelope envelope) =>
       _transport.send(ip, NetworkConfig.chatPort, envelope);

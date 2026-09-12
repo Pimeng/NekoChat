@@ -25,6 +25,7 @@ class DesktopSystemNotificationService
   final _log = Logger('SystemNotificationService');
   final Map<String, LocalNotification> _active = {};
   bool _initialized = false;
+  bool _listening = false;
   bool _focused = true;
 
   @override
@@ -32,17 +33,23 @@ class DesktopSystemNotificationService
 
   @override
   Future<void> initialize() async {
-    if (_initialized ||
-        !(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-      return;
+    if (!(Platform.isWindows || Platform.isLinux || Platform.isMacOS)) return;
+    // 焦点跟踪与系统通知相互独立：即使通知初始化失败，也要能判断窗口是否失焦。
+    if (!_listening) {
+      windowManager.addListener(this);
+      _listening = true;
+      try {
+        _focused = await windowManager.isFocused();
+      } on Object catch (error, stack) {
+        _log.fine('读取窗口焦点失败，按已聚焦处理', error, stack);
+      }
     }
+    if (_initialized) return;
     try {
       await localNotifier.setup(
         appName: 'NekoChat',
         shortcutPolicy: ShortcutPolicy.requireCreate,
       );
-      windowManager.addListener(this);
-      _focused = await windowManager.isFocused();
       _initialized = true;
       _log.info('系统通知服务已启用');
     } on Object catch (error, stack) {
@@ -113,7 +120,10 @@ class DesktopSystemNotificationService
 
   @override
   Future<void> dispose() async {
-    if (_initialized) windowManager.removeListener(this);
+    if (_listening) {
+      windowManager.removeListener(this);
+      _listening = false;
+    }
     final notifications = _active.values.toList();
     _active.clear();
     for (final notification in notifications) {

@@ -252,4 +252,189 @@ void main() {
     expect((await database.loadMessage('file-1'))?.filePath, relocated);
     expect(database.isInsideDataDirectory(relocated), isTrue);
   });
+
+  test('消息的引用与 @ 提及可持久化', () async {
+    final directory = await Directory.systemTemp.createTemp('neko-chat-reply-');
+    addTearDown(() => directory.delete(recursive: true));
+    final database = AppDatabase(directory: () async => directory);
+    await database.open(const [1, 2, 3, 4]);
+    addTearDown(database.close);
+
+    await database.saveMessage(
+      ChatMessage(
+        messageId: 'm-1',
+        chatId: 'group:g-1',
+        groupId: 'g-1',
+        senderDeviceId: 'peer-1',
+        content: '收到',
+        timestamp: DateTime.fromMillisecondsSinceEpoch(2000),
+        status: MessageStatus.sent,
+        replyToMessageId: 'm-0',
+        replyToSenderId: 'peer-2',
+        replyToPreview: '原始消息',
+        mentions: const ['local-device', 'peer-1'],
+      ),
+    );
+
+    final message = (await database.loadMessage('m-1'))!;
+    expect(message.replyToMessageId, 'm-0');
+    expect(message.replyToSenderId, 'peer-2');
+    expect(message.replyToPreview, '原始消息');
+    expect(message.mentions, ['local-device', 'peer-1']);
+  });
+
+  test('未读计数与最新消息摘要不会被会话重存覆盖', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-unread-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final database = AppDatabase(directory: () async => directory);
+    await database.open(const [1, 2, 3, 4]);
+    addTearDown(database.close);
+
+    await database.saveChat(
+      const ChatSummary(
+        chatId: 'chat-1',
+        peerDeviceId: 'peer-1',
+        displayName: '李四',
+        state: ChatSessionState.active,
+      ),
+    );
+    await database.saveMessage(
+      ChatMessage(
+        messageId: 'm-1',
+        chatId: 'chat-1',
+        senderDeviceId: 'peer-1',
+        content: '在吗',
+        timestamp: DateTime.fromMillisecondsSinceEpoch(2000),
+        status: MessageStatus.sent,
+      ),
+    );
+    await database.setChatUnread('chat-1', 3);
+    // 状态变化重新保存会话时没有携带未读与摘要。
+    await database.saveChat(
+      const ChatSummary(
+        chatId: 'chat-1',
+        peerDeviceId: 'peer-1',
+        displayName: '李四',
+        state: ChatSessionState.none,
+      ),
+    );
+
+    final chat = (await database.loadChats()).single;
+    expect(chat.unreadCount, 3);
+    expect(chat.lastMessagePreview, '在吗');
+    expect(chat.lastMessageAt, DateTime.fromMillisecondsSinceEpoch(2000));
+
+    // 补发的旧消息不会把最新消息摘要倒退回更早的内容。
+    await database.saveMessage(
+      ChatMessage(
+        messageId: 'm-0',
+        chatId: 'chat-1',
+        senderDeviceId: 'peer-1',
+        content: '更早的消息',
+        timestamp: DateTime.fromMillisecondsSinceEpoch(1000),
+        status: MessageStatus.sent,
+      ),
+    );
+    expect((await database.loadChats()).single.lastMessagePreview, '在吗');
+
+    await database.setChatUnread('chat-1', 0);
+    expect((await database.loadChats()).single.unreadCount, 0);
+  });
+
+  test('群消息更新群摘要，且可查询重连补发范围', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-group-sync-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final database = AppDatabase(directory: () async => directory);
+    await database.open(const [1, 2, 3, 4]);
+    addTearDown(database.close);
+
+    final createdAt = DateTime.fromMillisecondsSinceEpoch(1000);
+    const members = [
+      GroupMember(
+        groupId: 'g-1',
+        deviceId: 'local-device',
+        displayName: '我',
+        role: GroupRole.owner,
+      ),
+      GroupMember(
+        groupId: 'g-1',
+        deviceId: 'peer-1',
+        displayName: '李四',
+        role: GroupRole.member,
+      ),
+    ];
+    await database.saveGroup(
+      ChatGroup(
+        groupId: 'g-1',
+        name: '一班',
+        ownerDeviceId: 'local-device',
+        createdAt: createdAt,
+      ),
+      members,
+    );
+    await database.saveMessage(
+      ChatMessage(
+        messageId: 'gm-1',
+        chatId: 'group:g-1',
+        groupId: 'g-1',
+        senderDeviceId: 'peer-1',
+        content: '大家好',
+        timestamp: DateTime.fromMillisecondsSinceEpoch(3000),
+        status: MessageStatus.sent,
+      ),
+    );
+    await database.setGroupUnread('g-1', 2);
+
+    final loaded = (await database.loadGroups()).single;
+    expect(loaded.lastMessagePreview, '大家好');
+    expect(loaded.unreadCount, 2);
+    expect(await database.latestMessageTimestamp('group:g-1', 0), 3000);
+    // 只返回指定时间之后的消息，供重连补发。
+    expect(await database.loadMessagesAfter('group:g-1', 3000), isEmpty);
+    expect(await database.loadMessagesAfter('group:g-1', 2500), hasLength(1));
+
+    // 重存群资料（如改名）不会丢失未读与摘要。
+    await database.saveGroup(
+      ChatGroup(
+        groupId: 'g-1',
+        name: '二班',
+        ownerDeviceId: 'local-device',
+        createdAt: createdAt,
+      ),
+      members,
+    );
+    final renamed = (await database.loadGroups()).single;
+    expect(renamed.name, '二班');
+    expect(renamed.unreadCount, 2);
+    expect(renamed.lastMessagePreview, '大家好');
+  });
+
+  test('未读自增在并发下不会丢计数', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-unread-race-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final database = AppDatabase(directory: () async => directory);
+    await database.open(const [1, 2, 3, 4]);
+    addTearDown(database.close);
+
+    await database.saveChat(
+      const ChatSummary(
+        chatId: 'chat-1',
+        peerDeviceId: 'peer-1',
+        displayName: '李四',
+        state: ChatSessionState.active,
+      ),
+    );
+
+    await Future.wait([
+      for (var index = 0; index < 20; index++)
+        database.incrementChatUnread('chat-1'),
+    ]);
+    expect((await database.loadChats()).single.unreadCount, 20);
+  });
 }

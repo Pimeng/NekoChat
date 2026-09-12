@@ -99,6 +99,8 @@ class ChatSummary {
     this.sessionId,
     this.createdAt,
     this.lastMessageAt,
+    this.unreadCount = 0,
+    this.lastMessagePreview,
   });
   final String chatId;
   final String peerDeviceId;
@@ -109,6 +111,31 @@ class ChatSummary {
   /// 会话首次建立的时间。重新保存会话时会沿用已有值，缺失时由数据库补齐。
   final DateTime? createdAt;
   final DateTime? lastMessageAt;
+
+  /// 未读消息数。只由数据库的未读接口变更，重新保存会话不会覆盖它。
+  final int unreadCount;
+
+  /// 侧边栏展示用的最新一条消息摘要。
+  final String? lastMessagePreview;
+
+  ChatSummary copyWith({
+    String? displayName,
+    ChatSessionState? state,
+    String? sessionId,
+    DateTime? lastMessageAt,
+    int? unreadCount,
+    String? lastMessagePreview,
+  }) => ChatSummary(
+    chatId: chatId,
+    peerDeviceId: peerDeviceId,
+    displayName: displayName ?? this.displayName,
+    state: state ?? this.state,
+    sessionId: sessionId ?? this.sessionId,
+    createdAt: createdAt,
+    lastMessageAt: lastMessageAt ?? this.lastMessageAt,
+    unreadCount: unreadCount ?? this.unreadCount,
+    lastMessagePreview: lastMessagePreview ?? this.lastMessagePreview,
+  );
 }
 
 class ChatMessage {
@@ -127,6 +154,10 @@ class ChatMessage {
     this.mimeType,
     this.transferId,
     this.fileHash,
+    this.replyToMessageId,
+    this.replyToSenderId,
+    this.replyToPreview,
+    this.mentions = const [],
   });
   final String messageId;
   final String chatId;
@@ -142,6 +173,43 @@ class ChatMessage {
   final String? mimeType;
   final String? transferId;
   final String? fileHash;
+
+  /// 被引用的消息 id、发送者以及摘要。摘要随消息一起传输，对方缺少原消息也能展示。
+  final String? replyToMessageId;
+  final String? replyToSenderId;
+  final String? replyToPreview;
+
+  /// 群消息中被 @ 到的成员设备号，用于高亮并提醒被提及的人。
+  final List<String> mentions;
+
+  bool get isReply => replyToMessageId != null;
+
+  bool mentionsDevice(String deviceId) => mentions.contains(deviceId);
+
+  ChatMessage copyWith({
+    MessageStatus? status,
+    String? filePath,
+    List<String>? mentions,
+  }) => ChatMessage(
+    messageId: messageId,
+    chatId: chatId,
+    groupId: groupId,
+    senderDeviceId: senderDeviceId,
+    content: content,
+    timestamp: timestamp,
+    status: status ?? this.status,
+    kind: kind,
+    fileName: fileName,
+    filePath: filePath ?? this.filePath,
+    fileSize: fileSize,
+    mimeType: mimeType,
+    transferId: transferId,
+    fileHash: fileHash,
+    replyToMessageId: replyToMessageId,
+    replyToSenderId: replyToSenderId,
+    replyToPreview: replyToPreview,
+    mentions: mentions ?? this.mentions,
+  );
 }
 
 class ChatGroup {
@@ -150,11 +218,36 @@ class ChatGroup {
     required this.name,
     required this.ownerDeviceId,
     required this.createdAt,
+    this.lastMessageAt,
+    this.unreadCount = 0,
+    this.lastMessagePreview,
   });
   final String groupId;
   final String name;
   final String ownerDeviceId;
   final DateTime createdAt;
+  final DateTime? lastMessageAt;
+
+  /// 未读消息数。只由数据库的未读接口变更，重新保存群资料不会覆盖它。
+  final int unreadCount;
+
+  /// 侧边栏展示用的最新一条群消息摘要。
+  final String? lastMessagePreview;
+
+  ChatGroup copyWith({
+    String? name,
+    DateTime? lastMessageAt,
+    int? unreadCount,
+    String? lastMessagePreview,
+  }) => ChatGroup(
+    groupId: groupId,
+    name: name ?? this.name,
+    ownerDeviceId: ownerDeviceId,
+    createdAt: createdAt,
+    lastMessageAt: lastMessageAt ?? this.lastMessageAt,
+    unreadCount: unreadCount ?? this.unreadCount,
+    lastMessagePreview: lastMessagePreview ?? this.lastMessagePreview,
+  );
 }
 
 class GroupMember {

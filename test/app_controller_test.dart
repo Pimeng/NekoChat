@@ -23,12 +23,11 @@ void main() {
       database: database,
       transport: transport,
       notifications: _FakeNotifications(),
-      discoveryFactory:
-          ({
-            required LocalIdentity identity,
-            required TrustLookup trustLookup,
-            required void Function(List<DiscoveredPeer> peers) onPeersChanged,
-          }) => _FakeDiscoveryService(),
+      discoveryFactory: ({
+        required LocalIdentity identity,
+        required TrustLookup trustLookup,
+        required void Function(List<DiscoveredPeer> peers) onPeersChanged,
+      }) => _FakeDiscoveryService(),
       requestTimeout: requestTimeout,
     );
     return (controller: controller, database: database, transport: transport);
@@ -41,6 +40,47 @@ void main() {
         'requestId': 'request-1',
         'deviceId': 'peer-device',
         'displayName': '李四',
+      },
+    ),
+    remoteAddress: '192.168.1.20',
+  );
+
+  /// 走完一次聊天邀请流程，返回建立后的 sessionId。
+  Future<String> activateChat(
+    ({AppController controller, AppDatabase database, _FakeTransport transport})
+    setup,
+  ) async {
+    setup.transport.emit(chatRequestPacket());
+    await _waitUntil(
+      () =>
+          setup.controller.chatRequests.isNotEmpty &&
+          setup.controller.chats.any(
+            (chat) => chat.state == ChatSessionState.pendingIncoming,
+          ),
+    );
+    await setup.controller.acceptChatRequest(
+      setup.controller.chatRequests.values.single,
+    );
+    await _waitUntil(
+      () => setup.controller.chats.single.state == ChatSessionState.active,
+    );
+    return setup.controller.chats.single.sessionId!;
+  }
+
+  IncomingPacket textMessagePacket(
+    String sessionId,
+    String content, {
+    String messageId = 'msg-1',
+    int timestamp = 5000,
+  }) => IncomingPacket(
+    envelope: ProtocolEnvelope(
+      type: MessageType.message,
+      payload: {
+        'sessionId': sessionId,
+        'messageId': messageId,
+        'senderDeviceId': 'peer-device',
+        'timestamp': timestamp,
+        'content': content,
       },
     ),
     remoteAddress: '192.168.1.20',
@@ -123,6 +163,70 @@ void main() {
     expect(chat.state, ChatSessionState.active);
     expect(chat.sessionId, isNotNull);
     expect(setup.controller.trustedPeers['peer-device'], isNotNull);
+  });
+
+  test('收到消息累计未读，进入会话后清零', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-unread-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+
+    setup.transport.emit(textMessagePacket(sessionId, '在吗'));
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 1);
+    expect(setup.controller.chats.single.lastMessagePreview, '在吗');
+
+    await setup.controller.selectChat(setup.controller.chats.single.chatId);
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 0);
+    expect(setup.controller.messages.single.content, '在吗');
+  });
+
+  test('发送消息携带引用并在发送后清空引用状态', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-reply-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    await setup.controller.selectChat(setup.controller.chats.single.chatId);
+
+    setup.transport.emit(textMessagePacket(sessionId, '原始消息'));
+    await _waitUntil(() => setup.controller.messages.isNotEmpty);
+    final original = setup.controller.messages.last;
+
+    setup.controller.beginReply(original);
+    expect(setup.controller.replyingTo, same(original));
+    await setup.controller.sendMessage('回复内容');
+    await _waitUntil(() => setup.controller.messages.length == 2);
+
+    final reply = setup.controller.messages.last;
+    expect(reply.content, '回复内容');
+    expect(reply.replyToMessageId, original.messageId);
+    expect(reply.replyToPreview, '原始消息');
+    expect(setup.controller.replyingTo, isNull);
   });
 }
 

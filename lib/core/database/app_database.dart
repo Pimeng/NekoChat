@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:logging/logging.dart';
@@ -30,7 +31,7 @@ class PlainSqliteBackend implements DatabaseBackend {
     return databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 3,
+        version: 4,
         onCreate: onCreate,
         onUpgrade: onUpgrade,
       ),
@@ -112,7 +113,9 @@ class AppDatabase {
         session_id TEXT,
         state TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        last_message_at INTEGER
+        last_message_at INTEGER,
+        unread_count INTEGER NOT NULL DEFAULT 0,
+        last_message_preview TEXT
       )
     ''');
     await db.execute('''
@@ -130,7 +133,11 @@ class AppDatabase {
         file_size INTEGER,
         mime_type TEXT,
         transfer_id TEXT,
-        file_hash TEXT
+        file_hash TEXT,
+        reply_to_message_id TEXT,
+        reply_to_sender_id TEXT,
+        reply_to_preview TEXT,
+        mentions TEXT
       )
     ''');
     await db.execute(
@@ -141,7 +148,10 @@ class AppDatabase {
         group_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         owner_device_id TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        last_message_at INTEGER,
+        unread_count INTEGER NOT NULL DEFAULT 0,
+        last_message_preview TEXT
       )
     ''');
     await db.execute('''
@@ -185,6 +195,29 @@ class AppDatabase {
     }
     if (oldVersion < 3) {
       await db.execute('ALTER TABLE messages ADD COLUMN file_hash TEXT');
+    }
+    if (oldVersion < 4) {
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN reply_to_sender_id TEXT',
+      );
+      await db.execute('ALTER TABLE messages ADD COLUMN reply_to_preview TEXT');
+      await db.execute('ALTER TABLE messages ADD COLUMN mentions TEXT');
+      await db.execute(
+        'ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0',
+      );
+      await db.execute(
+        'ALTER TABLE chats ADD COLUMN last_message_preview TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE groups ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0',
+      );
+      await db.execute(
+        'ALTER TABLE groups ADD COLUMN last_message_preview TEXT',
+      );
+      await db.execute('ALTER TABLE groups ADD COLUMN last_message_at INTEGER');
     }
     _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
@@ -257,6 +290,8 @@ class AppDatabase {
                 : DateTime.fromMillisecondsSinceEpoch(
                     row['last_message_at'] as int,
                   ),
+            unreadCount: (row['unread_count'] as int?) ?? 0,
+            lastMessagePreview: row['last_message_preview'] as String?,
           ),
         )
         .toList();
@@ -264,19 +299,30 @@ class AppDatabase {
 
   Future<void> saveChat(ChatSummary chat) async {
     // 更新已有会话时必须沿用最初的创建时间，否则每次状态变化都会把它重置。
-    var createdAt = chat.createdAt?.millisecondsSinceEpoch;
-    if (createdAt == null) {
-      final rows = await database.query(
-        'chats',
-        columns: ['created_at'],
-        where: 'chat_id = ?',
-        whereArgs: [chat.chatId],
-        limit: 1,
-      );
-      createdAt = rows.isEmpty
-          ? DateTime.now().millisecondsSinceEpoch
-          : rows.first['created_at'] as int;
-    }
+    final existing = await database.query(
+      'chats',
+      columns: [
+        'created_at',
+        'last_message_at',
+        'unread_count',
+        'last_message_preview',
+      ],
+      where: 'chat_id = ?',
+      whereArgs: [chat.chatId],
+      limit: 1,
+    );
+    final previous = existing.isEmpty ? null : existing.first;
+    final createdAt =
+        chat.createdAt?.millisecondsSinceEpoch ??
+        previous?['created_at'] as int? ??
+        DateTime.now().millisecondsSinceEpoch;
+    // 未读数和摘要只由 saveMessage / setChatUnread 维护，重存会话不会重置。
+    final unreadCount = previous?['unread_count'] as int? ?? chat.unreadCount;
+    final preview =
+        previous?['last_message_preview'] as String? ?? chat.lastMessagePreview;
+    final lastMessageAt =
+        chat.lastMessageAt?.millisecondsSinceEpoch ??
+        previous?['last_message_at'] as int?;
     await database.insert('chats', {
       'chat_id': chat.chatId,
       'peer_device_id': chat.peerDeviceId,
@@ -284,8 +330,61 @@ class AppDatabase {
       'session_id': chat.sessionId,
       'state': chat.state.name,
       'created_at': createdAt,
-      'last_message_at': chat.lastMessageAt?.millisecondsSinceEpoch,
+      'last_message_at': lastMessageAt,
+      'unread_count': unreadCount,
+      'last_message_preview': preview,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// 直接设置会话未读数并返回新的值。
+  Future<int> setChatUnread(String chatId, int unreadCount) async {
+    final value = unreadCount < 0 ? 0 : unreadCount;
+    await database.update(
+      'chats',
+      {'unread_count': value},
+      where: 'chat_id = ?',
+      whereArgs: [chatId],
+    );
+    return value;
+  }
+
+  /// 直接设置群未读数并返回新的值。
+  Future<int> setGroupUnread(String groupId, int unreadCount) async {
+    final value = unreadCount < 0 ? 0 : unreadCount;
+    await database.update(
+      'groups',
+      {'unread_count': value},
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+    );
+    return value;
+  }
+
+  /// 会话未读数原子加一，避免并发收包时读改写互相覆盖。
+  Future<int> incrementChatUnread(String chatId) =>
+      _incrementUnread(table: 'chats', column: 'chat_id', value: chatId);
+
+  /// 群未读数原子加一，避免并发收包时读改写互相覆盖。
+  Future<int> incrementGroupUnread(String groupId) =>
+      _incrementUnread(table: 'groups', column: 'group_id', value: groupId);
+
+  Future<int> _incrementUnread({
+    required String table,
+    required String column,
+    required String value,
+  }) async {
+    await database.rawUpdate(
+      'UPDATE $table SET unread_count = unread_count + 1 WHERE $column = ?',
+      [value],
+    );
+    final rows = await database.query(
+      table,
+      columns: ['unread_count'],
+      where: '$column = ?',
+      whereArgs: [value],
+      limit: 1,
+    );
+    return rows.isEmpty ? 0 : (rows.first['unread_count'] as int?) ?? 0;
   }
 
   Future<void> saveMessage(ChatMessage message) async {
@@ -304,15 +403,69 @@ class AppDatabase {
       'mime_type': message.mimeType,
       'transfer_id': message.transferId,
       'file_hash': message.fileHash,
+      'reply_to_message_id': message.replyToMessageId,
+      'reply_to_sender_id': message.replyToSenderId,
+      'reply_to_preview': message.replyToPreview,
+      'mentions': message.mentions.isEmpty
+          ? null
+          : jsonEncode(message.mentions),
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    // 只在时间前进时更新最新消息，避免历史补发把预览倒退回旧消息。
+    final timestamp = message.timestamp.millisecondsSinceEpoch;
+    final preview = _previewFor(message);
     if (message.groupId == null) {
-      await database.update(
-        'chats',
-        {'last_message_at': message.timestamp.millisecondsSinceEpoch},
-        where: 'chat_id = ?',
-        whereArgs: [message.chatId],
+      await database.rawUpdate(
+        'UPDATE chats SET last_message_at = ?, last_message_preview = ? '
+        'WHERE chat_id = ? AND (last_message_at IS NULL OR last_message_at <= ?)',
+        [timestamp, preview, message.chatId, timestamp],
+      );
+    } else {
+      await database.rawUpdate(
+        'UPDATE groups SET last_message_at = ?, last_message_preview = ? '
+        'WHERE group_id = ? AND (last_message_at IS NULL OR last_message_at <= ?)',
+        [timestamp, preview, message.groupId, timestamp],
       );
     }
+  }
+
+  String _previewFor(ChatMessage message) {
+    final raw = switch (message.kind) {
+      MessageKind.text => message.content,
+      MessageKind.image => '[图片] ${message.fileName ?? ''}',
+      MessageKind.file => '[文件] ${message.fileName ?? ''}',
+    };
+    final normalized = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return normalized.length <= 120
+        ? normalized
+        : '${normalized.substring(0, 120)}…';
+  }
+
+  /// 最近一段时间内的群消息时间戳，用于断线重连时请求缺失的消息。
+  Future<int> latestMessageTimestamp(String chatId, int fallback) async {
+    final rows = await database.rawQuery(
+      'SELECT MAX(timestamp) AS latest FROM messages WHERE chat_id = ?',
+      [chatId],
+    );
+    final latest = rows.first['latest'] as int?;
+    return latest ?? fallback;
+  }
+
+  /// 读取某会话中指定时间之后的消息，用于重连后补发。
+  ///
+  /// 超过上限时优先保留最近的消息，再按时间升序返回。
+  Future<List<ChatMessage>> loadMessagesAfter(
+    String chatId,
+    int since, {
+    int limit = 300,
+  }) async {
+    final rows = await database.query(
+      'messages',
+      where: 'chat_id = ? AND timestamp > ?',
+      whereArgs: [chatId, since],
+      orderBy: 'timestamp DESC',
+      limit: limit,
+    );
+    return rows.map(_messageFromRow).toList().reversed.toList();
   }
 
   Future<void> updateMessageStatus(String messageId, MessageStatus status) =>
@@ -378,10 +531,31 @@ class AppDatabase {
     mimeType: row['mime_type'] as String?,
     transferId: row['transfer_id'] as String?,
     fileHash: row['file_hash'] as String?,
+    replyToMessageId: row['reply_to_message_id'] as String?,
+    replyToSenderId: row['reply_to_sender_id'] as String?,
+    replyToPreview: row['reply_to_preview'] as String?,
+    mentions: _decodeMentions(row['mentions'] as String?),
   );
 
+  static List<String> _decodeMentions(String? value) {
+    if (value == null || value.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is! List) return const [];
+      return [
+        for (final item in decoded)
+          if (item is String) item,
+      ];
+    } on Object {
+      return const [];
+    }
+  }
+
   Future<List<ChatGroup>> loadGroups() async {
-    final rows = await database.query('groups', orderBy: 'created_at DESC');
+    final rows = await database.query(
+      'groups',
+      orderBy: 'last_message_at DESC, created_at DESC',
+    );
     return rows
         .map(
           (row) => ChatGroup(
@@ -391,6 +565,13 @@ class AppDatabase {
             createdAt: DateTime.fromMillisecondsSinceEpoch(
               row['created_at'] as int,
             ),
+            lastMessageAt: row['last_message_at'] == null
+                ? null
+                : DateTime.fromMillisecondsSinceEpoch(
+                    row['last_message_at'] as int,
+                  ),
+            unreadCount: (row['unread_count'] as int?) ?? 0,
+            lastMessagePreview: row['last_message_preview'] as String?,
           ),
         )
         .toList();
@@ -398,12 +579,38 @@ class AppDatabase {
 
   Future<void> saveGroup(ChatGroup group, List<GroupMember> members) async {
     await database.transaction((txn) async {
+      final existing = await txn.query(
+        'groups',
+        columns: ['last_message_at', 'unread_count', 'last_message_preview'],
+        where: 'group_id = ?',
+        whereArgs: [group.groupId],
+        limit: 1,
+      );
+      final previous = existing.isEmpty ? null : existing.first;
+      // 未读数和摘要只由 saveMessage / setGroupUnread 维护，重存群资料不会重置。
+      final lastMessageAt =
+          group.lastMessageAt?.millisecondsSinceEpoch ??
+          previous?['last_message_at'] as int?;
+      final unreadCount =
+          previous?['unread_count'] as int? ?? group.unreadCount;
+      final preview =
+          previous?['last_message_preview'] as String? ??
+          group.lastMessagePreview;
       await txn.insert('groups', {
         'group_id': group.groupId,
         'name': group.name,
         'owner_device_id': group.ownerDeviceId,
         'created_at': group.createdAt.millisecondsSinceEpoch,
+        'last_message_at': lastMessageAt,
+        'unread_count': unreadCount,
+        'last_message_preview': preview,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
+      // 成员表以传入列表为准，先清空再写入，避免移除成员后残留。
+      await txn.delete(
+        'group_members',
+        where: 'group_id = ?',
+        whereArgs: [group.groupId],
+      );
       for (final member in members) {
         await txn.insert('group_members', {
           'group_id': member.groupId,
