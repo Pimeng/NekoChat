@@ -97,6 +97,7 @@ class ChatSummary {
     required this.displayName,
     required this.state,
     this.sessionId,
+    this.createdAt,
     this.lastMessageAt,
   });
   final String chatId;
@@ -104,6 +105,9 @@ class ChatSummary {
   final String displayName;
   final ChatSessionState state;
   final String? sessionId;
+
+  /// 会话首次建立的时间。重新保存会话时会沿用已有值，缺失时由数据库补齐。
+  final DateTime? createdAt;
   final DateTime? lastMessageAt;
 }
 

@@ -2,9 +2,10 @@ import 'dart:io';
 
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../config/app_paths.dart';
+import '../files/attachment_path.dart';
 import '../models/models.dart';
 
 abstract interface class DatabaseBackend {
@@ -42,11 +43,13 @@ class AppDatabase {
     DatabaseBackend? backend,
     Future<Directory> Function()? directory,
   }) : _backend = backend ?? PlainSqliteBackend(),
-       _directory = directory ?? getApplicationSupportDirectory;
+       _directory = directory ?? appDataDirectory;
   final DatabaseBackend _backend;
   final Future<Directory> Function() _directory;
   final _log = Logger('AppDatabase');
   Database? _database;
+  AttachmentPathCodec? _attachmentPaths;
+  String? _directoryPath;
 
   Database get database {
     final value = _database;
@@ -54,9 +57,26 @@ class AppDatabase {
     return value;
   }
 
+  /// 附件路径编解码器。在 [open] 时根据实际数据目录创建，因此数据库、密钥和
+  /// 附件始终按同一个根目录解释相对路径。
+  AttachmentPathCodec get attachmentPaths {
+    final value = _attachmentPaths;
+    if (value == null) throw StateError('数据库尚未打开');
+    return value;
+  }
+
+  /// 当前使用的数据目录，未打开数据库时为 null。界面用它告诉用户数据在哪。
+  String? get directoryPath => _directoryPath;
+
+  /// 判断路径是否位于数据目录内；数据库未打开时返回 false。
+  bool isInsideDataDirectory(String path) =>
+      _attachmentPaths?.isInsideRoot(path) ?? false;
+
   Future<void> open(List<int> databaseKey) async {
     final directory = await _directory();
     await directory.create(recursive: true);
+    _directoryPath = directory.path;
+    _attachmentPaths = AttachmentPathCodec(directory.path);
     _database = await _backend.open(
       path: p.join(directory.path, 'neko_chat.db'),
       key: databaseKey,
@@ -216,13 +236,6 @@ class AppDatabase {
         'blocked': peer.blocked ? 1 : 0,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
 
-  Future<void> setPeerBlocked(String deviceId, bool blocked) => database.update(
-    'trusted_peers',
-    {'blocked': blocked ? 1 : 0},
-    where: 'device_id = ?',
-    whereArgs: [deviceId],
-  );
-
   Future<List<ChatSummary>> loadChats() async {
     final rows = await database.query(
       'chats',
@@ -236,6 +249,9 @@ class AppDatabase {
             displayName: row['peer_display_name'] as String,
             sessionId: row['session_id'] as String?,
             state: ChatSessionState.values.byName(row['state'] as String),
+            createdAt: DateTime.fromMillisecondsSinceEpoch(
+              row['created_at'] as int,
+            ),
             lastMessageAt: row['last_message_at'] == null
                 ? null
                 : DateTime.fromMillisecondsSinceEpoch(
@@ -246,15 +262,31 @@ class AppDatabase {
         .toList();
   }
 
-  Future<void> saveChat(ChatSummary chat) => database.insert('chats', {
-    'chat_id': chat.chatId,
-    'peer_device_id': chat.peerDeviceId,
-    'peer_display_name': chat.displayName,
-    'session_id': chat.sessionId,
-    'state': chat.state.name,
-    'created_at': DateTime.now().millisecondsSinceEpoch,
-    'last_message_at': chat.lastMessageAt?.millisecondsSinceEpoch,
-  }, conflictAlgorithm: ConflictAlgorithm.replace);
+  Future<void> saveChat(ChatSummary chat) async {
+    // 更新已有会话时必须沿用最初的创建时间，否则每次状态变化都会把它重置。
+    var createdAt = chat.createdAt?.millisecondsSinceEpoch;
+    if (createdAt == null) {
+      final rows = await database.query(
+        'chats',
+        columns: ['created_at'],
+        where: 'chat_id = ?',
+        whereArgs: [chat.chatId],
+        limit: 1,
+      );
+      createdAt = rows.isEmpty
+          ? DateTime.now().millisecondsSinceEpoch
+          : rows.first['created_at'] as int;
+    }
+    await database.insert('chats', {
+      'chat_id': chat.chatId,
+      'peer_device_id': chat.peerDeviceId,
+      'peer_display_name': chat.displayName,
+      'session_id': chat.sessionId,
+      'state': chat.state.name,
+      'created_at': createdAt,
+      'last_message_at': chat.lastMessageAt?.millisecondsSinceEpoch,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
 
   Future<void> saveMessage(ChatMessage message) async {
     await database.insert('messages', {
@@ -267,7 +299,7 @@ class AppDatabase {
       'status': message.status.name,
       'kind': message.kind.name,
       'file_name': message.fileName,
-      'file_path': message.filePath,
+      'file_path': _encodeAttachment(message.filePath),
       'file_size': message.fileSize,
       'mime_type': message.mimeType,
       'transfer_id': message.transferId,
@@ -297,10 +329,19 @@ class AppDatabase {
     required MessageStatus status,
   }) => database.update(
     'messages',
-    {'file_path': filePath, 'status': status.name},
+    {'file_path': _encodeAttachment(filePath), 'status': status.name},
     where: 'message_id = ?',
     whereArgs: [messageId],
   );
+
+  /// 只更新附件的本地路径，用于用户在换机后重新指定文件位置。
+  Future<void> updateMessageFilePath(String messageId, String? filePath) =>
+      database.update(
+        'messages',
+        {'file_path': _encodeAttachment(filePath)},
+        where: 'message_id = ?',
+        whereArgs: [messageId],
+      );
 
   Future<List<ChatMessage>> loadMessages(String chatId) async {
     final rows = await database.query(
@@ -332,7 +373,7 @@ class AppDatabase {
     status: MessageStatus.values.byName(row['status'] as String),
     kind: MessageKind.values.byName(row['kind'] as String),
     fileName: row['file_name'] as String?,
-    filePath: row['file_path'] as String?,
+    filePath: _decodeAttachment(row['file_path'] as String?),
     fileSize: row['file_size'] as int?,
     mimeType: row['mime_type'] as String?,
     transferId: row['transfer_id'] as String?,
@@ -422,5 +463,15 @@ class AppDatabase {
   Future<void> close() async {
     await _database?.close();
     _database = null;
+    _attachmentPaths = null;
+    _directoryPath = null;
   }
+
+  /// 附件路径存入数据库前转成相对数据目录的形式，便于整体搬迁。
+  String? _encodeAttachment(String? filePath) =>
+      filePath == null ? null : attachmentPaths.encode(filePath);
+
+  /// 读取时还原成本机绝对路径；升级前的绝对路径会原样返回。
+  String? _decodeAttachment(String? storedPath) =>
+      storedPath == null ? null : attachmentPaths.decode(storedPath);
 }

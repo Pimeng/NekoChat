@@ -12,6 +12,14 @@ import '../protocol/protocol.dart';
 typedef TrustLookup = TrustedPeer? Function(String deviceId);
 typedef NetworkInterfacesProvider = Future<List<NetworkInterface>> Function();
 
+/// 构造发现服务的方式，便于在测试中替换为不绑定真实网卡的实现。
+typedef DiscoveryServiceFactory =
+    DiscoveryService Function({
+      required LocalIdentity identity,
+      required TrustLookup trustLookup,
+      required void Function(List<DiscoveredPeer> peers) onPeersChanged,
+    });
+
 class _InterfaceSender {
   const _InterfaceSender({required this.address, required this.socket});
   final InternetAddress address;
@@ -180,7 +188,7 @@ class DiscoveryService {
         if (deviceId is! String ||
             deviceId.isEmpty ||
             displayName is! String ||
-            displayName.isEmpty ||
+            !isValidDisplayName(displayName) ||
             port is! int ||
             port < 1 ||
             port > 65535) {

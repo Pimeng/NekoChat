@@ -4,7 +4,8 @@ import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+
+import '../config/app_paths.dart';
 
 class InvalidPasswordException implements Exception {
   const InvalidPasswordException();
@@ -18,7 +19,7 @@ abstract interface class LocalDatabaseKeyProvider {
 
 class EncryptedFileDatabaseKeyProvider implements LocalDatabaseKeyProvider {
   EncryptedFileDatabaseKeyProvider({Future<Directory> Function()? directory})
-    : _directory = directory ?? getApplicationSupportDirectory;
+    : _directory = directory ?? appDataDirectory;
   static const _iterations = 210000;
   final Future<Directory> Function() _directory;
   final _cipher = AesGcm.with256bits();

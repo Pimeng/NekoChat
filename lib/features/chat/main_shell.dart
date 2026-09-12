@@ -45,6 +45,7 @@ class _MainShellState extends State<MainShell> {
                 right: 18,
                 child: _TopRightSnackBar(
                   message: controller.topRightMessage!,
+                  icon: controller.topRightIcon,
                   onClose: controller.clearTopRightMessage,
                 ),
               ),
@@ -179,6 +180,17 @@ class _MainShellState extends State<MainShell> {
             ),
           ),
           const Divider(height: 1),
+          if (controller.dataDirectory != null)
+            ListTile(
+              leading: const Icon(Icons.folder_outlined),
+              title: const Text('数据文件夹'),
+              subtitle: Text(
+                controller.dataDirectory!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: controller.openDataDirectory,
+            ),
           ListTile(
             leading: const Icon(Icons.notifications_active_outlined),
             title: const Text('系统通知'),
@@ -214,6 +226,8 @@ class _MainShellState extends State<MainShell> {
           onAcceptFile: controller.acceptIncomingFile,
           onRejectFile: controller.rejectIncomingFile,
           onRetryFile: controller.retryFileDownload,
+          onRelocateFile: controller.relocateAttachment,
+          missingHintFor: controller.attachmentMissingHint,
           actions: [
             PopupMenuButton<String>(
               tooltip: '会话操作',
@@ -273,6 +287,8 @@ class _MainShellState extends State<MainShell> {
           onAcceptFile: controller.acceptIncomingFile,
           onRejectFile: controller.rejectIncomingFile,
           onRetryFile: controller.retryFileDownload,
+          onRelocateFile: controller.relocateAttachment,
+          missingHintFor: controller.attachmentMissingHint,
           actions: [
             if (group.ownerDeviceId == controller.identity!.deviceId)
               IconButton(
@@ -866,6 +882,8 @@ class _ConversationPane extends StatelessWidget {
     required this.onAcceptFile,
     required this.onRejectFile,
     required this.onRetryFile,
+    required this.onRelocateFile,
+    required this.missingHintFor,
     required this.actions,
   });
   final String title;
@@ -883,6 +901,8 @@ class _ConversationPane extends StatelessWidget {
   final Future<void> Function(ChatMessage) onAcceptFile;
   final Future<void> Function(ChatMessage) onRejectFile;
   final Future<void> Function(ChatMessage) onRetryFile;
+  final Future<void> Function(ChatMessage) onRelocateFile;
+  final String Function(ChatMessage) missingHintFor;
   final List<Widget> actions;
 
   @override
@@ -949,11 +969,13 @@ class _ConversationPane extends StatelessWidget {
                     message: message,
                     mine: mine,
                     senderName: peerName(message.senderDeviceId),
+                    missingHint: missingHintFor(message),
                     onOpen: onOpenAttachment,
                     onOpenFolder: onOpenAttachmentFolder,
                     onAccept: onAcceptFile,
                     onReject: onRejectFile,
                     onRetry: onRetryFile,
+                    onRelocate: onRelocateFile,
                   );
                 },
               ),
@@ -990,20 +1012,24 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.mine,
     required this.senderName,
+    required this.missingHint,
     required this.onOpen,
     required this.onOpenFolder,
     required this.onAccept,
     required this.onReject,
     required this.onRetry,
+    required this.onRelocate,
   });
   final ChatMessage message;
   final bool mine;
   final String senderName;
+  final String missingHint;
   final Future<void> Function(ChatMessage) onOpen;
   final Future<void> Function(ChatMessage) onOpenFolder;
   final Future<void> Function(ChatMessage) onAccept;
   final Future<void> Function(ChatMessage) onReject;
   final Future<void> Function(ChatMessage) onRetry;
+  final Future<void> Function(ChatMessage) onRelocate;
 
   @override
   Widget build(BuildContext context) => Align(
@@ -1193,6 +1219,21 @@ class _MessageBubble extends StatelessWidget {
               icon: const Icon(Icons.refresh, size: 18),
               label: const Text('重试接收'),
             ),
+          ] else if (!hasLocalFile && message.status == MessageStatus.sent) ...[
+            const SizedBox(height: 8),
+            Text(
+              missingHint,
+              textAlign: mine ? TextAlign.right : TextAlign.left,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+            if (mine) ...[
+              const SizedBox(height: 6),
+              OutlinedButton.icon(
+                onPressed: () => onRelocate(message),
+                icon: const Icon(Icons.link, size: 18),
+                label: const Text('重新指定文件'),
+              ),
+            ],
           ] else if (message.kind == MessageKind.file &&
               hasLocalFile &&
               message.status == MessageStatus.sent) ...[
@@ -1241,9 +1282,14 @@ class _MessageBubble extends StatelessWidget {
 }
 
 class _TopRightSnackBar extends StatelessWidget {
-  const _TopRightSnackBar({required this.message, required this.onClose});
+  const _TopRightSnackBar({
+    required this.message,
+    required this.icon,
+    required this.onClose,
+  });
 
   final String message;
+  final IconData icon;
   final VoidCallback onClose;
 
   @override
@@ -1259,7 +1305,7 @@ class _TopRightSnackBar extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              Icons.block,
+              icon,
               size: 20,
               color: Theme.of(context).colorScheme.onInverseSurface,
             ),

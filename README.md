@@ -10,12 +10,15 @@ NekoChat 是面向 Windows 机房的 Flutter 局域网聊天工具。它不依�
 - 发现来源 IP 只取 `Datagram.address`，聊天来源 IP 只取 Socket 的 `remoteAddress`
 - 聊天请求、双方一致的 6 位人工确认码、接受/拒绝、信任记录
 - 同一设备的待处理邀请会去重；已验证设备自动恢复会话，不重复要求验证码
+- 收发的聊天邀请都会在 30 秒内过期：超时后待确认卡片消失，会话回到未建立状态
 - WebSocket 私聊、会话校验、本地历史，以及等待接受、发送成功、拒绝和失败等消息状态
 - 图片与普通文件发送：控制消息走 WebSocket，文件内容通过同一端口的 HTTP 流式传输
 - 10 MB 以下附件自动接收；10 MB 及以上必须由接收方明确接受后才开始传输，单文件上限 512 MB
 - `Ctrl+V` 可直接发送剪贴板中的图片或文件；普通文本仍粘贴到输入框
 - 聊天文本可选择复制；图片直接内嵌显示，右键可打开原图或所在文件夹
 - 接收图片以 SHA-256 内容哈希命名并校验；相同内容即使文件名不同也只保存一份并复用路径
+- 数据（身份、密钥、聊天记录、附件）默认保存在程序目录下的 `neko_chat_data`，整个文件夹拷走即可搬迁；侧栏可显示并打开该目录
+- 附件找不到本地文件时会明确提示原因，本机发出的文件还可以一键“重新指定文件”重新绑定
 - Windows 系统通知：聊天邀请、邀请接受、私聊消息和群聊消息；点击可回到对应会话，侧栏可发送测试通知
 - 会话关闭和黑名单
 - 群创建、邀请确认、在线成员 fan-out 消息
@@ -85,6 +88,8 @@ UI 仅调用 `AppController`；Socket 与数据库不会从 Widget 直接访问�
 
 未知 `type` 被忽略；非版本 1 消息被拒绝。未建立的 `sessionId` 不会自动生成会话。发现端口为 UDP `23332`，聊天和文件服务共用 TCP `23333`。文件邀请只允许对应来源 IP 下载，成功传输后权限立即失效，未使用的邀请 10 分钟后自动过期。发现公告会从每个可用 IPv4 地址分别发送到组播地址、全局广播地址和常见机房 `/24` 定向广播地址，以兼容多网卡和不转发组播的交换网络。Windows 防火墙需要允许应用在专用网络通信。
 
+入站消息在写入数据库前会做字段校验：昵称不超过 32 个字符、群名不超过 40 个字符、文本消息不超过 10000 个字符，附件大小不超过 512 MB。超限的消息会被丢弃，避免对端用超大载荷占用本地存储。
+
 验证码由以下输入稳定计算并格式化成 `123 456`：
 
 ```text
@@ -98,13 +103,29 @@ requestId | requesterDeviceId | recipientDeviceId
 - `local_identities(device_id, display_name, created_at, last_login_at)`
 - `trusted_peers(device_id, display_name, last_known_ip, verified_at, blocked)`
 - `chats(chat_id, peer_device_id, peer_display_name, session_id, state, created_at, last_message_at)`
-- `messages(message_id, chat_id, group_id, sender_device_id, content, timestamp, status, kind, file_name, file_path, file_size, mime_type, transfer_id)`
+- `messages(message_id, chat_id, group_id, sender_device_id, content, timestamp, status, kind, file_name, file_path, file_size, mime_type, transfer_id, file_hash)`
 - `groups(group_id, name, owner_device_id, created_at)`
 - `group_members(group_id, device_id, display_name, role)`
 - `group_invites(invite_id, group_id, inviter_device_id, status, created_at)`
 - `settings(key, value)`
 
-应用数据位于系统的 Application Support 目录。
+## 数据位置
+
+数据与程序放在一起，默认保存到 `<程序目录>/neko_chat_data/`：
+
+- `database-key.json`：PBKDF2-HMAC-SHA256 派生 KEK、AES-256-GCM 封装后的数据库密钥
+- `neko_chat.db`：身份、信任、会话、消息和群组
+- `received_files/`、`received_images/`：接收到的附件
+
+把这个文件夹连同程序一起拷到别的电脑即可带走全部数据。侧栏底部的“数据文件夹”会显示当前路径，点击可直接打开该目录。文件夹不能叫 `data`，那是 Flutter 存放 `flutter_assets` 的目录。
+
+如果程序目录不可写（例如安装到 `C:\Program Files` 且当前用户没有提权），会自动回退到系统的 Application Support 目录，程序仍可正常运行。首次使用程序目录时，若发现旧版本留在 Application Support 中的身份和聊天记录，会把密钥和数据库拷贝过来，原目录保留不删。
+
+开发时 `flutter build windows` 的产物在 `build\windows\x64\runner\Debug\`，所以调试数据也在那里，`flutter clean` 会一并清除；发布时把整个 Release 目录打包分发即可。
+
+附件在数据库里保存的是相对数据目录的路径（例如 `received_images/ab12….png`），所以把数据目录整体搬到另一台电脑、或换到别的盘符后，历史附件依然能打开。升级前写入的绝对路径可以继续正常使用。
+
+发送时你自己挑选的原始文件位于数据目录之外，无法用相对路径表达，仍按绝对路径记录。换机后这类记录会失效，聊天里会直接显示“原始文件不在原位置，无法帮你找到”，并提供“重新指定文件”按钮让你把该条记录重新指向本机的文件；数据目录内的副本若被删除或移动，则提示“本地文件已被移动或删除，无法打开”。重新指定后按新位置解析，若指向数据目录内还会自动改为相对路径，之后再搬迁依然有效。
 
 ## 构建与测试
 

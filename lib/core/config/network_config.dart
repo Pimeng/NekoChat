@@ -10,6 +10,11 @@ abstract final class NetworkConfig {
   static const int maxFileSizeBytes = 512 * 1024 * 1024;
   static const int largeFileThresholdBytes = 10 * 1024 * 1024;
 
+  /// 入站协议字段的长度上限，避免对端发送超大载荷占用本地存储。
+  static const int maxDisplayNameLength = 32;
+  static const int maxGroupNameLength = 40;
+  static const int maxTextMessageLength = 10000;
+
   static bool requiresFileAcceptance(int fileSize) =>
       fileSize >= largeFileThresholdBytes;
 }

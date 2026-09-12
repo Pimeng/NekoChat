@@ -80,6 +80,24 @@ abstract final class ProtocolCodec {
   }
 }
 
+/// 入站昵称必须非空且不超过 [NetworkConfig.maxDisplayNameLength]。
+bool isValidDisplayName(String value) {
+  final trimmed = value.trim();
+  return trimmed.isNotEmpty &&
+      trimmed.length <= NetworkConfig.maxDisplayNameLength;
+}
+
+/// 入站群名必须非空且不超过 [NetworkConfig.maxGroupNameLength]。
+bool isValidGroupName(String value) {
+  final trimmed = value.trim();
+  return trimmed.isNotEmpty &&
+      trimmed.length <= NetworkConfig.maxGroupNameLength;
+}
+
+/// 入站文本消息必须非空且不超过 [NetworkConfig.maxTextMessageLength]。
+bool isValidTextContent(String value) =>
+    value.isNotEmpty && value.length <= NetworkConfig.maxTextMessageLength;
+
 String verificationCode({
   required String requestId,
   required String requesterDeviceId,

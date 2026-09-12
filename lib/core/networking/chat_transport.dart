@@ -4,8 +4,8 @@ import 'dart:io';
 import 'package:logging/logging.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
+import '../config/app_paths.dart';
 import '../config/network_config.dart';
 import '../files/content_hash.dart';
 import '../protocol/protocol.dart';
@@ -57,8 +57,7 @@ class WebSocketChatTransport implements ChatTransport {
   WebSocketChatTransport({
     this.port = NetworkConfig.chatPort,
     Future<Directory> Function()? downloadsDirectory,
-  }) : _downloadsDirectory =
-           downloadsDirectory ?? getApplicationSupportDirectory;
+  }) : _downloadsDirectory = downloadsDirectory ?? appDataDirectory;
 
   final int port;
   final Future<Directory> Function() _downloadsDirectory;
@@ -180,8 +179,16 @@ class WebSocketChatTransport implements ChatTransport {
       _log.info('文件 $transferId 已传输给 $remoteAddress');
     } on Object catch (error, stack) {
       _log.warning('向 $remoteAddress 传输文件失败', error, stack);
-      request.response.statusCode = HttpStatus.internalServerError;
-      await request.response.close();
+      try {
+        request.response.statusCode = HttpStatus.internalServerError;
+      } on Object {
+        // 响应头可能已经开始发送，此时无法再修改状态码。
+      }
+      try {
+        await request.response.close();
+      } on Object {
+        // 对端可能已经断开连接，关闭失败可以忽略。
+      }
     }
   }
 

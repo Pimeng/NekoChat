@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
@@ -13,6 +13,7 @@ import 'package:uuid/uuid.dart';
 
 import '../core/config/network_config.dart';
 import '../core/database/app_database.dart';
+import '../core/files/attachment_path.dart';
 import '../core/files/content_hash.dart';
 import '../core/identity/database_key_provider.dart';
 import '../core/identity/identity_service.dart';
@@ -31,23 +32,42 @@ class AppController extends ChangeNotifier {
     AppDatabase? database,
     ChatTransport? transport,
     SystemNotificationService? notifications,
+    DiscoveryServiceFactory? discoveryFactory,
+    this._requestTimeout = NetworkConfig.requestTimeout,
   }) : _keyProvider = keyProvider ?? EncryptedFileDatabaseKeyProvider(),
        _database = database ?? AppDatabase(),
        _transport = transport ?? WebSocketChatTransport(),
-       _notifications = notifications ?? DesktopSystemNotificationService();
+       _notifications = notifications ?? DesktopSystemNotificationService(),
+       _discoveryFactory = discoveryFactory ?? _defaultDiscoveryFactory;
 
   static const _uuid = Uuid();
   final LocalDatabaseKeyProvider _keyProvider;
   final AppDatabase _database;
   final ChatTransport _transport;
   final SystemNotificationService _notifications;
+  final DiscoveryServiceFactory _discoveryFactory;
+  final Duration _requestTimeout;
   final _log = Logger('AppController');
   DiscoveryService? _discovery;
+
+  static DiscoveryService _defaultDiscoveryFactory({
+    required LocalIdentity identity,
+    required TrustLookup trustLookup,
+    required void Function(List<DiscoveredPeer> peers) onPeersChanged,
+  }) => DiscoveryService(
+    identity: identity,
+    trustLookup: trustLookup,
+    onPeersChanged: onPeersChanged,
+  );
 
   AppStage stage = AppStage.booting;
   String? errorMessage;
   String? topRightMessage;
+  IconData topRightIcon = Icons.block;
   LocalIdentity? identity;
+
+  /// 当前数据目录。数据库、解锁密钥和已接收的附件都在这里，整体拷贝即可搬走。
+  String? dataDirectory;
   Map<String, TrustedPeer> trustedPeers = {};
   List<DiscoveredPeer> peers = [];
   List<ChatSummary> chats = [];
@@ -114,7 +134,7 @@ class AppController extends ChangeNotifier {
     final localIdentity = identity!;
     await _notifications.initialize();
     await _transport.start(_onPacket);
-    _discovery = DiscoveryService(
+    _discovery = _discoveryFactory(
       identity: localIdentity,
       trustLookup: (id) => trustedPeers[id],
       onPeersChanged: (value) {
@@ -124,6 +144,7 @@ class AppController extends ChangeNotifier {
     );
     await _discovery!.start();
     errorMessage = null;
+    dataDirectory = _database.directoryPath;
     stage = AppStage.ready;
     _log.info('应用已就绪，deviceId=${localIdentity.deviceId}');
     notifyListeners();
@@ -494,7 +515,10 @@ class AppController extends ChangeNotifier {
 
   Future<void> openAttachment(ChatMessage message) async {
     final path = message.filePath;
-    if (path == null || !await File(path).exists()) return;
+    if (path == null || !await File(path).exists()) {
+      _reportMissingAttachment(message);
+      return;
+    }
     if (!await launchUrl(Uri.file(path))) {
       errorMessage = '无法打开文件';
       notifyListeners();
@@ -503,21 +527,93 @@ class AppController extends ChangeNotifier {
 
   Future<void> openAttachmentFolder(ChatMessage message) async {
     final path = message.filePath;
-    if (path == null || !await File(path).exists()) return;
-    try {
-      if (Platform.isWindows) {
-        await Process.start('explorer.exe', [
-          '/select,',
-          path,
-        ], mode: ProcessStartMode.detached);
+    if (path == null) {
+      _reportMissingAttachment(message);
+      return;
+    }
+    // 文件本身不在了，但上级目录还在时仍然把它打开，方便用户自己找一找。
+    final directory = File(path).parent.path;
+    if (!await File(path).exists()) {
+      if (!await Directory(directory).exists()) {
+        _reportMissingAttachment(message);
         return;
       }
-      if (!await launchUrl(Uri.directory(File(path).parent.path))) {
+      await _openPath(directory, failure: '无法打开文件所在位置');
+      return;
+    }
+    await _openPath(directory, revealPath: path, failure: '无法打开文件所在位置');
+  }
+
+  /// 让用户重新指定缺失附件在本机的位置，修复换机或移动文件后失效的记录。
+  Future<void> relocateAttachment(ChatMessage message) async {
+    final result = await FilePicker.pickFile(
+      dialogTitle: '重新指定“${message.fileName ?? '附件'}”的位置',
+    );
+    final filePath = result?.path;
+    if (filePath == null) return;
+    if (!await File(filePath).exists()) {
+      errorMessage = '所选文件不存在';
+      notifyListeners();
+      return;
+    }
+    await _database.updateMessageFilePath(message.messageId, filePath);
+    _replaceVisibleMessage(message.messageId, filePath: filePath);
+    notifyListeners();
+    _showTopRightMessage('已重新绑定本地文件', icon: Icons.link);
+  }
+
+  /// 这个附件记录指向的文件是否原本就在数据文件夹里。
+  ///
+  /// 界面用它决定缺失提示的文案：目录内的文件会随数据文件夹一起搬迁，
+  /// 目录外的原始文件换机后只能靠用户重新指定。
+  bool isAttachmentInsideDataDirectory(ChatMessage message) {
+    final path = message.filePath;
+    return path != null && _database.isInsideDataDirectory(path);
+  }
+
+  /// 附件缺失时展示给用户的说明。
+  String attachmentMissingHint(ChatMessage message) => missingAttachmentHint(
+    insideDataDirectory: isAttachmentInsideDataDirectory(message),
+  );
+
+  void _reportMissingAttachment(ChatMessage message) {
+    _showTopRightMessage(
+      attachmentMissingHint(message),
+      icon: Icons.error_outline,
+    );
+  }
+
+  /// 打开数据目录，方便用户把身份和聊天记录整体拷走。
+  Future<void> openDataDirectory() async {
+    final path = dataDirectory;
+    if (path == null) return;
+    await _openPath(path, failure: '无法打开数据目录');
+  }
+
+  Future<void> _openPath(
+    String directoryPath, {
+    String? revealPath,
+    required String failure,
+  }) async {
+    try {
+      if (Platform.isWindows) {
+        final arguments = revealPath == null
+            ? [directoryPath]
+            : ['/select,', revealPath];
+        await Process.start(
+          'explorer.exe',
+          arguments,
+          mode: ProcessStartMode.detached,
+        );
+        return;
+      }
+      final target = Uri.file(revealPath ?? directoryPath);
+      if (!await launchUrl(target)) {
         throw StateError('系统未能打开目录');
       }
     } on Object catch (error, stack) {
-      _log.warning('打开附件所在文件夹失败', error, stack);
-      errorMessage = '无法打开文件所在位置';
+      _log.warning(failure, error, stack);
+      errorMessage = failure;
       notifyListeners();
     }
   }
@@ -561,7 +657,9 @@ class AppController extends ChangeNotifier {
     List<DiscoveredPeer> invitees,
   ) async {
     final normalized = name.trim();
-    if (normalized.isEmpty) throw ArgumentError('群名不能为空');
+    if (normalized.isEmpty || !isValidGroupName(normalized)) {
+      throw ArgumentError('群名称长度应为 1～${NetworkConfig.maxGroupNameLength} 个字符');
+    }
     final group = ChatGroup(
       groupId: _uuid.v4(),
       name: normalized,
@@ -695,7 +793,11 @@ class AppController extends ChangeNotifier {
 
   Future<void> renameGroup(ChatGroup group, String name) async {
     final normalized = name.trim();
-    if (group.ownerDeviceId != identity!.deviceId || normalized.isEmpty) return;
+    if (group.ownerDeviceId != identity!.deviceId ||
+        normalized.isEmpty ||
+        !isValidGroupName(normalized)) {
+      return;
+    }
     final members = await _database.loadGroupMembers(group.groupId);
     final updated = ChatGroup(
       groupId: group.groupId,
@@ -927,6 +1029,7 @@ class AppController extends ChangeNotifier {
     if (requestId is! String ||
         deviceId is! String ||
         displayName is! String ||
+        !isValidDisplayName(displayName) ||
         deviceId == identity!.deviceId) {
       return;
     }
@@ -997,6 +1100,7 @@ class AppController extends ChangeNotifier {
       incoming: true,
     );
     chatRequests[requestId] = request;
+    _scheduleRequestTimeout(request);
     await _upsertChat(deviceId, displayName, ChatSessionState.pendingIncoming);
     notifyListeners();
     if (!_notifications.appIsFocused) {
@@ -1018,7 +1122,8 @@ class AppController extends ChangeNotifier {
     if (requestId is! String ||
         sessionId is! String ||
         deviceId is! String ||
-        displayName is! String) {
+        displayName is! String ||
+        !isValidDisplayName(displayName)) {
       return;
     }
     final request = chatRequests[requestId];
@@ -1081,7 +1186,8 @@ class AppController extends ChangeNotifier {
         messageId is! String ||
         senderDeviceId is! String ||
         timestamp is! int ||
-        content is! String) {
+        content is! String ||
+        !isValidTextContent(content)) {
       return;
     }
     if (trustedPeers[senderDeviceId]?.blocked == true) return;
@@ -1423,7 +1529,9 @@ class AppController extends ChangeNotifier {
         groupId is! String ||
         groupName is! String ||
         ownerDeviceId is! String ||
-        ownerDisplayName is! String) {
+        ownerDisplayName is! String ||
+        !isValidGroupName(groupName) ||
+        !isValidDisplayName(ownerDisplayName)) {
       return;
     }
     if (trustedPeers[ownerDeviceId] == null ||
@@ -1460,7 +1568,8 @@ class AppController extends ChangeNotifier {
     if (inviteId is! String ||
         accepted is! bool ||
         deviceId is! String ||
-        displayName is! String) {
+        displayName is! String ||
+        !isValidDisplayName(displayName)) {
       return;
     }
     final pending = _outgoingGroupInvites.remove(inviteId);
@@ -1489,7 +1598,8 @@ class AppController extends ChangeNotifier {
         messageId is! String ||
         senderDeviceId is! String ||
         timestamp is! int ||
-        content is! String) {
+        content is! String ||
+        !isValidTextContent(content)) {
       return;
     }
     final group = groups.where((value) => value.groupId == groupId).firstOrNull;
@@ -1648,7 +1758,7 @@ class AppController extends ChangeNotifier {
   void _scheduleRequestTimeout(ChatRequest request) {
     _chatRequestTimers[request.requestId]?.cancel();
     _chatRequestTimers[request.requestId] = Timer(
-      NetworkConfig.requestTimeout,
+      _requestTimeout,
       () => unawaited(_expireChatRequest(request)),
     );
   }
@@ -1661,7 +1771,14 @@ class AppController extends ChangeNotifier {
       request.displayName,
       ChatSessionState.none,
     );
-    errorMessage = '与 ${request.displayName} 的连接请求已超时，可以重试';
+    if (request.incoming) {
+      _showTopRightMessage(
+        '来自 ${request.displayName} 的聊天邀请已超时',
+        icon: Icons.schedule,
+      );
+    } else {
+      errorMessage = '与 ${request.displayName} 的连接请求已超时，可以重试';
+    }
     notifyListeners();
   }
 
@@ -1719,6 +1836,7 @@ class AppController extends ChangeNotifier {
       displayName: displayName,
       state: state,
       sessionId: sessionId,
+      createdAt: existing?.createdAt,
       lastMessageAt: existing?.lastMessageAt,
     );
     await _database.saveChat(chat);
@@ -1735,7 +1853,7 @@ class AppController extends ChangeNotifier {
 
   void _replaceVisibleMessage(
     String id, {
-    required MessageStatus status,
+    MessageStatus? status,
     String? filePath,
   }) {
     messages = [
@@ -1748,7 +1866,7 @@ class AppController extends ChangeNotifier {
             senderDeviceId: message.senderDeviceId,
             content: message.content,
             timestamp: message.timestamp,
-            status: status,
+            status: status ?? message.status,
             kind: message.kind,
             fileName: message.fileName,
             filePath: filePath ?? message.filePath,
@@ -1796,9 +1914,10 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void _showTopRightMessage(String message) {
+  void _showTopRightMessage(String message, {IconData icon = Icons.block}) {
     _topRightMessageTimer?.cancel();
     topRightMessage = message;
+    topRightIcon = icon;
     notifyListeners();
     _topRightMessageTimer = Timer(const Duration(seconds: 4), () {
       topRightMessage = null;

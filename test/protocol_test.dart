@@ -32,6 +32,29 @@ void main() {
     });
   });
 
+  group('入站字段校验', () {
+    test('昵称必须非空且不超过 32 个字符', () {
+      expect(isValidDisplayName('张三'), isTrue);
+      expect(isValidDisplayName('  '), isFalse);
+      expect(isValidDisplayName('a' * 32), isTrue);
+      expect(isValidDisplayName('a' * 33), isFalse);
+    });
+
+    test('群名必须非空且不超过 40 个字符', () {
+      expect(isValidGroupName('一班'), isTrue);
+      expect(isValidGroupName(''), isFalse);
+      expect(isValidGroupName('a' * 40), isTrue);
+      expect(isValidGroupName('a' * 41), isFalse);
+    });
+
+    test('文本消息必须非空且不超过 10000 个字符', () {
+      expect(isValidTextContent('你好'), isTrue);
+      expect(isValidTextContent(''), isFalse);
+      expect(isValidTextContent('a' * 10000), isTrue);
+      expect(isValidTextContent('a' * 10001), isFalse);
+    });
+  });
+
   group('verificationCode', () {
     test('同一请求在双方得到相同的六位码', () {
       final atRequester = verificationCode(
