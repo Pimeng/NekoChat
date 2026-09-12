@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:neko_chat/app/app_controller.dart';
+import 'package:neko_chat/core/config/network_config.dart';
 import 'package:neko_chat/core/database/app_database.dart';
 import 'package:neko_chat/core/identity/database_key_provider.dart';
 import 'package:neko_chat/core/models/models.dart';
@@ -11,27 +12,69 @@ import 'package:neko_chat/core/notifications/system_notification_service.dart';
 import 'package:neko_chat/core/protocol/protocol.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+/// 测试脚手架：控制器、数据库、假传输与假发现服务。
+class _Setup {
+  _Setup({
+    required this.controller,
+    required this.database,
+    required this.transport,
+    required this.discovery,
+  });
+
+  final AppController controller;
+  final AppDatabase database;
+  final _FakeTransport transport;
+  final _FakeDiscoveryService discovery;
+}
+
 void main() {
   setUpAll(sqfliteFfiInit);
 
-  ({AppController controller, AppDatabase database, _FakeTransport transport})
-  createController(Directory directory, {required Duration requestTimeout}) {
+  _Setup createController(
+    Directory directory, {
+    required Duration requestTimeout,
+    SystemNotificationService? notifications,
+  }) {
     final database = AppDatabase(directory: () async => directory);
     final transport = _FakeTransport();
+    final discovery = _FakeDiscoveryService();
     final controller = AppController(
       keyProvider: _FakeKeyProvider(),
       database: database,
       transport: transport,
-      notifications: _FakeNotifications(),
-      discoveryFactory: ({
-        required LocalIdentity identity,
-        required TrustLookup trustLookup,
-        required void Function(List<DiscoveredPeer> peers) onPeersChanged,
-      }) => _FakeDiscoveryService(),
+      notifications: notifications ?? _FakeNotifications(),
+      discoveryFactory:
+          ({
+            required LocalIdentity identity,
+            required TrustLookup trustLookup,
+            required void Function(List<DiscoveredPeer> peers) onPeersChanged,
+          }) {
+            // 控制器就绪时才拿到回调，这里后绑定给假发现服务。
+            discovery.bind(onPeersChanged);
+            return discovery;
+          },
       requestTimeout: requestTimeout,
     );
-    return (controller: controller, database: database, transport: transport);
+    return _Setup(
+      controller: controller,
+      database: database,
+      transport: transport,
+      discovery: discovery,
+    );
   }
+
+  /// 让控制器认为某个设备在线，否则发送文件会被“对方离线”挡下。
+  void setPeerOnline(_Setup setup) => setup.discovery.emit([
+    DiscoveredPeer(
+      deviceId: 'peer-device',
+      displayName: '李四',
+      ip: '192.168.1.20',
+      port: 23333,
+      lastSeen: DateTime.now(),
+      trusted: true,
+      online: true,
+    ),
+  ]);
 
   IncomingPacket chatRequestPacket() => IncomingPacket(
     envelope: const ProtocolEnvelope(
@@ -46,10 +89,7 @@ void main() {
   );
 
   /// 走完一次聊天邀请流程，返回建立后的 sessionId。
-  Future<String> activateChat(
-    ({AppController controller, AppDatabase database, _FakeTransport transport})
-    setup,
-  ) async {
+  Future<String> activateChat(_Setup setup) async {
     setup.transport.emit(chatRequestPacket());
     await _waitUntil(
       () =>
@@ -193,6 +233,61 @@ void main() {
     expect(setup.controller.messages.single.content, '在吗');
   });
 
+  test('窗口失焦但会话已打开时消息仍直接显示，且不计未读', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-background-',
+    );
+    final notifications = _FakeNotifications(focused: false);
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+      notifications: notifications,
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    await setup.controller.selectChat(setup.controller.chats.single.chatId);
+
+    setup.transport.emit(textMessagePacket(sessionId, '后台到达'));
+    await _waitUntil(() => setup.controller.messages.length == 1);
+
+    // 消息直接进了列表，未读保持 0，同时仍然发出了系统通知。
+    expect(setup.controller.messages.single.content, '后台到达');
+    expect(setup.controller.chats.single.unreadCount, 0);
+    expect(notifications.shown, contains('message:msg-1'));
+  });
+
+  test('会话未打开时消息计为未读且不进入当前列表', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-unseen-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+
+    setup.transport.emit(textMessagePacket(sessionId, '别的会话'));
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 1);
+    expect(setup.controller.messages, isEmpty);
+  });
+
   test('发送消息携带引用并在发送后清空引用状态', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-reply-',
@@ -227,6 +322,139 @@ void main() {
     expect(reply.replyToMessageId, original.messageId);
     expect(reply.replyToPreview, '原始消息');
     expect(setup.controller.replyingTo, isNull);
+  });
+
+  test('文字与附件按顺序一起发送，引用只挂在文字上', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-mixed-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    await setup.controller.selectChat(setup.controller.chats.single.chatId);
+    setPeerOnline(setup);
+
+    setup.transport.emit(textMessagePacket(sessionId, '原始消息'));
+    await _waitUntil(() => setup.controller.messages.isNotEmpty);
+    final original = setup.controller.messages.last;
+    setup.controller.beginReply(original);
+
+    final file = File('${directory.path}${Platform.pathSeparator}混排.png');
+    await file.writeAsBytes(List<int>.filled(32, 7));
+    final attachment = await setup.controller.pendingAttachment(file.path);
+    expect(attachment, isNotNull);
+    expect(attachment!.isImage, isTrue);
+
+    await setup.controller.sendMessageWithAttachments(
+      content: '配图说明',
+      attachments: [attachment],
+    );
+    await _waitUntil(() => setup.controller.messages.length == 3);
+
+    final sent = setup.controller.messages.sublist(1);
+    expect(sent.first.content, '配图说明');
+    expect(sent.first.kind, MessageKind.text);
+    // 引用落在文字上，附件不会重复携带引用。
+    expect(sent.first.replyToMessageId, original.messageId);
+    expect(sent.last.kind, MessageKind.image);
+    expect(sent.last.fileName, '混排.png');
+    expect(sent.last.replyToMessageId, isNull);
+  });
+
+  test('只有附件时引用落到第一个附件上', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-file-reply-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    await setup.controller.selectChat(setup.controller.chats.single.chatId);
+    setPeerOnline(setup);
+
+    setup.transport.emit(textMessagePacket(sessionId, '原始消息'));
+    await _waitUntil(() => setup.controller.messages.isNotEmpty);
+    final original = setup.controller.messages.last;
+    setup.controller.beginReply(original);
+
+    final file = File('${directory.path}${Platform.pathSeparator}报告.pdf');
+    await file.writeAsBytes(List<int>.filled(32, 3));
+    final attachment = await setup.controller.pendingAttachment(file.path);
+    expect(attachment!.isImage, isFalse);
+
+    await setup.controller.sendMessageWithAttachments(
+      content: '   ',
+      attachments: [attachment],
+    );
+    await _waitUntil(() => setup.controller.messages.length == 2);
+
+    final sent = setup.controller.messages.last;
+    expect(sent.kind, MessageKind.file);
+    expect(sent.replyToMessageId, original.messageId);
+    expect(setup.controller.replyingTo, isNull);
+  });
+
+  test('引用附件时用文件名作为摘要，并压缩空白', () {
+    ChatMessage message({
+      required MessageKind kind,
+      required String content,
+      String? fileName,
+    }) => ChatMessage(
+      messageId: 'm-1',
+      chatId: 'chat-1',
+      senderDeviceId: 'peer-device',
+      content: content,
+      timestamp: DateTime.fromMillisecondsSinceEpoch(1000),
+      status: MessageStatus.sent,
+      kind: kind,
+      fileName: fileName,
+    );
+
+    expect(
+      AppController.replyPreview(
+        message(kind: MessageKind.image, content: '照片.png', fileName: '照片.png'),
+      ),
+      '照片.png',
+    );
+    expect(
+      AppController.replyPreview(
+        message(kind: MessageKind.file, content: '报告.pdf', fileName: '报告.pdf'),
+      ),
+      '报告.pdf',
+    );
+    expect(
+      AppController.replyPreview(
+        message(kind: MessageKind.text, content: '  多行\n\n文本  '),
+      ),
+      '多行 文本',
+    );
+    final long = 'a' * 300;
+    final preview = AppController.replyPreview(
+      message(kind: MessageKind.text, content: long),
+    );
+    expect(preview.length, NetworkConfig.maxReplyPreviewLength + 1);
+    expect(preview.endsWith('…'), isTrue);
   });
 }
 
@@ -299,8 +527,13 @@ class _FakeTransport implements ChatTransport {
 }
 
 class _FakeNotifications implements SystemNotificationService {
+  _FakeNotifications({this.focused = true});
+
+  bool focused;
+  final List<String> shown = [];
+
   @override
-  bool get appIsFocused => true;
+  bool get appIsFocused => focused;
 
   @override
   Future<void> initialize() async {}
@@ -311,7 +544,7 @@ class _FakeNotifications implements SystemNotificationService {
     required String title,
     required String body,
     required NotificationCallback onClick,
-  }) async {}
+  }) async => shown.add(identifier);
 
   @override
   Future<void> dispose() async {}
@@ -329,6 +562,14 @@ class _FakeDiscoveryService extends DiscoveryService {
         trustLookup: (_) => null,
         onPeersChanged: (_) {},
       );
+
+  /// 控制器注册的发现回调，测试用它模拟设备上下线。
+  void Function(List<DiscoveredPeer> peers)? _emitPeers;
+
+  void bind(void Function(List<DiscoveredPeer> peers) onPeersChanged) =>
+      _emitPeers = onPeersChanged;
+
+  void emit(List<DiscoveredPeer> peers) => _emitPeers?.call(peers);
 
   @override
   Future<void> start() async {}

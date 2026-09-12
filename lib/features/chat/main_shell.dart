@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -243,6 +244,8 @@ class _MainShellState extends State<MainShell> {
       if (chat != null) {
         final online = _peerOnline(controller, chat.peerDeviceId);
         return _ConversationPane(
+          key: ValueKey(chat.chatId),
+          conversationId: chat.chatId,
           title: chat.displayName,
           subtitle: online ? '在线' : '离线 · 消息不会离线排队',
           messages: controller.messages,
@@ -251,9 +254,12 @@ class _MainShellState extends State<MainShell> {
               deviceId == chat.peerDeviceId ? chat.displayName : '我',
           composer: _composer,
           enabled: online && chat.state == ChatSessionState.active,
-          onSend: () => _send(controller),
-          onAttach: controller.pickAndSendFile,
-          onPasteAttachments: controller.pasteAndSendAttachments,
+          onSend: (text, attachments) => controller.sendMessageWithAttachments(
+            content: text,
+            attachments: attachments,
+          ),
+          onPickAttachments: controller.pickAttachments,
+          onReadClipboardAttachments: controller.readClipboardAttachments,
           onOpenAttachment: controller.openAttachment,
           onOpenAttachmentFolder: controller.openAttachmentFolder,
           onAcceptFile: controller.acceptIncomingFile,
@@ -301,6 +307,8 @@ class _MainShellState extends State<MainShell> {
           .firstOrNull;
       if (group != null) {
         return _ConversationPane(
+          key: ValueKey('group:${group.groupId}'),
+          conversationId: 'group:${group.groupId}',
           title: group.name,
           subtitle: '局域网实时群聊 · 离线成员不会收到消息',
           messages: controller.messages,
@@ -316,9 +324,12 @@ class _MainShellState extends State<MainShell> {
           },
           composer: _composer,
           enabled: true,
-          onSend: () => _send(controller),
-          onAttach: controller.pickAndSendFile,
-          onPasteAttachments: controller.pasteAndSendAttachments,
+          onSend: (text, attachments) => controller.sendMessageWithAttachments(
+            content: text,
+            attachments: attachments,
+          ),
+          onPickAttachments: controller.pickAttachments,
+          onReadClipboardAttachments: controller.readClipboardAttachments,
           onOpenAttachment: controller.openAttachment,
           onOpenAttachmentFolder: controller.openAttachmentFolder,
           onAcceptFile: controller.acceptIncomingFile,
@@ -390,13 +401,6 @@ class _MainShellState extends State<MainShell> {
       }
     }
     return _WelcomePane(controller: controller);
-  }
-
-  Future<void> _send(AppController controller) async {
-    final text = _composer.text;
-    if (text.trim().isEmpty) return;
-    _composer.clear();
-    await controller.sendMessage(text);
   }
 
   /// 把“@昵称 ”插到输入框光标处。
@@ -1015,8 +1019,10 @@ class _GroupInviteCard extends StatelessWidget {
   );
 }
 
-class _ConversationPane extends StatelessWidget {
+class _ConversationPane extends StatefulWidget {
   const _ConversationPane({
+    super.key,
+    required this.conversationId,
     required this.title,
     required this.subtitle,
     required this.messages,
@@ -1025,8 +1031,8 @@ class _ConversationPane extends StatelessWidget {
     required this.composer,
     required this.enabled,
     required this.onSend,
-    required this.onAttach,
-    required this.onPasteAttachments,
+    required this.onPickAttachments,
+    required this.onReadClipboardAttachments,
     required this.onOpenAttachment,
     required this.onOpenAttachmentFolder,
     required this.onAcceptFile,
@@ -1042,6 +1048,7 @@ class _ConversationPane extends StatelessWidget {
     this.onMention,
     this.onPickMentionMember,
   });
+  final String conversationId;
   final String title;
   final String subtitle;
   final List<ChatMessage> messages;
@@ -1049,9 +1056,14 @@ class _ConversationPane extends StatelessWidget {
   final String Function(String) peerName;
   final TextEditingController composer;
   final bool enabled;
-  final VoidCallback onSend;
-  final Future<void> Function() onAttach;
-  final Future<bool> Function() onPasteAttachments;
+
+  /// 发送输入框里的文字与待发送附件。
+  final Future<void> Function(String text, List<PendingAttachment> attachments)
+  onSend;
+
+  /// 打开文件选择框 / 读取剪贴板，返回待暂存的附件。
+  final Future<List<PendingAttachment>> Function() onPickAttachments;
+  final Future<List<PendingAttachment>> Function() onReadClipboardAttachments;
   final Future<void> Function(ChatMessage) onOpenAttachment;
   final Future<void> Function(ChatMessage) onOpenAttachmentFolder;
   final Future<void> Function(ChatMessage) onAcceptFile;
@@ -1074,208 +1086,640 @@ class _ConversationPane extends StatelessWidget {
   final Future<void> Function()? onPickMentionMember;
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Container(
-        height: 72,
-        padding: const EdgeInsets.symmetric(horizontal: 22),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          border: Border(
-            bottom: BorderSide(color: Theme.of(context).dividerColor),
-          ),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 19,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
-            ),
-            ...actions,
-          ],
-        ),
-      ),
-      Expanded(
-        child: messages.isEmpty
-            ? const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.chat_bubble_outline,
-                      size: 42,
-                      color: Colors.grey,
-                    ),
-                    SizedBox(height: 12),
-                    Text('还没有消息，打个招呼吧', style: TextStyle(color: Colors.grey)),
-                  ],
-                ),
-              )
-            : ListView.builder(
-                reverse: true,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 18,
-                ),
-                itemCount: messages.length,
-                itemBuilder: (context, reverseIndex) {
-                  final message = messages[messages.length - 1 - reverseIndex];
-                  final mine = message.senderDeviceId == localDeviceId;
-                  final mentioned = message.mentionsDevice(localDeviceId);
-                  return _MessageBubble(
-                    message: message,
-                    mine: mine,
-                    senderName: peerName(message.senderDeviceId),
-                    mentioned: mentioned,
-                    replySenderName: message.replyToSenderId == null
-                        ? null
-                        : peerName(message.replyToSenderId!),
-                    missingHint: missingHintFor(message),
-                    onOpen: onOpenAttachment,
-                    onOpenFolder: onOpenAttachmentFolder,
-                    onAccept: onAcceptFile,
-                    onReject: onRejectFile,
-                    onRetry: onRetryFile,
-                    onRelocate: onRelocateFile,
-                    onReply: onReplyMessage == null
-                        ? null
-                        : () => onReplyMessage!(message),
-                    onCopy: onCopyMessage == null
-                        ? null
-                        : () => onCopyMessage!(message),
-                    onMention: message.senderDeviceId == localDeviceId
-                        ? null
-                        : onMention == null
-                        ? null
-                        : () => onMention!(peerName(message.senderDeviceId)),
-                  );
-                },
-              ),
-      ),
-      Container(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
-        color: Theme.of(context).colorScheme.surface,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (replyingTo != null)
-              _ReplyBanner(
-                senderName: replyingTo!.senderDeviceId == localDeviceId
-                    ? '我'
-                    : peerName(replyingTo!.senderDeviceId),
-                preview: AppController.replyPreview(replyingTo!),
-                onCancel: onCancelReply,
-              ),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                IconButton(
-                  tooltip: '发送图片或文件',
-                  onPressed: enabled ? onAttach : null,
-                  icon: const Icon(Icons.attach_file),
-                ),
-                if (onPickMentionMember != null)
-                  IconButton(
-                    tooltip: '@ 群成员',
-                    onPressed: enabled ? onPickMentionMember : null,
-                    icon: const Icon(Icons.alternate_email),
-                  ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: MessageComposer(
-                    controller: composer,
-                    enabled: enabled,
-                    onSend: onSend,
-                    onPasteAttachments: onPasteAttachments,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
+  State<_ConversationPane> createState() => _ConversationPaneState();
 }
 
-class _ReplyBanner extends StatelessWidget {
-  const _ReplyBanner({
-    required this.senderName,
-    required this.preview,
-    this.onCancel,
-  });
+class _ConversationPaneState extends State<_ConversationPane> {
+  final ScrollController _scroll = ScrollController();
+  final Map<String, GlobalKey> _messageKeys = {};
 
-  final String senderName;
-  final String preview;
-  final VoidCallback? onCancel;
+  /// 输入框焦点。引用回复后把光标送回输入框，方便立刻打字。
+  final FocusNode _composerFocus = FocusNode();
+  Timer? _highlightTimer;
+  String? _highlightedMessageId;
+
+  /// 输入框里还没发出去的附件。
+  final List<PendingAttachment> _pending = [];
+
+  /// 图片气泡的自绘右键菜单。
+  OverlayEntry? _fallbackMenu;
 
   @override
-  Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.only(bottom: 8),
-    padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(10),
-      border: Border(
-        left: BorderSide(
-          color: Theme.of(context).colorScheme.primary,
-          width: 3,
-        ),
-      ),
-    ),
-    child: Row(
+  void dispose() {
+    _highlightTimer?.cancel();
+    _removeFallbackMenu();
+    _composerFocus.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _removeFallbackMenu() {
+    _fallbackMenu?.remove();
+    _fallbackMenu = null;
+  }
+
+  /// 纯图片气泡里没有可选中的文字，框架的选择工具栏不会弹出，
+  /// 这里把它渲染成同一个组件（位置、外观都与文字气泡一致）。
+  void _showFallbackMenu(
+    BuildContext context,
+    Offset position,
+    List<ContextMenuButtonItem> Function(VoidCallback dismiss) buildItems,
+  ) {
+    _removeFallbackMenu();
+    final overlay = Overlay.of(context);
+    final entry = OverlayEntry(
+      builder: (context) {
+        void dismiss() => _removeFallbackMenu();
+        return Stack(
+          children: [
+            // 点击空白或其他地方关闭菜单。
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: dismiss,
+                onSecondaryTapDown: (_) => dismiss(),
+              ),
+            ),
+            Positioned.fill(
+              child: AdaptiveTextSelectionToolbar.buttonItems(
+                anchors: TextSelectionToolbarAnchors(primaryAnchor: position),
+                buttonItems: buildItems(dismiss),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    _fallbackMenu = entry;
+    overlay.insert(entry);
+  }
+
+  /// 把光标移到输入框末尾并聚焦，避免接着输入时插到文字中间。
+  ///
+  /// 选择菜单收起时可能把焦点抢回去，所以下一帧再补一次请求。
+  void _focusComposer() {
+    if (!mounted) return;
+    _composerFocus.requestFocus();
+    widget.composer.selection = TextSelection.collapsed(
+      offset: widget.composer.text.length,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _composerFocus.requestFocus();
+      widget.composer.selection = TextSelection.collapsed(
+        offset: widget.composer.text.length,
+      );
+    });
+  }
+
+  /// 引用某条消息，并立刻聚焦输入框。
+  void _handleReply(ChatMessage message) {
+    widget.onReplyMessage?.call(message);
+    _focusComposer();
+  }
+
+  /// 选完要 @ 的成员后同样把光标送回输入框（昵称已插到光标处）。
+  Future<void> _handlePickMentionMember() async {
+    await widget.onPickMentionMember?.call();
+    if (mounted) _composerFocus.requestFocus();
+  }
+
+  /// 发送前把附件与文字一起交给控制器，文字先发、附件按顺序跟在后面。
+  Future<void> _handleSend() async {
+    final text = widget.composer.text;
+    final attachments = List<PendingAttachment>.of(_pending);
+    if (text.trim().isEmpty && attachments.isEmpty) return;
+    widget.composer.clear();
+    if (mounted) setState(_pending.clear);
+    await widget.onSend(text, attachments);
+  }
+
+  /// 把新附件追加到待发送区域，同一路径不重复添加。
+  void _addAttachments(List<PendingAttachment> attachments) {
+    if (attachments.isEmpty || !mounted) return;
+    setState(() {
+      for (final attachment in attachments) {
+        if (_pending.any((value) => value.path == attachment.path)) continue;
+        _pending.add(attachment);
+      }
+    });
+  }
+
+  Future<void> _pickAttachments() async {
+    _addAttachments(await widget.onPickAttachments());
+  }
+
+  /// 剪贴板里有附件时只暂存，不插入文字，也不直接发送。
+  Future<bool> _pasteAttachments() async {
+    final attachments = await widget.onReadClipboardAttachments();
+    if (attachments.isEmpty) return false;
+    _addAttachments(attachments);
+    return true;
+  }
+
+  void _removeAttachment(PendingAttachment attachment) {
+    setState(() => _pending.remove(attachment));
+  }
+
+  GlobalKey _keyFor(String messageId) =>
+      _messageKeys.putIfAbsent(messageId, () => GlobalKey());
+
+  /// 点击引用块时定位到被引用的原消息。
+  ///
+  /// ListView 是懒加载的，远处的消息还没挂载，`ensureVisible` 找不到它。
+  /// 先用当前可见气泡的平均高度估算目标位置跳一次，估算偏差再按视口顺序
+  /// 逐步逼近（顺序推进不会来回闪烁），对齐后短暂高亮目标气泡。
+  Future<void> _jumpToMessage(String messageId) async {
+    final index = widget.messages.indexWhere(
+      (message) => message.messageId == messageId,
+    );
+    if (index < 0 || !_scroll.hasClients) return;
+    final target = widget.messages.length - 1 - index;
+    final position = _scroll.position;
+
+    _scroll.jumpTo(
+      _estimatedOffsetFor(target)
+          .clamp(position.minScrollExtent, position.maxScrollExtent),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+
+    for (var attempt = 0; attempt < 40; attempt++) {
+      if (_messageKeys[messageId]?.currentContext != null) break;
+      final range = _builtReverseIndexRange();
+      if (range == null) break;
+      final step = position.viewportDimension * 0.8;
+      final next = target > range.max
+          ? position.pixels + step
+          : position.pixels - step;
+      final clamped = next.clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if (clamped == position.pixels) break;
+      _scroll.jumpTo(clamped);
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return;
+    }
+
+    final targetContext = _messageKeys[messageId]?.currentContext;
+    if (targetContext == null || !targetContext.mounted) return;
+    await Scrollable.ensureVisible(
+      targetContext,
+      alignment: 0.5,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+    );
+    if (!mounted) return;
+    _highlightTimer?.cancel();
+    setState(() => _highlightedMessageId = messageId);
+    _highlightTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) setState(() => _highlightedMessageId = null);
+    });
+  }
+
+  /// 用当前可见气泡的平均高度估算某个反转索引对应的滚动偏移。
+  double _estimatedOffsetFor(int target) {
+    final position = _scroll.position;
+    final range = _builtReverseIndexRange();
+    final visible = range == null ? 0 : range.max - range.min + 1;
+    // 没有已挂载气泡时用一个经验高度兜底。
+    final extent = visible > 0 ? position.viewportDimension / visible : 96.0;
+    return target * extent - position.viewportDimension / 2;
+  }
+
+  /// 已挂载消息在反转列表中的索引范围，null 表示当前没有挂载任何气泡。
+  ({int min, int max})? _builtReverseIndexRange() {
+    final length = widget.messages.length;
+    int? min;
+    int? max;
+    for (var index = 0; index < length; index++) {
+      final id = widget.messages[index].messageId;
+      if (_messageKeys[id]?.currentContext == null) continue;
+      final reverseIndex = length - 1 - index;
+      min = min == null || reverseIndex < min ? reverseIndex : min;
+      max = max == null || reverseIndex > max ? reverseIndex : max;
+    }
+    return min == null ? null : (min: min, max: max!);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final messages = widget.messages;
+    final messagesById = {
+      for (final message in messages) message.messageId: message,
+    };
+    return Column(
       children: [
-        Icon(
-          Icons.reply,
-          size: 18,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        Container(
+          height: 72,
+          padding: const EdgeInsets.symmetric(horizontal: 22),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border(
+              bottom: BorderSide(color: Theme.of(context).dividerColor),
+            ),
+          ),
+          child: Row(
             children: [
-              Text(
-                '引用 $senderName',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Theme.of(context).colorScheme.primary,
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.title,
+                      style: const TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      widget.subtitle,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                 ),
               ),
-              Text(
-                preview,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
+              ...widget.actions,
+            ],
+          ),
+        ),
+        Expanded(
+          child: messages.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.chat_bubble_outline,
+                        size: 42,
+                        color: Colors.grey,
+                      ),
+                      SizedBox(height: 12),
+                      Text('还没有消息，打个招呼吧', style: TextStyle(color: Colors.grey)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  key: PageStorageKey(widget.conversationId),
+                  controller: _scroll,
+                  reverse: true,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 18,
+                  ),
+                  itemCount: messages.length,
+                  itemBuilder: (context, reverseIndex) {
+                    final message =
+                        messages[messages.length - 1 - reverseIndex];
+                    final mine = message.senderDeviceId == widget.localDeviceId;
+                    final mentioned = message.mentionsDevice(
+                      widget.localDeviceId,
+                    );
+                    return _MessageBubble(
+                      key: _keyFor(message.messageId),
+                      message: message,
+                      mine: mine,
+                      senderName: widget.peerName(message.senderDeviceId),
+                      mentioned: mentioned,
+                      highlighted: _highlightedMessageId == message.messageId,
+                      replySenderName: message.replyToSenderId == null
+                          ? null
+                          : widget.peerName(message.replyToSenderId!),
+                      resolveMessage: (id) => messagesById[id],
+                      onJumpToReply: (id) => unawaited(_jumpToMessage(id)),
+                      missingHint: widget.missingHintFor(message),
+                      onOpen: widget.onOpenAttachment,
+                      onOpenFolder: widget.onOpenAttachmentFolder,
+                      onAccept: widget.onAcceptFile,
+                      onReject: widget.onRejectFile,
+                      onRetry: widget.onRetryFile,
+                      onRelocate: widget.onRelocateFile,
+                      onReply: widget.onReplyMessage == null
+                          ? null
+                          : () => _handleReply(message),
+                      onCopy: widget.onCopyMessage == null
+                          ? null
+                          : () => widget.onCopyMessage!(message),
+                      onMention: message.senderDeviceId == widget.localDeviceId
+                          ? null
+                          : widget.onMention == null
+                          ? null
+                          : () => widget.onMention!(
+                              widget.peerName(message.senderDeviceId),
+                            ),
+                      onShowFallbackMenu: _showFallbackMenu,
+                    );
+                  },
+                ),
+        ),
+        Container(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
+          color: Theme.of(context).colorScheme.surface,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (widget.replyingTo != null)
+                _ReplyBanner(
+                  message: widget.replyingTo!,
+                  senderName:
+                      widget.replyingTo!.senderDeviceId == widget.localDeviceId
+                      ? '我'
+                      : widget.peerName(widget.replyingTo!.senderDeviceId),
+                  onCancel: widget.onCancelReply,
+                ),
+              if (_pending.isNotEmpty)
+                _PendingAttachments(
+                  attachments: _pending,
+                  onRemove: _removeAttachment,
+                ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  IconButton(
+                    tooltip: '添加图片或文件',
+                    onPressed: widget.enabled ? _pickAttachments : null,
+                    icon: const Icon(Icons.attach_file),
+                  ),
+                  if (widget.onPickMentionMember != null)
+                    IconButton(
+                      tooltip: '@ 群成员',
+                      onPressed: widget.enabled
+                          ? () => unawaited(_handlePickMentionMember())
+                          : null,
+                      icon: const Icon(Icons.alternate_email),
+                    ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: MessageComposer(
+                      controller: widget.composer,
+                      focusNode: _composerFocus,
+                      enabled: widget.enabled,
+                      onSend: () => unawaited(_handleSend()),
+                      onPasteAttachments: _pasteAttachments,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
         ),
-        IconButton(
-          tooltip: '取消引用',
-          onPressed: onCancel,
-          icon: const Icon(Icons.close, size: 18),
+      ],
+    );
+  }
+}
+
+/// 输入框上方的待发送附件区域：图片显示缩略图，其他文件显示文件名。
+class _PendingAttachments extends StatelessWidget {
+  const _PendingAttachments({
+    required this.attachments,
+    required this.onRemove,
+  });
+
+  final List<PendingAttachment> attachments;
+  final void Function(PendingAttachment) onRemove;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(bottom: 8),
+    padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              Icons.attach_file,
+              size: 15,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              '待发送 ${attachments.length} 个附件，将与文字一起发出',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 74,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: attachments.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (context, index) => _PendingAttachmentChip(
+              attachment: attachments[index],
+              onRemove: () => onRemove(attachments[index]),
+            ),
+          ),
         ),
       ],
     ),
   );
 }
 
+class _PendingAttachmentChip extends StatelessWidget {
+  const _PendingAttachmentChip({
+    required this.attachment,
+    required this.onRemove,
+  });
+
+  final PendingAttachment attachment;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message:
+          '${attachment.fileName}\n${_formatFileSize(attachment.fileSize)}',
+      child: Container(
+        width: 88,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: colorScheme.outlineVariant),
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (attachment.isImage)
+              Image.file(
+                File(attachment.path),
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => _filePreview(context),
+              )
+            else
+              _filePreview(context),
+            Positioned(
+              top: 2,
+              right: 2,
+              child: _RemoveAttachmentButton(onPressed: onRemove),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _filePreview(BuildContext context) => Padding(
+    // 顶部留出空间，避免文字顶到右上角的移除按钮。
+    padding: const EdgeInsets.fromLTRB(6, 20, 6, 4),
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          Icons.insert_drive_file_outlined,
+          size: 22,
+          color: Theme.of(context).colorScheme.outline,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          attachment.fileName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
+      ],
+    ),
+  );
+}
+
+class _RemoveAttachmentButton extends StatelessWidget {
+  const _RemoveAttachmentButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.black54,
+    shape: const CircleBorder(),
+    child: InkWell(
+      customBorder: const CircleBorder(),
+      onTap: onPressed,
+      child: const Tooltip(
+        message: '移除附件',
+        child: Padding(
+          padding: EdgeInsets.all(3),
+          child: Icon(Icons.close, size: 13, color: Colors.white),
+        ),
+      ),
+    ),
+  );
+}
+
+class _ReplyBanner extends StatelessWidget {
+  const _ReplyBanner({
+    required this.message,
+    required this.senderName,
+    this.onCancel,
+  });
+
+  /// 被引用的原消息，用于展示图片缩略图或文件图标。
+  final ChatMessage message;
+  final String senderName;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final leading = _quoteLeading(context, message, size: 32);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        // 左侧是一整条竖线，不加圆角，避免圆角把竖线截断。
+        border: Border(
+          left: BorderSide(
+            color: Theme.of(context).colorScheme.primary,
+            width: 3,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.reply,
+            size: 18,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: 8),
+          if (leading != null) ...[leading, const SizedBox(width: 8)],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '引用 $senderName',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+                Text(
+                  AppController.replyPreview(message),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: '取消引用',
+            onPressed: onCancel,
+            icon: const Icon(Icons.close, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 引用内容左侧的缩略图：图片显示缩略图，文件显示图标，文本返回 null。
+///
+/// 被引用的图片只有在本机已经收到时才能预览，否则退回文件名。
+Widget? _quoteLeading(
+  BuildContext context,
+  ChatMessage message, {
+  required double size,
+}) {
+  final outline = Theme.of(context).colorScheme.outline;
+  switch (message.kind) {
+    case MessageKind.image:
+      final path = message.filePath;
+      if (path != null && File(path).existsSync()) {
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Image.file(
+            File(path),
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) =>
+                Icon(Icons.image_outlined, size: size, color: outline),
+          ),
+        );
+      }
+      return Icon(Icons.image_outlined, size: size, color: outline);
+    case MessageKind.file:
+      return Icon(Icons.insert_drive_file_outlined, size: size, color: outline);
+    case MessageKind.text:
+      return null;
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
+    super.key,
     required this.message,
     required this.mine,
     required this.senderName,
@@ -1287,10 +1731,14 @@ class _MessageBubble extends StatelessWidget {
     required this.onRetry,
     required this.onRelocate,
     this.mentioned = false,
+    this.highlighted = false,
     this.replySenderName,
     this.onReply,
     this.onCopy,
     this.onMention,
+    this.resolveMessage,
+    this.onJumpToReply,
+    this.onShowFallbackMenu,
   });
   final ChatMessage message;
   final bool mine;
@@ -1306,118 +1754,171 @@ class _MessageBubble extends StatelessWidget {
   /// 本条消息是否 @ 了本机用户。
   final bool mentioned;
 
+  /// 从引用跳转过来后短暂高亮，方便找到目标。
+  final bool highlighted;
+
   /// 引用块显示的发送者昵称，消息没有引用时为 null。
   final String? replySenderName;
   final VoidCallback? onReply;
   final Future<void> Function()? onCopy;
   final VoidCallback? onMention;
 
+  /// 按消息 id 找到本地的原消息，用于在引用块里展示图片缩略图。
+  final ChatMessage? Function(String messageId)? resolveMessage;
+
+  /// 点击引用块时跳到被引用的原消息。
+  final void Function(String messageId)? onJumpToReply;
+
+  /// 纯图片气泡没有可选中的文字，框架的选择工具栏不会弹出，
+  /// 把菜单项交给面板用叠加层自绘。
+  final void Function(
+    BuildContext context,
+    Offset position,
+    List<ContextMenuButtonItem> Function(VoidCallback dismiss) buildItems,
+  )?
+  onShowFallbackMenu;
+
+  /// 气泡里是否存在可被选中的文字。
+  ///
+  /// 图片消息且本地已经有文件时，气泡里只有图片（时间等元信息不可选），
+  /// 此时需要走自绘菜单。
+  bool get _hasSelectableContent {
+    final path = message.filePath;
+    final hasLocalFile = path != null && File(path).existsSync();
+    return !(message.kind == MessageKind.image && hasLocalFile);
+  }
+
   @override
-  Widget build(BuildContext context) => Align(
-    alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-    child: GestureDetector(
-      onSecondaryTapDown: (details) =>
-          _showContextMenu(context, details.globalPosition),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 560),
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: mine
-              ? Theme.of(context).colorScheme.primaryContainer
-              : Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: mentioned
-                ? Theme.of(context).colorScheme.error
-                : mine
-                ? Colors.transparent
-                : Theme.of(context).dividerColor,
-            width: mentioned ? 1.6 : 1,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: mine
-              ? CrossAxisAlignment.end
-              : CrossAxisAlignment.start,
-          children: [
-            if (!mine)
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    senderName,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                  if (mentioned) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 1,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.errorContainer,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        '@我',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: Theme.of(context).colorScheme.onErrorContainer,
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            if (message.isReply) _buildQuoted(context),
-            if (message.kind == MessageKind.text)
-              SelectionArea(
-                child: Text(
-                  message.content,
-                  textAlign: mine ? TextAlign.right : TextAlign.left,
-                ),
-              )
-            else
-              _buildAttachment(context),
-            const SizedBox(height: 4),
+  Widget build(BuildContext context) => AnimatedContainer(
+    // 整行高亮：从引用跳转过来时给这一行铺底色，比只描气泡边框更容易定位。
+    duration: const Duration(milliseconds: 220),
+    width: double.infinity,
+    margin: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+      color: highlighted
+          ? Theme.of(context).colorScheme.primary.withValues(alpha: .12)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+    ),
+    child: Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: _hasSelectableContent
+          // 有可选文字时整块气泡放进选择区域，右键弹出「我们的菜单 + 全选」合并菜单。
+          ? SelectionArea(
+              contextMenuBuilder: _buildContextMenu,
+              child: _buildBubble(context),
+            )
+          // 纯图片气泡没有可选文字，框架不会弹工具栏，改用自绘的同一套菜单。
+          : GestureDetector(
+              onSecondaryTapDown: (details) =>
+                  _showOwnMenu(context, details.globalPosition),
+              child: _buildBubble(context),
+            ),
+    ),
+  );
+
+  /// 气泡本体。
+  Widget _buildBubble(BuildContext context) => Container(
+    constraints: const BoxConstraints(maxWidth: 560),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    decoration: BoxDecoration(
+      color: mine
+          ? Theme.of(context).colorScheme.primaryContainer
+          : Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(
+        color: mentioned
+            ? Theme.of(context).colorScheme.error
+            : mine
+            ? Colors.transparent
+            : Theme.of(context).dividerColor,
+        width: mentioned ? 1.6 : 1,
+      ),
+    ),
+    child: Column(
+      crossAxisAlignment: mine
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      children: [
+        if (!mine)
+          // 昵称、@ 标记属于元信息，不参与选择与全选。
+          _unselectable(
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _time(message.timestamp),
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
-                if (mine) ...[
-                  const SizedBox(width: 5),
-                  Icon(
-                    _statusIcon(message.status),
-                    size: 13,
-                    color:
-                        message.status == MessageStatus.failed ||
-                            message.status == MessageStatus.rejected
-                        ? Theme.of(context).colorScheme.error
-                        : null,
+                  senderName,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
-                  if (message.kind != MessageKind.text) ...[
-                    const SizedBox(width: 4),
-                    Text(
-                      _statusLabel(message.status, mine: mine),
-                      style: Theme.of(context).textTheme.labelSmall,
+                ),
+                if (mentioned) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 1,
                     ),
-                  ],
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.errorContainer,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      '@我',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.onErrorContainer,
+                      ),
+                    ),
+                  ),
                 ],
               ],
             ),
-          ],
+          ),
+        if (message.isReply) _unselectable(_buildQuoted(context)),
+        if (message.kind == MessageKind.text)
+          Text(
+            message.content,
+            textAlign: mine ? TextAlign.right : TextAlign.left,
+          )
+        else
+          _buildAttachment(context),
+        const SizedBox(height: 4),
+        _unselectable(
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _time(message.timestamp),
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+              if (mine) ...[
+                const SizedBox(width: 5),
+                Icon(
+                  _statusIcon(message.status),
+                  size: 13,
+                  color:
+                      message.status == MessageStatus.failed ||
+                          message.status == MessageStatus.rejected
+                      ? Theme.of(context).colorScheme.error
+                      : null,
+                ),
+                if (message.kind != MessageKind.text) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    _statusLabel(message.status, mine: mine),
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
+              ],
+            ],
+          ),
         ),
-      ),
+      ],
     ),
   );
 
@@ -1469,18 +1970,18 @@ class _MessageBubble extends StatelessWidget {
                         ? CrossAxisAlignment.end
                         : CrossAxisAlignment.start,
                     children: [
-                      SelectionArea(
-                        child: Text(
-                          message.fileName ?? message.content,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: mine ? TextAlign.right : TextAlign.left,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                      ),
                       Text(
-                        _formatFileSize(message.fileSize ?? 0),
-                        style: Theme.of(context).textTheme.bodySmall,
+                        message.fileName ?? message.content,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: mine ? TextAlign.right : TextAlign.left,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      _unselectable(
+                        Text(
+                          _formatFileSize(message.fileSize ?? 0),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ),
                     ],
                   ),
@@ -1489,9 +1990,11 @@ class _MessageBubble extends StatelessWidget {
             ),
           if (canDecide) ...[
             const SizedBox(height: 10),
-            Text(
-              '这是一个大文件，接受后才会开始传输。',
-              style: Theme.of(context).textTheme.bodySmall,
+            _unselectable(
+              Text(
+                '这是一个大文件，接受后才会开始传输。',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
             const SizedBox(height: 8),
             Row(
@@ -1564,123 +2067,174 @@ class _MessageBubble extends StatelessWidget {
     );
   }
 
-  /// 引用块：展示被引用消息的发送者与摘要。
-  Widget _buildQuoted(BuildContext context) => Container(
-    margin: const EdgeInsets.only(bottom: 6),
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest
-          .withValues(alpha: .7),
-      borderRadius: BorderRadius.circular(8),
-      border: Border(
-        left: BorderSide(
-          color: Theme.of(context).colorScheme.primary,
-          width: 3,
-        ),
-      ),
-    ),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          replySenderName ?? '被引用的消息',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: Theme.of(context).colorScheme.primary,
+  /// 引用块：展示被引用消息的发送者、摘要，图片还能直接看到缩略图。
+  /// 点击后跳回被引用的原消息。
+  Widget _buildQuoted(BuildContext context) {
+    final quoted = resolveMessage?.call(message.replyToMessageId!);
+    final leading = quoted == null
+        ? null
+        : _quoteLeading(context, quoted, size: 44);
+    return GestureDetector(
+      onTap: onJumpToReply == null
+          ? null
+          : () => onJumpToReply!(message.replyToMessageId!),
+      child: MouseRegion(
+        cursor: onJumpToReply == null
+            ? MouseCursor.defer
+            : SystemMouseCursors.click,
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          constraints: const BoxConstraints(minWidth: 160),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest
+                .withValues(alpha: .7),
+            // 左侧是一整条竖线，不加圆角，避免圆角把竖线截断。
+            border: Border(
+              left: BorderSide(
+                color: Theme.of(context).colorScheme.primary,
+                width: 3,
+              ),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (leading != null) ...[leading, const SizedBox(width: 8)],
+              Flexible(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      replySenderName ?? '被引用的消息',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                    Text(
+                      message.replyToPreview ?? '',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
-        Text(
-          message.replyToPreview ?? '',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ],
-    ),
-  );
+      ),
+    );
+  }
 
-  /// 消息右键菜单：复制、引用、@ 以及附件打开操作。
-  Future<void> _showContextMenu(BuildContext context, Offset position) async {
-    final path = message.filePath;
-    final hasLocalFile = path != null && File(path).existsSync();
-    final isImage = message.kind == MessageKind.image;
-    final isFile = message.kind == MessageKind.file;
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final localPosition = overlay.globalToLocal(position);
-    final selection = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(localPosition.dx, localPosition.dy, 0, 0),
-        Offset.zero & overlay.size,
+  /// 图片气泡的右键入口：把菜单项交给面板渲染成与文字气泡一致的工具栏。
+  void _showOwnMenu(BuildContext context, Offset position) {
+    final handler = onShowFallbackMenu;
+    if (handler == null) return;
+    handler(context, position, _fallbackMenuItems);
+  }
+
+  /// 没有选中文本可用时的菜单项：复制整条消息内容（图片会复制文件路径）。
+  List<ContextMenuButtonItem> _fallbackMenuItems(VoidCallback dismiss) => [
+    ContextMenuButtonItem(
+      type: ContextMenuButtonType.copy,
+      label: '复制',
+      onPressed: () {
+        dismiss();
+        unawaited(onCopy?.call() ?? Future<void>.value());
+      },
+    ),
+    ..._messageActionItems(dismiss),
+  ];
+
+  /// 消息操作菜单项。文字气泡交给框架的选择工具栏渲染，图片气泡由面板自绘，
+  /// 两处共用这一份定义，保证菜单内容和顺序一致。
+  List<ContextMenuButtonItem> _messageActionItems(VoidCallback dismiss) => [
+    ContextMenuButtonItem(
+      label: '引用回复',
+      onPressed: onReply == null
+          ? null
+          : () {
+              dismiss();
+              onReply!();
+            },
+    ),
+    if (onMention != null)
+      ContextMenuButtonItem(
+        label: '@$senderName',
+        onPressed: () {
+          dismiss();
+          onMention!();
+        },
       ),
-      items: [
-        PopupMenuItem(
-          value: 'copy',
-          enabled: onCopy != null,
-          child: ListTile(
-            leading: const Icon(Icons.copy),
-            title: Text(message.kind == MessageKind.text ? '复制' : '复制文件路径'),
-          ),
+    if (_hasLocalAttachment)
+      ContextMenuButtonItem(
+        label: message.kind == MessageKind.image ? '打开图片' : '打开文件',
+        onPressed: () {
+          dismiss();
+          unawaited(onOpen(message));
+        },
+      ),
+    if (_hasLocalAttachment)
+      ContextMenuButtonItem(
+        label: '打开所在文件夹',
+        onPressed: () {
+          dismiss();
+          unawaited(onOpenFolder(message));
+        },
+      ),
+  ];
+
+  bool get _hasLocalAttachment {
+    final path = message.filePath;
+    return path != null && File(path).existsSync();
+  }
+
+  /// 合并后的右键菜单：文字选择（复制/全选）+ 消息操作（引用/@/附件）。
+  ///
+  /// 由 [SelectionArea] 负责弹出与定位，因此只会出现一个菜单位置，
+  /// 不再和原生的选择菜单各弹一个。
+  Widget _buildContextMenu(BuildContext context, SelectableRegionState state) {
+    // 复用框架准备好的复制/全选回调，它们已经处理了复制选中内容、收起工具栏等细节。
+    final defaultItems = state.contextMenuButtonItems;
+    ContextMenuButtonItem? defaultItem(ContextMenuButtonType type) =>
+        defaultItems.where((item) => item.type == type).firstOrNull;
+    final copyItem = defaultItem(ContextMenuButtonType.copy);
+    final selectAllItem = defaultItem(ContextMenuButtonType.selectAll);
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: state.contextMenuAnchors,
+      buttonItems: [
+        ContextMenuButtonItem(
+          type: ContextMenuButtonType.copy,
+          label: '复制',
+          // 有选中文本时复制选中的片段，否则一键复制整条消息。
+          onPressed: () {
+            if (copyItem != null) {
+              copyItem.onPressed?.call();
+              return;
+            }
+            state.hideToolbar();
+            unawaited(onCopy?.call() ?? Future<void>.value());
+          },
         ),
-        PopupMenuItem(
-          value: 'reply',
-          enabled: onReply != null,
-          child: const ListTile(
-            leading: Icon(Icons.reply),
-            title: Text('引用回复'),
+        if (selectAllItem != null)
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.selectAll,
+            label: '全选',
+            onPressed: selectAllItem.onPressed,
           ),
-        ),
-        if (onMention != null)
-          PopupMenuItem(
-            value: 'mention',
-            child: ListTile(
-              leading: const Icon(Icons.alternate_email),
-              title: Text('@$senderName'),
-            ),
-          ),
-        if (isImage && hasLocalFile)
-          const PopupMenuItem(
-            value: 'open',
-            child: ListTile(
-              leading: Icon(Icons.open_in_new),
-              title: Text('打开图片'),
-            ),
-          ),
-        if (isFile && hasLocalFile)
-          const PopupMenuItem(
-            value: 'open',
-            child: ListTile(
-              leading: Icon(Icons.open_in_new),
-              title: Text('打开文件'),
-            ),
-          ),
-        if (hasLocalFile)
-          const PopupMenuItem(
-            value: 'folder',
-            child: ListTile(
-              leading: Icon(Icons.folder_open),
-              title: Text('打开所在文件夹'),
-            ),
-          ),
+        ..._messageActionItems(state.hideToolbar),
       ],
     );
-    switch (selection) {
-      case 'copy':
-        await onCopy?.call();
-      case 'reply':
-        onReply?.call();
-      case 'mention':
-        onMention?.call();
-      case 'open':
-        await onOpen(message);
-      case 'folder':
-        await onOpenFolder(message);
-    }
   }
 }
+
+/// 把元信息（昵称、时间、引用摘要等）排除在文本选择之外，
+/// 这样「全选」只会选中真正的消息内容。
+Widget _unselectable(Widget child) => SelectionContainer.disabled(child: child);
 
 class _TopRightSnackBar extends StatelessWidget {
   const _TopRightSnackBar({

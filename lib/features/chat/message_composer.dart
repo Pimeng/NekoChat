@@ -7,12 +7,16 @@ class MessageComposer extends StatelessWidget {
     required this.controller,
     required this.enabled,
     required this.onSend,
+    this.focusNode,
     this.onPasteAttachments,
   });
 
   final TextEditingController controller;
   final bool enabled;
   final VoidCallback onSend;
+
+  /// 由外部持有，方便引用回复后立刻把光标送回输入框。
+  final FocusNode? focusNode;
   final Future<bool> Function()? onPasteAttachments;
 
   @override
@@ -36,6 +40,7 @@ class MessageComposer extends StatelessWidget {
             },
             child: TextField(
               controller: controller,
+              focusNode: focusNode,
               enabled: enabled,
               minLines: 1,
               maxLines: 5,
@@ -43,7 +48,7 @@ class MessageComposer extends StatelessWidget {
               textInputAction: TextInputAction.newline,
               decoration: InputDecoration(
                 hintText: enabled
-                    ? '输入消息（Enter 发送，Ctrl + Enter 换行）'
+                    ? '输入消息（Enter 发送，Ctrl + Enter 换行，可直接粘贴图片）'
                     : '对方离线，暂时无法发送',
                 border: const OutlineInputBorder(),
                 isDense: true,

@@ -279,3 +279,19 @@ class GroupInvitation {
   final String ownerDisplayName;
   final String ip;
 }
+
+/// 输入框里暂存的待发送附件。还没发出去，可以继续编辑文字或移除。
+class PendingAttachment {
+  const PendingAttachment({
+    required this.path,
+    required this.fileName,
+    required this.fileSize,
+    required this.mimeType,
+    required this.isImage,
+  });
+  final String path;
+  final String fileName;
+  final int fileSize;
+  final String mimeType;
+  final bool isImage;
+}

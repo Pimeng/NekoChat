@@ -88,4 +88,30 @@ void main() {
     expect(pasteCount, 1);
     expect(controller.text, '保留文本');
   });
+
+  testWidgets('外部 FocusNode 可以直接聚焦输入框', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageComposer(
+            controller: controller,
+            focusNode: focusNode,
+            enabled: true,
+            onSend: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(focusNode.hasFocus, isFalse);
+    // 引用回复后就是通过这种方式把光标送回输入框的。
+    focusNode.requestFocus();
+    await tester.pump();
+
+    expect(focusNode.hasFocus, isTrue);
+  });
 }

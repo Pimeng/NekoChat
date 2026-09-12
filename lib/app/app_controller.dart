@@ -360,30 +360,29 @@ class AppController extends ChangeNotifier {
     };
   }
 
-  Future<void> pickAndSendFile() async {
+  /// 打开文件选择框，只返回可暂存在输入框里的附件，不直接发送。
+  Future<List<PendingAttachment>> pickAttachments() async {
     final result = await FilePicker.pickFile(dialogTitle: '选择要发送的图片或文件');
     final filePath = result?.path;
-    if (filePath == null) return;
-    await sendFile(filePath);
+    if (filePath == null) return const [];
+    final attachment = await pendingAttachment(filePath);
+    return attachment == null ? const [] : [attachment];
   }
 
-  Future<bool> pasteAndSendAttachments() async {
+  /// 读取剪贴板里的图片或文件，复制到临时目录后返回待发送附件，不直接发送。
+  Future<List<PendingAttachment>> readClipboardAttachments() async {
     try {
       final clipboardFiles = await Pasteboard.files();
-      final files = <File>[];
+      final attachments = <PendingAttachment>[];
       for (final path in clipboardFiles) {
-        final file = File(path);
-        if (await file.exists()) files.add(file);
+        if (!await File(path).exists()) continue;
+        final attachment = await pendingAttachment(path);
+        if (attachment != null) attachments.add(attachment);
       }
-      if (files.isNotEmpty) {
-        for (final file in files) {
-          await sendFile(file.path);
-        }
-        return true;
-      }
+      if (attachments.isNotEmpty) return attachments;
 
       final imageBytes = await Pasteboard.image;
-      if (imageBytes == null || imageBytes.isEmpty) return false;
+      if (imageBytes == null || imageBytes.isEmpty) return const [];
       final contentHash = await sha256Bytes(imageBytes);
       final temporaryDirectory = await getTemporaryDirectory();
       final clipboardDirectory = Directory(
@@ -396,11 +395,49 @@ class AppController extends ChangeNotifier {
       if (!await imageFile.exists()) {
         await imageFile.writeAsBytes(imageBytes, flush: true);
       }
-      await sendFile(imageFile.path);
-      return true;
+      final attachment = await pendingAttachment(imageFile.path);
+      return attachment == null ? const [] : [attachment];
     } on Object catch (error, stack) {
       _log.warning('读取剪贴板附件失败', error, stack);
-      return false;
+      return const [];
+    }
+  }
+
+  /// 校验并描述一个待发送附件。文件不存在或超过大小限制时返回 null 并提示。
+  Future<PendingAttachment?> pendingAttachment(String filePath) async {
+    final file = File(filePath);
+    if (!await file.exists()) {
+      _showTopRightMessage('所选文件不存在', icon: Icons.error_outline);
+      return null;
+    }
+    final fileSize = await file.length();
+    if (fileSize > NetworkConfig.maxFileSizeBytes) {
+      _showTopRightMessage('文件不能超过 512 MB', icon: Icons.error_outline);
+      return null;
+    }
+    final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+    return PendingAttachment(
+      path: file.path,
+      fileName: p.basename(file.path),
+      fileSize: fileSize,
+      mimeType: mimeType,
+      isImage: mimeType.startsWith('image/'),
+    );
+  }
+
+  /// 发送输入框里的文字与附件：文字先发（引用挂在文字上），附件按顺序紧跟其后。
+  ///
+  /// 没有文字时引用会落到第一个附件上，这样「引用 + 图片」也能成立。
+  Future<void> sendMessageWithAttachments({
+    required String content,
+    required List<PendingAttachment> attachments,
+  }) async {
+    if (content.trim().isEmpty && attachments.isEmpty) return;
+    if (content.trim().isNotEmpty) {
+      await sendMessage(content);
+    }
+    for (final attachment in attachments) {
+      await sendFile(attachment.path);
     }
   }
 
@@ -1359,10 +1396,11 @@ class AppController extends ChangeNotifier {
       replyToSenderId: reply.$2,
       replyToPreview: reply.$3,
     );
-    final viewing =
-        _notifications.appIsFocused && selectedChatId == chat.chatId;
+    // 只要当前打开的就是这个会话，消息就立刻显示在列表里（哪怕窗口没聚焦）；
+    // 只有会话没打开时才累计未读，靠红点提醒。
+    final conversationOpen = selectedChatId == chat.chatId;
     await _database.saveMessage(message);
-    if (viewing) {
+    if (conversationOpen) {
       messages = [...messages, message];
     } else {
       await _markUnread(chatId: chat.chatId);
@@ -1420,9 +1458,9 @@ class AppController extends ChangeNotifier {
       return;
     }
     await _database.saveMessage(message);
-    final viewing =
-        _notifications.appIsFocused && selectedChatId == chat.chatId;
-    if (viewing) {
+    // 会话已打开就立刻显示，附件同样不依赖窗口焦点。
+    final conversationOpen = selectedChatId == chat.chatId;
+    if (conversationOpen) {
       messages = [...messages, message];
     } else {
       await _markUnread(chatId: chat.chatId);
@@ -1804,9 +1842,10 @@ class AppController extends ChangeNotifier {
       replyToPreview: reply.$3,
     );
     final mentionMe = mentions.contains(identity!.deviceId);
-    final viewing = _notifications.appIsFocused && selectedGroupId == groupId;
+    // 会话已打开就立刻显示；未读只统计没打开的那个会话。
+    final conversationOpen = selectedGroupId == groupId;
     await _database.saveMessage(message);
-    if (viewing) {
+    if (conversationOpen) {
       messages = [...messages, message];
     } else {
       await _markUnread(groupId: groupId);
@@ -1825,15 +1864,13 @@ class AppController extends ChangeNotifier {
         icon: Icons.alternate_email,
       );
     }
-    final shouldNotify = mentionMe
-        ? !viewing
-        : shouldNotifyForConversation(
-            appIsFocused: _notifications.appIsFocused,
-            selectedConversationId: selectedGroupId == null
-                ? selectedChatId
-                : 'group:$selectedGroupId',
-            incomingConversationId: 'group:$groupId',
-          );
+    final shouldNotify = shouldNotifyForConversation(
+      appIsFocused: _notifications.appIsFocused,
+      selectedConversationId: selectedGroupId == null
+          ? selectedChatId
+          : 'group:$selectedGroupId',
+      incomingConversationId: 'group:$groupId',
+    );
     if (shouldNotify) {
       await _notifications.show(
         identifier: 'group-message:$messageId',
@@ -1863,8 +1900,9 @@ class AppController extends ChangeNotifier {
       return;
     }
     await _database.saveMessage(message);
-    final viewing = _notifications.appIsFocused && selectedGroupId == groupId;
-    if (viewing) {
+    // 会话已打开就立刻显示，附件同样不依赖窗口焦点。
+    final conversationOpen = selectedGroupId == groupId;
+    if (conversationOpen) {
       messages = [...messages, message];
     } else {
       await _markUnread(groupId: groupId);
