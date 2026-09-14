@@ -43,6 +43,22 @@ void main() {
     expect(find.text('请输入 1～512 之间的整数'), findsOneWidget);
   });
 
+  testWidgets('设置页面底部显示当前构建版本', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(373, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = AppController();
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsPage(controller: controller)),
+    );
+
+    expect(appBuildName, isNotNull);
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('settings-version-footer')),
+      300,
+    );
+    expect(find.text('NekoChat · 当前版本 $appBuildName'), findsOneWidget);
+  });
+
   testWidgets('快捷键二级页可录入新组合', (tester) async {
     final controller = AppController();
     await tester.pumpWidget(

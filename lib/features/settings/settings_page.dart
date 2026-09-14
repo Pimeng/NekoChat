@@ -171,6 +171,8 @@ class SettingsPage extends StatelessWidget {
                   style: TextStyle(color: Colors.black54, fontSize: 12),
                 ),
               ),
+              const SizedBox(height: 32),
+              const _VersionFooter(),
             ],
           ),
         ),
@@ -263,6 +265,22 @@ class _SettingsSectionTitle extends StatelessWidget {
 }
 
 int _formatMegabytes(int bytes) => bytes ~/ (1024 * 1024);
+
+class _VersionFooter extends StatelessWidget {
+  const _VersionFooter();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    key: const ValueKey('settings-version-footer'),
+    padding: const EdgeInsets.only(top: 8, bottom: 4),
+    child: Text(
+      'NekoChat · 当前版本 ${appBuildName ?? '未知'}',
+      textAlign: TextAlign.center,
+      style: Theme.of(context).textTheme.bodySmall
+          ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+    ),
+  );
+}
 
 class _BossKeyShortcutPage extends StatefulWidget {
   const _BossKeyShortcutPage({required this.controller});
