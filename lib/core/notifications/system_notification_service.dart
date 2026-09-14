@@ -16,6 +16,7 @@ abstract interface class SystemNotificationService {
     required String body,
     required NotificationCallback onClick,
   });
+  Future<void> clearAll();
   Future<void> dispose();
 }
 
@@ -113,6 +114,15 @@ class DesktopSystemNotificationService
   }
 
   @override
+  Future<void> clearAll() async {
+    final notifications = _active.values.toList();
+    _active.clear();
+    for (final notification in notifications) {
+      await _destroy(notification);
+    }
+  }
+
+  @override
   void onWindowFocus() => _focused = true;
 
   @override
@@ -124,11 +134,7 @@ class DesktopSystemNotificationService
       windowManager.removeListener(this);
       _listening = false;
     }
-    final notifications = _active.values.toList();
-    _active.clear();
-    for (final notification in notifications) {
-      await _destroy(notification);
-    }
+    await clearAll();
     _initialized = false;
   }
 }

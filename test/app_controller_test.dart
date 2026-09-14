@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:neko_chat/app/app_controller.dart';
+import 'package:neko_chat/core/boss_key/boss_key_service.dart';
 import 'package:neko_chat/core/config/network_config.dart';
 import 'package:neko_chat/core/database/app_database.dart';
 import 'package:neko_chat/core/identity/database_key_provider.dart';
@@ -19,12 +20,14 @@ class _Setup {
     required this.database,
     required this.transport,
     required this.discovery,
+    required this.bossKey,
   });
 
   final AppController controller;
   final AppDatabase database;
   final _FakeTransport transport;
   final _FakeDiscoveryService discovery;
+  final _FakeBossKeyService bossKey;
 }
 
 void main() {
@@ -39,11 +42,13 @@ void main() {
     final database = AppDatabase(directory: () async => directory);
     final transport = _FakeTransport();
     final discovery = _FakeDiscoveryService();
+    final bossKey = _FakeBossKeyService();
     final controller = AppController(
       keyProvider: _FakeKeyProvider(existingKey: hasExistingKey),
       database: database,
       transport: transport,
       notifications: notifications ?? _FakeNotifications(),
+      bossKey: bossKey,
       discoveryFactory:
           ({
             required LocalIdentity identity,
@@ -61,6 +66,7 @@ void main() {
       database: database,
       transport: transport,
       discovery: discovery,
+      bossKey: bossKey,
     );
   }
 
@@ -346,6 +352,60 @@ void main() {
     expect(notifications.shown, isEmpty);
   });
 
+  test('老板键默认关闭，隐藏期间清理并暂停系统通知', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-boss-key-',
+    );
+    final notifications = _FakeNotifications(focused: false);
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+      notifications: notifications,
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    expect(setup.controller.bossKeyEnabled, isFalse);
+    expect(setup.bossKey.enabledValues, isEmpty);
+
+    final sessionId = await activateChat(setup);
+    notifications.shown.clear();
+    await setup.controller.setBossKeyEnabled(true);
+    const customShortcut = BossKeyShortcut(
+      virtualKey: 0x4b,
+      keyLabel: 'K',
+      control: true,
+      shift: true,
+    );
+    expect(await setup.controller.setBossKeyShortcut(customShortcut), isTrue);
+    expect(setup.controller.bossKeyShortcut, customShortcut);
+    expect(
+      BossKeyShortcut.decode(
+        await setup.database.loadSetting('boss_key_shortcut'),
+      ),
+      customShortcut,
+    );
+    setup.bossKey.emitVisibility(hidden: true);
+    await _waitUntil(() => notifications.clearCount == 1);
+
+    setup.transport.emit(textMessagePacket(sessionId, '隐藏期间到达'));
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 1);
+    expect(notifications.shown, isEmpty);
+    expect(await setup.database.loadSetting('boss_key_enabled'), 'true');
+
+    setup.bossKey.emitVisibility(hidden: false);
+    setup.transport.emit(
+      textMessagePacket(sessionId, '恢复后到达', messageId: 'msg-after-restore'),
+    );
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 2);
+    expect(notifications.shown, contains('message:msg-after-restore'));
+  });
+
   test('关闭自动接收后小文件也等待手动确认', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-file-setting-',
@@ -395,6 +455,14 @@ void main() {
     );
     await seed.saveSetting('auto_receive_files', 'false');
     await seed.saveSetting('windows_notifications', 'false');
+    await seed.saveSetting('boss_key_enabled', 'true');
+    const restoredShortcut = BossKeyShortcut(
+      virtualKey: 0x4b,
+      keyLabel: 'K',
+      control: true,
+      alt: true,
+    );
+    await seed.saveSetting('boss_key_shortcut', restoredShortcut.encode());
     await seed.close();
 
     final setup = createController(
@@ -415,6 +483,9 @@ void main() {
     expect(setup.controller.stage, AppStage.ready);
     expect(setup.controller.autoReceiveFiles, isFalse);
     expect(setup.controller.windowsNotificationsEnabled, isFalse);
+    expect(setup.controller.bossKeyEnabled, isTrue);
+    expect(setup.controller.bossKeyShortcut, restoredShortcut);
+    expect(setup.bossKey.enabledValues, [true]);
   });
 
   test('会话未打开时消息计为未读且不进入当前列表', () async {
@@ -679,6 +750,32 @@ class _FakeKeyProvider implements LocalDatabaseKeyProvider {
   Future<List<int>> unlock(String password) async => _key;
 }
 
+class _FakeBossKeyService implements BossKeyService {
+  BossKeyVisibilityCallback? _onVisibilityChanged;
+  final List<({bool enabled, BossKeyShortcut shortcut})> configurations = [];
+
+  List<bool> get enabledValues => [
+    for (final configuration in configurations) configuration.enabled,
+  ];
+
+  void emitVisibility({required bool hidden}) =>
+      _onVisibilityChanged?.call(hidden);
+
+  @override
+  Future<void> initialize(
+    BossKeyVisibilityCallback onVisibilityChanged,
+  ) async => _onVisibilityChanged = onVisibilityChanged;
+
+  @override
+  Future<void> configure({
+    required bool enabled,
+    required BossKeyShortcut shortcut,
+  }) async => configurations.add((enabled: enabled, shortcut: shortcut));
+
+  @override
+  Future<void> dispose() async => _onVisibilityChanged = null;
+}
+
 class _FakeTransport implements ChatTransport {
   void Function(IncomingPacket packet)? _onPacket;
 
@@ -726,6 +823,7 @@ class _FakeNotifications implements SystemNotificationService {
 
   bool focused;
   final List<String> shown = [];
+  int clearCount = 0;
 
   @override
   bool get appIsFocused => focused;
@@ -740,6 +838,9 @@ class _FakeNotifications implements SystemNotificationService {
     required String body,
     required NotificationCallback onClick,
   }) async => shown.add(identifier);
+
+  @override
+  Future<void> clearAll() async => clearCount += 1;
 
   @override
   Future<void> dispose() async {}

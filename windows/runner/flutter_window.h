@@ -25,6 +25,8 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  void NotifyBossKeyVisibility(bool hidden);
+
   // The project to run.
   flutter::DartProject project_;
 
@@ -35,6 +37,13 @@ class FlutterWindow : public Win32Window {
   // one is still running.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       single_instance_channel_;
+
+  // Registers the global Alt+F shortcut and reports hidden/visible changes.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      boss_key_channel_;
+  bool boss_key_enabled_ = false;
+  UINT boss_key_modifiers_ = MOD_ALT;
+  UINT boss_key_virtual_key_ = 'F';
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

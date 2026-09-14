@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/app_controller.dart';
+import '../../core/boss_key/boss_key_service.dart';
 import '../../core/config/network_config.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -20,6 +22,57 @@ class SettingsPage extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
             children: [
+              const _SettingsSectionTitle('隐私'),
+              Card(
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      secondary: const Icon(Icons.visibility_off_outlined),
+                      title: const Text('老板键'),
+                      subtitle: const Text('开启全局快捷键隐藏或恢复应用'),
+                      value: controller.bossKeyEnabled,
+                      onChanged: controller.setBossKeyEnabled,
+                    ),
+                    const Divider(height: 1, indent: 56),
+                    ListTile(
+                      leading: const Icon(Icons.keyboard_outlined),
+                      title: const Text('快捷键'),
+                      subtitle: Text(controller.bossKeyShortcut.displayLabel),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              _BossKeyShortcutPage(controller: controller),
+                        ),
+                      ),
+                    ),
+                    if (controller.bossKeyError != null) ...[
+                      const Divider(height: 1, indent: 56),
+                      ListTile(
+                        leading: Icon(
+                          Icons.warning_amber_rounded,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                        title: Text(
+                          controller.bossKeyError!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: Text(
+                  '隐藏后不显示任务栏入口或系统通知，再按当前快捷键 '
+                  '或重新启动 NekoChat 即可恢复。进程仍会在任务管理器中显示。',
+                  style: TextStyle(color: Colors.black54, fontSize: 12),
+                ),
+              ),
+              const SizedBox(height: 24),
               const _SettingsSectionTitle('文件接收'),
               Card(
                 child: SwitchListTile(
@@ -115,3 +168,158 @@ class _SettingsSectionTitle extends StatelessWidget {
 }
 
 int _formatMegabytes(int bytes) => bytes ~/ (1024 * 1024);
+
+class _BossKeyShortcutPage extends StatefulWidget {
+  const _BossKeyShortcutPage({required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<_BossKeyShortcutPage> createState() => _BossKeyShortcutPageState();
+}
+
+class _BossKeyShortcutPageState extends State<_BossKeyShortcutPage> {
+  final _focusNode = FocusNode(debugLabel: 'boss-key-recorder');
+  late BossKeyShortcut _candidate;
+  String _hint = '请按下新的快捷键组合';
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _candidate = widget.controller.bossKeyShortcut;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.handled;
+    final keyboard = HardwareKeyboard.instance;
+    final shortcut = BossKeyShortcut.fromLogicalKey(
+      event.logicalKey,
+      control: keyboard.isControlPressed,
+      alt: keyboard.isAltPressed,
+      shift: keyboard.isShiftPressed,
+      meta: keyboard.isMetaPressed,
+    );
+    if (shortcut == null) {
+      setState(() {
+        _hint =
+            keyboard.isControlPressed ||
+                keyboard.isAltPressed ||
+                keyboard.isShiftPressed ||
+                keyboard.isMetaPressed
+            ? '请在修饰键按住时再按一个普通键'
+            : '快捷键必须包含 Ctrl、Alt、Shift 或 Win';
+      });
+      return KeyEventResult.handled;
+    }
+    setState(() {
+      _candidate = shortcut;
+      _hint = '已记录，点击右上角保存';
+    });
+    return KeyEventResult.handled;
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    final saved = await widget.controller.setBossKeyShortcut(_candidate);
+    if (!mounted) return;
+    if (saved) {
+      Navigator.of(context).pop();
+    } else {
+      setState(() {
+        _saving = false;
+        _hint = widget.controller.bossKeyError ?? '无法保存该快捷键';
+      });
+      _focusNode.requestFocus();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('老板键快捷键'),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : _save,
+          child: _saving
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('保存'),
+        ),
+        const SizedBox(width: 12),
+      ],
+    ),
+    body: Focus(
+      focusNode: _focusNode,
+      autofocus: true,
+      onKeyEvent: _handleKeyEvent,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _focusNode.requestFocus,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.keyboard, size: 52),
+                  const SizedBox(height: 24),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 28,
+                      vertical: 18,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                    ),
+                    child: Text(
+                      _candidate.displayLabel,
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(_hint, textAlign: TextAlign.center),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '支持字母、数字、F1–F12 和常用功能键，'
+                    '至少需要一个修饰键。',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black54, fontSize: 12),
+                  ),
+                  const SizedBox(height: 20),
+                  TextButton.icon(
+                    onPressed: () => setState(() {
+                      _candidate = BossKeyShortcut.altF;
+                      _hint = '已恢复默认值，点击保存后生效';
+                    }),
+                    icon: const Icon(Icons.restart_alt),
+                    label: const Text('恢复默认 Alt + F'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}

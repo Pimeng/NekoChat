@@ -13,6 +13,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/config/network_config.dart';
+import '../core/boss_key/boss_key_service.dart';
 import '../core/database/app_database.dart';
 import '../core/files/attachment_path.dart';
 import '../core/files/content_hash.dart';
@@ -33,21 +34,26 @@ class AppController extends ChangeNotifier {
     AppDatabase? database,
     ChatTransport? transport,
     SystemNotificationService? notifications,
+    BossKeyService? bossKey,
     DiscoveryServiceFactory? discoveryFactory,
     this._requestTimeout = NetworkConfig.requestTimeout,
   }) : _keyProvider = keyProvider ?? EncryptedFileDatabaseKeyProvider(),
        _database = database ?? AppDatabase(),
        _transport = transport ?? WebSocketChatTransport(),
        _notifications = notifications ?? DesktopSystemNotificationService(),
+       _bossKey = bossKey ?? WindowsBossKeyService(),
        _discoveryFactory = discoveryFactory ?? _defaultDiscoveryFactory;
 
   static const _uuid = Uuid();
   static const _autoReceiveFilesSetting = 'auto_receive_files';
   static const _windowsNotificationsSetting = 'windows_notifications';
+  static const _bossKeySetting = 'boss_key_enabled';
+  static const _bossKeyShortcutSetting = 'boss_key_shortcut';
   final LocalDatabaseKeyProvider _keyProvider;
   final AppDatabase _database;
   final ChatTransport _transport;
   final SystemNotificationService _notifications;
+  final BossKeyService _bossKey;
   final DiscoveryServiceFactory _discoveryFactory;
   final Duration _requestTimeout;
   final _log = Logger('AppController');
@@ -91,6 +97,14 @@ class AppController extends ChangeNotifier {
 
   /// 是否允许应用发送 Windows 系统通知。
   bool windowsNotificationsEnabled = true;
+
+  /// 老板键默认关闭；开启后由 Windows 全局注册 Alt+F。
+  bool bossKeyEnabled = false;
+  BossKeyShortcut bossKeyShortcut = BossKeyShortcut.altF;
+
+  /// 老板键隐藏期间暂停系统通知，避免通知泄露应用仍在运行。
+  bool bossKeyHidden = false;
+  String? bossKeyError;
 
   /// 当前正在引用的消息。存在时下一条消息会带上引用信息，发送后自动清空。
   ChatMessage? replyingTo;
@@ -150,12 +164,31 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_windowsNotificationsSetting),
       fallback: true,
     );
+    bossKeyEnabled = _settingBool(
+      await _database.loadSetting(_bossKeySetting),
+      fallback: false,
+    );
+    bossKeyShortcut = BossKeyShortcut.decode(
+      await _database.loadSetting(_bossKeyShortcutSetting),
+    );
     trustedPeers = await _database.loadTrustedPeers();
     chats = await _database.loadChats();
     await _recoverInterruptedRequests();
     groups = await _database.loadGroups();
     final localIdentity = identity!;
     await _notifications.initialize();
+    await _bossKey.initialize(_handleBossKeyVisibilityChanged);
+    if (bossKeyEnabled) {
+      try {
+        await _bossKey.configure(enabled: true, shortcut: bossKeyShortcut);
+      } on Object catch (error, stack) {
+        bossKeyEnabled = false;
+        bossKeyError =
+            '${bossKeyShortcut.displayLabel} 注册失败，'
+            '可能已被其他程序占用';
+        _log.warning('老板键注册失败', error, stack);
+      }
+    }
     await _transport.start(_onPacket);
     _discovery = _discoveryFactory(
       identity: localIdentity,
@@ -181,6 +214,66 @@ class AppController extends ChangeNotifier {
     if (windowsNotificationsEnabled == value) return;
     await _database.saveSetting(_windowsNotificationsSetting, value.toString());
     windowsNotificationsEnabled = value;
+    notifyListeners();
+  }
+
+  Future<void> setBossKeyEnabled(bool value) async {
+    if (bossKeyEnabled == value) return;
+    final previous = bossKeyEnabled;
+    try {
+      await _bossKey.configure(enabled: value, shortcut: bossKeyShortcut);
+      await _database.saveSetting(_bossKeySetting, value.toString());
+      bossKeyEnabled = value;
+      bossKeyError = null;
+      if (!value) bossKeyHidden = false;
+      notifyListeners();
+    } on Object catch (error, stack) {
+      try {
+        await _bossKey.configure(enabled: previous, shortcut: bossKeyShortcut);
+      } on Object {
+        // 恢复失败时保留原界面状态，下次启动会重新注册。
+      }
+      bossKeyError = value
+          ? '无法启用 ${bossKeyShortcut.displayLabel}，该快捷键可能已被占用'
+          : '无法关闭老板键';
+      _log.warning('更新老板键失败', error, stack);
+      _showTopRightMessage(bossKeyError!, icon: Icons.keyboard_alt_outlined);
+      notifyListeners();
+    }
+  }
+
+  Future<bool> setBossKeyShortcut(BossKeyShortcut value) async {
+    if (bossKeyShortcut == value) return true;
+    try {
+      await _bossKey.configure(enabled: bossKeyEnabled, shortcut: value);
+      await _database.saveSetting(_bossKeyShortcutSetting, value.encode());
+      bossKeyShortcut = value;
+      bossKeyError = null;
+      notifyListeners();
+      return true;
+    } on Object catch (error, stack) {
+      try {
+        await _bossKey.configure(
+          enabled: bossKeyEnabled,
+          shortcut: bossKeyShortcut,
+        );
+      } on Object {
+        // Windows runner 也会尝试恢复旧组合，这里再做一次最佳努力恢复。
+      }
+      bossKeyError = '无法使用 ${value.displayLabel}，该快捷键可能已被占用';
+      _log.warning('更新老板键快捷键失败', error, stack);
+      _showTopRightMessage(bossKeyError!, icon: Icons.keyboard_alt_outlined);
+      notifyListeners();
+      return false;
+    }
+  }
+
+  bool get _systemNotificationsAllowed =>
+      windowsNotificationsEnabled && !bossKeyHidden;
+
+  void _handleBossKeyVisibilityChanged(bool hidden) {
+    bossKeyHidden = hidden;
+    if (hidden) unawaited(_notifications.clearAll());
     notifyListeners();
   }
 
@@ -1357,7 +1450,7 @@ class AppController extends ChangeNotifier {
     _scheduleRequestTimeout(request);
     await _upsertChat(deviceId, displayName, ChatSessionState.pendingIncoming);
     notifyListeners();
-    if (windowsNotificationsEnabled && !_notifications.appIsFocused) {
+    if (_systemNotificationsAllowed && !_notifications.appIsFocused) {
       await _notifications.show(
         identifier: 'chat-request:$requestId',
         title: '新的聊天邀请',
@@ -1404,7 +1497,7 @@ class AppController extends ChangeNotifier {
     );
     _discovery?.refreshTrust();
     notifyListeners();
-    if (windowsNotificationsEnabled && !_notifications.appIsFocused) {
+    if (_systemNotificationsAllowed && !_notifications.appIsFocused) {
       final chatId = _privateChatId(identity!.deviceId, deviceId);
       await _notifications.show(
         identifier: 'chat-accept:$sessionId',
@@ -1483,7 +1576,7 @@ class AppController extends ChangeNotifier {
     }
     await _reloadChats();
     notifyListeners();
-    if (windowsNotificationsEnabled &&
+    if (_systemNotificationsAllowed &&
         shouldNotifyForConversation(
           appIsFocused: _notifications.appIsFocused,
           selectedConversationId: selectedChatId,
@@ -1779,7 +1872,7 @@ class AppController extends ChangeNotifier {
     String senderName,
     String conversationId,
   ) async {
-    if (!windowsNotificationsEnabled ||
+    if (!_systemNotificationsAllowed ||
         !shouldNotifyForConversation(
           appIsFocused: _notifications.appIsFocused,
           selectedConversationId: selectedGroupId == null
@@ -1846,7 +1939,7 @@ class AppController extends ChangeNotifier {
     );
     _pendingGroupPayloads[inviteId] = payload;
     notifyListeners();
-    if (windowsNotificationsEnabled && !_notifications.appIsFocused) {
+    if (_systemNotificationsAllowed && !_notifications.appIsFocused) {
       await _notifications.show(
         identifier: 'group-invite:$inviteId',
         title: '新的群聊邀请',
@@ -1947,7 +2040,7 @@ class AppController extends ChangeNotifier {
       );
     }
     final shouldNotify =
-        windowsNotificationsEnabled &&
+        _systemNotificationsAllowed &&
         shouldNotifyForConversation(
           appIsFocused: _notifications.appIsFocused,
           selectedConversationId: selectedGroupId == null
@@ -2516,7 +2609,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> showTestNotification() async {
-    if (!windowsNotificationsEnabled) {
+    if (!_systemNotificationsAllowed) {
       _showTopRightMessage('请先开启 Windows 通知', icon: Icons.notifications_off);
       return;
     }
@@ -2557,6 +2650,7 @@ class AppController extends ChangeNotifier {
     unawaited(_transport.stop());
     unawaited(_database.close());
     unawaited(_notifications.dispose());
+    unawaited(_bossKey.dispose());
     super.dispose();
   }
 }
