@@ -17,12 +17,21 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   final _search = TextEditingController();
-  final _composer = TextEditingController();
+  final Map<String, TextEditingController> _composers = {};
+  final Map<String, List<PendingAttachment>> _pendingAttachments = {};
+
+  TextEditingController _composerFor(String conversationId) =>
+      _composers.putIfAbsent(conversationId, TextEditingController.new);
+
+  List<PendingAttachment> _pendingFor(String conversationId) =>
+      _pendingAttachments.putIfAbsent(conversationId, () => []);
 
   @override
   void dispose() {
     _search.dispose();
-    _composer.dispose();
+    for (final composer in _composers.values) {
+      composer.dispose();
+    }
     super.dispose();
   }
 
@@ -89,7 +98,7 @@ class _MainShellState extends State<MainShell> {
                 b.createdAt.millisecondsSinceEpoch;
             return bTime.compareTo(aTime);
           });
-    return ColoredBox(
+    return Material(
       color: Theme.of(context).colorScheme.surface,
       child: Column(
         children: [
@@ -243,18 +252,21 @@ class _MainShellState extends State<MainShell> {
           .firstOrNull;
       if (chat != null) {
         final online = _peerOnline(controller, chat.peerDeviceId);
+        final conversationId = chat.chatId;
         return _ConversationPane(
           key: ValueKey(chat.chatId),
-          conversationId: chat.chatId,
+          conversationId: conversationId,
           title: chat.displayName,
           subtitle: online ? '在线' : '离线 · 消息不会离线排队',
           messages: controller.messages,
           localDeviceId: controller.identity!.deviceId,
           peerName: (deviceId) =>
               deviceId == chat.peerDeviceId ? chat.displayName : '我',
-          composer: _composer,
+          composer: _composerFor(conversationId),
+          pendingAttachments: _pendingFor(conversationId),
           enabled: online && chat.state == ChatSessionState.active,
           onSend: (text, attachments) => controller.sendMessageWithAttachments(
+            conversationId: conversationId,
             content: text,
             attachments: attachments,
           ),
@@ -306,9 +318,11 @@ class _MainShellState extends State<MainShell> {
           .where((value) => value.groupId == controller.selectedGroupId)
           .firstOrNull;
       if (group != null) {
+        final conversationId = 'group:${group.groupId}';
+        final composer = _composerFor(conversationId);
         return _ConversationPane(
-          key: ValueKey('group:${group.groupId}'),
-          conversationId: 'group:${group.groupId}',
+          key: ValueKey(conversationId),
+          conversationId: conversationId,
           title: group.name,
           subtitle: '局域网实时群聊 · 离线成员不会收到消息',
           messages: controller.messages,
@@ -322,9 +336,11 @@ class _MainShellState extends State<MainShell> {
                     ?.displayName ??
                 '群成员';
           },
-          composer: _composer,
+          composer: composer,
+          pendingAttachments: _pendingFor(conversationId),
           enabled: true,
           onSend: (text, attachments) => controller.sendMessageWithAttachments(
+            conversationId: conversationId,
             content: text,
             attachments: attachments,
           ),
@@ -341,8 +357,8 @@ class _MainShellState extends State<MainShell> {
           onCancelReply: controller.cancelReply,
           onCopyMessage: controller.copyMessage,
           onReplyMessage: controller.beginReply,
-          onMention: _insertMention,
-          onPickMentionMember: () => _pickMentionMember(controller),
+          onMention: (name) => _insertMention(composer, name),
+          onPickMentionMember: () => _pickMentionMember(controller, composer),
           actions: [
             if (group.ownerDeviceId == controller.identity!.deviceId)
               IconButton(
@@ -404,8 +420,8 @@ class _MainShellState extends State<MainShell> {
   }
 
   /// 把“@昵称 ”插到输入框光标处。
-  void _insertMention(String name) {
-    final value = _composer.value;
+  void _insertMention(TextEditingController composer, String name) {
+    final value = composer.value;
     final selection = value.selection.isValid
         ? value.selection
         : TextSelection.collapsed(offset: value.text.length);
@@ -415,7 +431,7 @@ class _MainShellState extends State<MainShell> {
       selection.end,
       mention,
     );
-    _composer.value = value.copyWith(
+    composer.value = value.copyWith(
       text: updated,
       selection: TextSelection.collapsed(
         offset: selection.start + mention.length,
@@ -424,7 +440,10 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
-  Future<void> _pickMentionMember(AppController controller) async {
+  Future<void> _pickMentionMember(
+    AppController controller,
+    TextEditingController composer,
+  ) async {
     final groupId = controller.selectedGroupId;
     if (groupId == null) return;
     final members = await controller.groupMembers(groupId);
@@ -450,7 +469,7 @@ class _MainShellState extends State<MainShell> {
         ],
       ),
     );
-    if (selected != null) _insertMention(selected.displayName);
+    if (selected != null) _insertMention(composer, selected.displayName);
   }
 
   Future<void> _showCreateGroup(AppController controller) async {
@@ -711,11 +730,16 @@ class _IdentityHeader extends StatelessWidget {
           ),
         ),
         Tooltip(
-          message: unreadCount > 0 ? '有 $unreadCount 条未读消息' : '局域网发现已开启',
-          child: unreadCount > 0
-              ? _UnreadBadge(count: unreadCount)
-              : Icon(Icons.lan, color: Theme.of(context).colorScheme.primary),
+          message: '局域网发现已开启',
+          child: Icon(Icons.lan, color: Theme.of(context).colorScheme.primary),
         ),
+        if (unreadCount > 0) ...[
+          const SizedBox(width: 10),
+          Tooltip(
+            message: '有 $unreadCount 条未读消息',
+            child: _UnreadBadge(count: unreadCount),
+          ),
+        ],
       ],
     ),
   );
@@ -1029,6 +1053,7 @@ class _ConversationPane extends StatefulWidget {
     required this.localDeviceId,
     required this.peerName,
     required this.composer,
+    required this.pendingAttachments,
     required this.enabled,
     required this.onSend,
     required this.onPickAttachments,
@@ -1055,6 +1080,7 @@ class _ConversationPane extends StatefulWidget {
   final String localDeviceId;
   final String Function(String) peerName;
   final TextEditingController composer;
+  final List<PendingAttachment> pendingAttachments;
   final bool enabled;
 
   /// 发送输入框里的文字与待发送附件。
@@ -1097,9 +1123,6 @@ class _ConversationPaneState extends State<_ConversationPane> {
   final FocusNode _composerFocus = FocusNode();
   Timer? _highlightTimer;
   String? _highlightedMessageId;
-
-  /// 输入框里还没发出去的附件。
-  final List<PendingAttachment> _pending = [];
 
   /// 图片气泡的自绘右键菜单。
   OverlayEntry? _fallbackMenu;
@@ -1187,10 +1210,10 @@ class _ConversationPaneState extends State<_ConversationPane> {
   /// 发送前把附件与文字一起交给控制器，文字先发、附件按顺序跟在后面。
   Future<void> _handleSend() async {
     final text = widget.composer.text;
-    final attachments = List<PendingAttachment>.of(_pending);
+    final attachments = List<PendingAttachment>.of(widget.pendingAttachments);
     if (text.trim().isEmpty && attachments.isEmpty) return;
     widget.composer.clear();
-    if (mounted) setState(_pending.clear);
+    if (mounted) setState(widget.pendingAttachments.clear);
     await widget.onSend(text, attachments);
   }
 
@@ -1199,8 +1222,12 @@ class _ConversationPaneState extends State<_ConversationPane> {
     if (attachments.isEmpty || !mounted) return;
     setState(() {
       for (final attachment in attachments) {
-        if (_pending.any((value) => value.path == attachment.path)) continue;
-        _pending.add(attachment);
+        if (widget.pendingAttachments.any(
+          (value) => value.path == attachment.path,
+        )) {
+          continue;
+        }
+        widget.pendingAttachments.add(attachment);
       }
     });
   }
@@ -1218,7 +1245,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
   }
 
   void _removeAttachment(PendingAttachment attachment) {
-    setState(() => _pending.remove(attachment));
+    setState(() => widget.pendingAttachments.remove(attachment));
   }
 
   GlobalKey _keyFor(String messageId) =>
@@ -1429,9 +1456,9 @@ class _ConversationPaneState extends State<_ConversationPane> {
                       : widget.peerName(widget.replyingTo!.senderDeviceId),
                   onCancel: widget.onCancelReply,
                 ),
-              if (_pending.isNotEmpty)
+              if (widget.pendingAttachments.isNotEmpty)
                 _PendingAttachments(
-                  attachments: _pending,
+                  attachments: widget.pendingAttachments,
                   onRemove: _removeAttachment,
                 ),
               Row(

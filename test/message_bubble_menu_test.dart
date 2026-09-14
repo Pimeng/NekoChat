@@ -39,12 +39,14 @@ AppController renderOnlyController({required List<ChatMessage> messages}) {
 
 void main() {
   testWidgets('纯图片气泡右键也能弹出菜单', (tester) async {
-    final directory = await Directory.systemTemp.createTemp(
-      'neko-chat-bubble-',
-    );
+    final directory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('neko-chat-bubble-'),
+    ))!;
     addTearDown(() => directory.delete(recursive: true));
     final image = File('${directory.path}${Platform.pathSeparator}照片.png');
-    await image.writeAsBytes(base64Decode(_tinyPngBase64));
+    await tester.runAsync(
+      () => image.writeAsBytes(base64Decode(_tinyPngBase64)),
+    );
 
     final controller = renderOnlyController(
       messages: [
@@ -68,11 +70,16 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: MainShell(controller: controller)),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     // 图片气泡里没有可选中的文字，必须靠自绘菜单，否则右键毫无反应。
     expect(find.text('引用回复'), findsNothing);
-    await tester.tap(find.byType(Image), buttons: kSecondaryMouseButton);
+    final imageMenuTarget = find.byWidgetPredicate(
+      (widget) =>
+          widget is GestureDetector && widget.onSecondaryTapDown != null,
+    );
+    expect(imageMenuTarget, findsOneWidget);
+    await tester.tap(imageMenuTarget, buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
 
     expect(find.text('复制'), findsOneWidget);
@@ -103,7 +110,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: MainShell(controller: controller)),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     await tester.tap(find.text('你好'), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();

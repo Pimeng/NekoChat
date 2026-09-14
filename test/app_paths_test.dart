@@ -49,9 +49,8 @@ void main() {
     addTearDown(() => temp.delete(recursive: true));
     final legacy = Directory(p.join(temp.path, 'legacy'));
     await legacy.create(recursive: true);
-    await File(
-      p.join(legacy.path, 'database-key.json'),
-    ).writeAsString('{"version":1}');
+    await File(p.join(legacy.path, 'database-key.json'))
+        .writeAsString('{"version":1}');
     await File(p.join(legacy.path, 'neko_chat.db')).writeAsString('db');
     await File(p.join(legacy.path, 'neko_chat.db-wal')).writeAsString('wal');
 
@@ -63,9 +62,7 @@ void main() {
     final directory = await provider.resolve();
 
     expect(
-      await File(
-        p.join(directory.path, 'database-key.json'),
-      ).readAsString(),
+      await File(p.join(directory.path, 'database-key.json')).readAsString(),
       '{"version":1}',
     );
     expect(
@@ -97,10 +94,65 @@ void main() {
     final directory = await provider.resolve();
 
     expect(
-      await File(
-        p.join(directory.path, 'database-key.json'),
-      ).readAsString(),
+      await File(p.join(directory.path, 'database-key.json')).readAsString(),
       'new',
     );
+  });
+
+  test('程序目录只有部分数据时会重新完成迁移', () async {
+    final temp = await createTemp();
+    addTearDown(() => temp.delete(recursive: true));
+    final legacy = Directory(p.join(temp.path, 'legacy'));
+    await legacy.create(recursive: true);
+    await File(p.join(legacy.path, 'database-key.json')).writeAsString('key');
+    await File(p.join(legacy.path, 'neko_chat.db')).writeAsString('database');
+
+    final app = Directory(p.join(temp.path, 'app'));
+    final portable = Directory(
+      p.join(app.path, AppDataDirectoryProvider.portableFolderName),
+    );
+    await portable.create(recursive: true);
+    await File(p.join(portable.path, 'database-key.json'))
+        .writeAsString('partial');
+
+    final provider = AppDataDirectoryProvider(
+      executablePath: p.join(app.path, 'neko_chat.exe'),
+      fallback: () async => legacy,
+    );
+    final directory = await provider.resolve();
+
+    expect(directory.path, portable.path);
+    expect(
+      await File(p.join(portable.path, 'database-key.json')).readAsString(),
+      'key',
+    );
+    expect(
+      await File(p.join(portable.path, 'neko_chat.db')).readAsString(),
+      'database',
+    );
+  });
+
+  test('旧数据迁移失败时继续使用旧目录', () async {
+    final temp = await createTemp();
+    addTearDown(() => temp.delete(recursive: true));
+    final legacy = Directory(p.join(temp.path, 'legacy'));
+    await legacy.create(recursive: true);
+    await File(p.join(legacy.path, 'database-key.json')).writeAsString('key');
+    await File(p.join(legacy.path, 'neko_chat.db')).writeAsString('database');
+
+    final app = Directory(p.join(temp.path, 'app'));
+    final portable = Directory(
+      p.join(app.path, AppDataDirectoryProvider.portableFolderName),
+    );
+    await portable.create(recursive: true);
+    // 用同名目录阻止最终数据库文件落盘，模拟迁移中途失败。
+    await Directory(p.join(portable.path, 'neko_chat.db')).create();
+
+    final provider = AppDataDirectoryProvider(
+      executablePath: p.join(app.path, 'neko_chat.exe'),
+      fallback: () async => legacy,
+    );
+
+    expect((await provider.resolve()).path, legacy.path);
   });
 }

@@ -291,21 +291,32 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> sendMessage(String content) async {
+    await _sendMessageTo(
+      content,
+      chatId: selectedChatId,
+      groupId: selectedGroupId,
+      reply: replyingTo,
+    );
+  }
+
+  Future<void> _sendMessageTo(
+    String content, {
+    required String? chatId,
+    required String? groupId,
+    required ChatMessage? reply,
+  }) async {
     final normalized = content.trim();
     if (normalized.isEmpty) return;
-    if (selectedGroupId != null) {
-      await _sendGroupMessage(selectedGroupId!, normalized);
+    if (groupId != null) {
+      await _sendGroupMessage(groupId, normalized, reply: reply);
       return;
     }
-    final chat = chats
-        .where((value) => value.chatId == selectedChatId)
-        .firstOrNull;
+    final chat = chats.where((value) => value.chatId == chatId).firstOrNull;
     if (chat == null ||
         chat.state != ChatSessionState.active ||
         chat.sessionId == null) {
       return;
     }
-    final reply = replyingTo;
     final message = ChatMessage(
       messageId: _uuid.v4(),
       chatId: chat.chatId,
@@ -317,9 +328,9 @@ class AppController extends ChangeNotifier {
       replyToSenderId: reply?.senderDeviceId,
       replyToPreview: reply == null ? null : replyPreview(reply),
     );
-    replyingTo = null;
+    if (identical(replyingTo, reply)) replyingTo = null;
     await _database.saveMessage(message);
-    messages = [...messages, message];
+    if (selectedChatId == chat.chatId) messages = [...messages, message];
     await _reloadChats();
     notifyListeners();
     final peer = _onlinePeer(chat.peerDeviceId);
@@ -429,19 +440,51 @@ class AppController extends ChangeNotifier {
   ///
   /// 没有文字时引用会落到第一个附件上，这样「引用 + 图片」也能成立。
   Future<void> sendMessageWithAttachments({
+    String? conversationId,
     required String content,
     required List<PendingAttachment> attachments,
   }) async {
     if (content.trim().isEmpty && attachments.isEmpty) return;
+    final groupId = conversationId?.startsWith('group:') == true
+        ? conversationId!.substring('group:'.length)
+        : conversationId == null
+        ? selectedGroupId
+        : null;
+    final chatId = groupId == null ? (conversationId ?? selectedChatId) : null;
+    final reply = replyingTo;
     if (content.trim().isNotEmpty) {
-      await sendMessage(content);
+      await _sendMessageTo(
+        content,
+        chatId: chatId,
+        groupId: groupId,
+        reply: reply,
+      );
     }
-    for (final attachment in attachments) {
-      await sendFile(attachment.path);
+    for (var index = 0; index < attachments.length; index++) {
+      await _sendFileTo(
+        attachments[index].path,
+        chatId: chatId,
+        groupId: groupId,
+        reply: content.trim().isEmpty && index == 0 ? reply : null,
+      );
     }
   }
 
   Future<void> sendFile(String filePath) async {
+    await _sendFileTo(
+      filePath,
+      chatId: selectedChatId,
+      groupId: selectedGroupId,
+      reply: replyingTo,
+    );
+  }
+
+  Future<void> _sendFileTo(
+    String filePath, {
+    required String? chatId,
+    required String? groupId,
+    required ChatMessage? reply,
+  }) async {
     final file = File(filePath);
     if (!await file.exists()) {
       errorMessage = '所选文件不存在';
@@ -458,19 +501,18 @@ class AppController extends ChangeNotifier {
     final fileHash = mimeType.startsWith('image/')
         ? await sha256File(file)
         : null;
-    if (selectedGroupId != null) {
+    if (groupId != null) {
       await _sendGroupFile(
-        selectedGroupId!,
+        groupId,
         file,
         fileSize,
         mimeType,
         fileHash,
+        reply: reply,
       );
       return;
     }
-    final chat = chats
-        .where((value) => value.chatId == selectedChatId)
-        .firstOrNull;
+    final chat = chats.where((value) => value.chatId == chatId).firstOrNull;
     if (chat == null ||
         chat.state != ChatSessionState.active ||
         chat.sessionId == null) {
@@ -488,10 +530,11 @@ class AppController extends ChangeNotifier {
       fileSize: fileSize,
       mimeType: mimeType,
       fileHash: fileHash,
+      reply: reply,
     );
-    replyingTo = null;
+    if (identical(replyingTo, reply)) replyingTo = null;
     await _database.saveMessage(message);
-    messages = [...messages, message];
+    if (selectedChatId == chat.chatId) messages = [...messages, message];
     notifyListeners();
     try {
       await _transport.offerFile(
@@ -522,8 +565,8 @@ class AppController extends ChangeNotifier {
     required String mimeType,
     required String? fileHash,
     String? groupId,
+    ChatMessage? reply,
   }) {
-    final reply = replyingTo;
     return ChatMessage(
       messageId: _uuid.v4(),
       chatId: chatId,
@@ -932,12 +975,7 @@ class AppController extends ChangeNotifier {
       return;
     }
     final members = await _database.loadGroupMembers(group.groupId);
-    final updated = ChatGroup(
-      groupId: group.groupId,
-      name: normalized,
-      ownerDeviceId: group.ownerDeviceId,
-      createdAt: group.createdAt,
-    );
+    final updated = group.copyWith(name: normalized);
     await _database.saveGroup(updated, members);
     groups = [
       for (final value in groups)
@@ -980,10 +1018,13 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _sendGroupMessage(String groupId, String content) async {
+  Future<void> _sendGroupMessage(
+    String groupId,
+    String content, {
+    required ChatMessage? reply,
+  }) async {
     final members = await _database.loadGroupMembers(groupId);
     if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
-    final reply = replyingTo;
     final mentions = _resolveMentions(content, members);
     final message = ChatMessage(
       messageId: _uuid.v4(),
@@ -998,9 +1039,9 @@ class AppController extends ChangeNotifier {
       replyToSenderId: reply?.senderDeviceId,
       replyToPreview: reply == null ? null : replyPreview(reply),
     );
-    replyingTo = null;
+    if (identical(replyingTo, reply)) replyingTo = null;
     await _database.saveMessage(message);
-    messages = [...messages, message];
+    if (selectedGroupId == groupId) messages = [...messages, message];
     await _reloadGroups();
     notifyListeners();
     for (final member in members.where(
@@ -1049,8 +1090,9 @@ class AppController extends ChangeNotifier {
     File file,
     int fileSize,
     String mimeType,
-    String? fileHash,
-  ) async {
+    String? fileHash, {
+    required ChatMessage? reply,
+  }) async {
     final members = await _database.loadGroupMembers(groupId);
     if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
     final recipients = members
@@ -1065,10 +1107,11 @@ class AppController extends ChangeNotifier {
       fileSize: fileSize,
       mimeType: mimeType,
       fileHash: fileHash,
+      reply: reply,
     );
-    replyingTo = null;
+    if (identical(replyingTo, reply)) replyingTo = null;
     await _database.saveMessage(message);
-    messages = [...messages, message];
+    if (selectedGroupId == groupId) messages = [...messages, message];
     await _reloadGroups();
     notifyListeners();
     if (recipients.isEmpty) {
@@ -1367,8 +1410,11 @@ class AppController extends ChangeNotifier {
         messageId is! String ||
         senderDeviceId is! String ||
         timestamp is! int ||
+        timestamp < 0 ||
         content is! String ||
-        !isValidTextContent(content)) {
+        !isValidTextContent(content) ||
+        !isValidIdentifier(messageId) ||
+        !isValidIdentifier(senderDeviceId)) {
       return;
     }
     if (trustedPeers[senderDeviceId]?.blocked == true) return;
@@ -1399,7 +1445,7 @@ class AppController extends ChangeNotifier {
     // 只要当前打开的就是这个会话，消息就立刻显示在列表里（哪怕窗口没聚焦）；
     // 只有会话没打开时才累计未读，靠红点提醒。
     final conversationOpen = selectedChatId == chat.chatId;
-    await _database.saveMessage(message);
+    if (!await _database.saveMessage(message)) return;
     if (conversationOpen) {
       messages = [...messages, message];
     } else {
@@ -1457,7 +1503,7 @@ class AppController extends ChangeNotifier {
         await _database.loadMessage(message.messageId) != null) {
       return;
     }
-    await _database.saveMessage(message);
+    if (!await _database.saveMessage(message)) return;
     // 会话已打开就立刻显示，附件同样不依赖窗口焦点。
     final conversationOpen = selectedChatId == chat.chatId;
     if (conversationOpen) {
@@ -1818,8 +1864,11 @@ class AppController extends ChangeNotifier {
         messageId is! String ||
         senderDeviceId is! String ||
         timestamp is! int ||
+        timestamp < 0 ||
         content is! String ||
-        !isValidTextContent(content)) {
+        !isValidTextContent(content) ||
+        !isValidIdentifier(messageId) ||
+        !isValidIdentifier(senderDeviceId)) {
       return;
     }
     final group = groups.where((value) => value.groupId == groupId).firstOrNull;
@@ -1844,7 +1893,7 @@ class AppController extends ChangeNotifier {
     final mentionMe = mentions.contains(identity!.deviceId);
     // 会话已打开就立刻显示；未读只统计没打开的那个会话。
     final conversationOpen = selectedGroupId == groupId;
-    await _database.saveMessage(message);
+    if (!await _database.saveMessage(message)) return;
     if (conversationOpen) {
       messages = [...messages, message];
     } else {
@@ -1899,7 +1948,7 @@ class AppController extends ChangeNotifier {
         await _database.loadMessage(message.messageId) != null) {
       return;
     }
-    await _database.saveMessage(message);
+    if (!await _database.saveMessage(message)) return;
     // 会话已打开就立刻显示，附件同样不依赖窗口焦点。
     final conversationOpen = selectedGroupId == groupId;
     if (conversationOpen) {
@@ -1934,16 +1983,13 @@ class AppController extends ChangeNotifier {
 
     switch (action) {
       case 'rename':
+        final name = payload['name'];
         if (senderDeviceId != group.ownerDeviceId ||
-            payload['name'] is! String) {
+            name is! String ||
+            !isValidGroupName(name)) {
           return;
         }
-        final updated = ChatGroup(
-          groupId: group.groupId,
-          name: payload['name'] as String,
-          ownerDeviceId: group.ownerDeviceId,
-          createdAt: group.createdAt,
-        );
+        final updated = group.copyWith(name: name.trim());
         await _database.saveGroup(updated, members);
         groups = [
           for (final value in groups)
@@ -2210,10 +2256,13 @@ class AppController extends ChangeNotifier {
         final fallback = DateTime.now()
             .subtract(NetworkConfig.historySyncWindow)
             .millisecondsSinceEpoch;
-        final since = await _database.latestMessageTimestamp(
+        final latest = await _database.latestMessageTimestamp(
           'group:${group.groupId}',
           fallback,
         );
+        // 同一毫秒可能产生多条消息；向前重叠 1 ms，再靠 messageId 去重，
+        // 避免恰好同时间戳但尚未收到的消息永远补不回来。
+        final since = latest > 0 ? latest - 1 : 0;
         await _transport.send(
           peer.ip,
           peer.port,
@@ -2357,7 +2406,7 @@ class AppController extends ChangeNotifier {
         continue;
       }
       final reply = _incomingReply(item);
-      await _database.saveMessage(
+      final inserted = await _database.saveMessage(
         ChatMessage(
           messageId: messageId,
           chatId: 'group:$groupId',
@@ -2372,7 +2421,7 @@ class AppController extends ChangeNotifier {
           replyToPreview: reply.$3,
         ),
       );
-      added = true;
+      added = inserted || added;
     }
     if (!added) return;
     if (selectedGroupId == groupId) {

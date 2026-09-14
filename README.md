@@ -14,7 +14,7 @@ NekoChat 是面向 Windows 机房的 Flutter 局域网聊天工具。它不依�
 - WebSocket 私聊、会话校验、本地历史，以及等待接受、发送成功、拒绝和失败等消息状态
 - 图片与普通文件发送：控制消息走 WebSocket，文件内容通过同一端口的 HTTP 流式传输
 - 10 MB 以下附件自动接收；10 MB 及以上必须由接收方明确接受后才开始传输，单文件上限 512 MB
-- `Ctrl+V` 可直接发送剪贴板中的图片或文件；普通文本仍粘贴到输入框
+- `Ctrl+V` 可把剪贴板中的图片或文件加入待发送区，确认后与文字一起发送；普通文本仍粘贴到输入框
 - 聊天文本可选择复制；图片直接内嵌显示，右键可打开原图或所在文件夹
 - 接收图片以 SHA-256 内容哈希命名并校验；相同内容即使文件名不同也只保存一份并复用路径
 - 数据（身份、密钥、聊天记录、附件）默认保存在程序目录下的 `neko_chat_data`，整个文件夹拷走即可搬迁；侧栏可显示并打开该目录
@@ -102,9 +102,9 @@ requestId | requesterDeviceId | recipientDeviceId
 
 - `local_identities(device_id, display_name, created_at, last_login_at)`
 - `trusted_peers(device_id, display_name, last_known_ip, verified_at, blocked)`
-- `chats(chat_id, peer_device_id, peer_display_name, session_id, state, created_at, last_message_at)`
-- `messages(message_id, chat_id, group_id, sender_device_id, content, timestamp, status, kind, file_name, file_path, file_size, mime_type, transfer_id, file_hash)`
-- `groups(group_id, name, owner_device_id, created_at)`
+- `chats(chat_id, peer_device_id, peer_display_name, session_id, state, created_at, last_message_at, unread_count, last_message_preview)`
+- `messages(message_id, chat_id, group_id, sender_device_id, content, timestamp, status, kind, file_name, file_path, file_size, mime_type, transfer_id, file_hash, reply_to_message_id, reply_to_sender_id, reply_to_preview, mentions)`
+- `groups(group_id, name, owner_device_id, created_at, last_message_at, unread_count, last_message_preview)`
 - `group_members(group_id, device_id, display_name, role)`
 - `group_invites(invite_id, group_id, inviter_device_id, status, created_at)`
 - `settings(key, value)`

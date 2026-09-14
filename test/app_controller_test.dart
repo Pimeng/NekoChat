@@ -233,6 +233,40 @@ void main() {
     expect(setup.controller.messages.single.content, '在吗');
   });
 
+  test('重复收到同一消息不会重复计未读或追加到列表', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-duplicate-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    final packet = textMessagePacket(sessionId, '只应出现一次');
+
+    setup.transport.emit(packet);
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 1);
+    setup.transport.emit(packet);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(setup.controller.chats.single.unreadCount, 1);
+    await setup.controller.selectChat(setup.controller.chats.single.chatId);
+    expect(setup.controller.messages, hasLength(1));
+
+    setup.transport.emit(packet);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(setup.controller.messages, hasLength(1));
+  });
+
   test('窗口失焦但会话已打开时消息仍直接显示，且不计未读', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-background-',
@@ -413,6 +447,45 @@ void main() {
     expect(sent.kind, MessageKind.file);
     expect(sent.replyToMessageId, original.messageId);
     expect(setup.controller.replyingTo, isNull);
+  });
+
+  test('批量发送绑定原会话，不会跟随当前选择串到别处', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-target-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    await activateChat(setup);
+    final chat = setup.controller.chats.single;
+    await setup.controller.selectChat(chat.chatId);
+    setPeerOnline(setup);
+
+    final file = File('${directory.path}${Platform.pathSeparator}目标.txt');
+    await file.writeAsString('target');
+    final attachment = await setup.controller.pendingAttachment(file.path);
+    await setup.controller.closeChat(chat);
+
+    await setup.controller.sendMessageWithAttachments(
+      conversationId: chat.chatId,
+      content: '',
+      attachments: [attachment!],
+    );
+
+    final stored = await setup.database.loadMessages(chat.chatId);
+    expect(stored, hasLength(1));
+    expect(stored.single.fileName, '目标.txt');
+    expect(setup.controller.messages, isEmpty);
   });
 
   test('引用附件时用文件名作为摘要，并压缩空白', () {

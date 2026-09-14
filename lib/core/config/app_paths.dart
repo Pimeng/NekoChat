@@ -30,6 +30,7 @@ class AppDataDirectoryProvider {
     'neko_chat.db-wal',
     'neko_chat.db-shm',
   ];
+  static const String _migrationFolderName = '.legacy_migration';
 
   final Future<Directory> Function() _fallback;
   final String _executablePath;
@@ -47,7 +48,11 @@ class AppDataDirectoryProvider {
       _log.info('数据目录：${system.path}（程序目录不可写）');
       return system;
     }
-    await _migrateLegacyData(portable);
+    final legacy = await _fallback();
+    if (!await _migrateLegacyData(portable, legacy)) {
+      _log.warning('旧数据迁移未完成，本次继续使用 ${legacy.path}');
+      return legacy;
+    }
     _log.info('数据目录：${portable.path}（跟随程序目录）');
     return portable;
   }
@@ -71,26 +76,52 @@ class AppDataDirectoryProvider {
   }
 
   /// 把旧版本留在系统用户目录里的数据搬到程序目录，避免升级后看起来像被清空。
-  /// 原文件保留不动，只做拷贝，失败也不影响启动。
-  Future<void> _migrateLegacyData(Directory portable) async {
+  ///
+  /// 文件先复制到暂存目录，全部完成后才覆盖目标。若中途失败则保留暂存目录供
+  /// 下次重试，并让本次启动继续使用旧目录，避免打开一个不完整的新数据库。
+  Future<bool> _migrateLegacyData(Directory portable, Directory legacy) async {
+    if (p.equals(legacy.path, portable.path)) return true;
+    final keyName = legacyFileNames.first;
+    const databaseName = 'neko_chat.db';
+    final legacyKey = File(p.join(legacy.path, keyName));
+    final legacyDatabase = File(p.join(legacy.path, databaseName));
+    if (!await legacyKey.exists() || !await legacyDatabase.exists()) {
+      return true;
+    }
+
+    final staging = Directory(p.join(portable.path, _migrationFolderName));
+    final portableComplete =
+        await File(p.join(portable.path, keyName)).exists() &&
+        await File(p.join(portable.path, databaseName)).exists();
+    if (portableComplete && !await staging.exists()) return true;
+
     try {
-      final keyName = legacyFileNames.first;
-      if (await File(p.join(portable.path, keyName)).exists()) return;
-      final legacy = await _fallback();
-      if (p.equals(legacy.path, portable.path) ||
-          !await File(p.join(legacy.path, keyName)).exists()) {
-        return;
-      }
+      await staging.create(recursive: true);
       var copied = 0;
       for (final name in legacyFileNames) {
         final source = File(p.join(legacy.path, name));
         if (!await source.exists()) continue;
-        await source.copy(p.join(portable.path, name));
+        await source.copy(p.join(staging.path, name));
         copied++;
       }
+      if (!await File(p.join(staging.path, keyName)).exists() ||
+          !await File(p.join(staging.path, databaseName)).exists()) {
+        throw const FileSystemException('暂存的旧数据不完整');
+      }
+      for (final name in legacyFileNames) {
+        final staged = File(p.join(staging.path, name));
+        if (!await staged.exists()) continue;
+        await staged.copy(p.join(portable.path, name));
+      }
+      for (final entity in staging.listSync()) {
+        if (entity is File) await entity.delete();
+      }
+      await staging.delete();
       _log.info('已从 ${legacy.path} 迁移 $copied 个数据文件到 ${portable.path}');
+      return true;
     } on Object catch (error, stack) {
-      _log.warning('迁移旧数据失败，将直接使用新的数据目录', error, stack);
+      _log.warning('迁移旧数据失败，将继续使用旧数据目录', error, stack);
+      return false;
     }
   }
 }

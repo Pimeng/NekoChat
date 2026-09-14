@@ -387,8 +387,11 @@ class AppDatabase {
     return rows.isEmpty ? 0 : (rows.first['unread_count'] as int?) ?? 0;
   }
 
-  Future<void> saveMessage(ChatMessage message) async {
-    await database.insert('messages', {
+  /// 保存消息，并返回它是否是首次写入。
+  ///
+  /// 网络层可能重发同一个包；调用方可以据此避免重复追加到内存列表、重复计未读。
+  Future<bool> saveMessage(ChatMessage message) async {
+    final inserted = await database.insert('messages', {
       'message_id': message.messageId,
       'chat_id': message.chatId,
       'group_id': message.groupId,
@@ -410,6 +413,7 @@ class AppDatabase {
           ? null
           : jsonEncode(message.mentions),
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    if (inserted == 0) return false;
     // 只在时间前进时更新最新消息，避免历史补发把预览倒退回旧消息。
     final timestamp = message.timestamp.millisecondsSinceEpoch;
     final preview = _previewFor(message);
@@ -426,6 +430,7 @@ class AppDatabase {
         [timestamp, preview, message.groupId, timestamp],
       );
     }
+    return true;
   }
 
   String _previewFor(ChatMessage message) {
