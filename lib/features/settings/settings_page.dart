@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 
 import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
-import '../../core/config/network_config.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, required this.controller});
@@ -75,16 +74,36 @@ class SettingsPage extends StatelessWidget {
               const SizedBox(height: 24),
               const _SettingsSectionTitle('文件接收'),
               Card(
-                child: SwitchListTile(
-                  secondary: const Icon(Icons.download_outlined),
-                  title: const Text('自动接收文件'),
-                  subtitle: Text(
-                    '自动接收小于 '
-                    '${_formatMegabytes(NetworkConfig.largeFileThresholdBytes)} MB '
-                    '的文件；更大文件始终需要确认',
-                  ),
-                  value: controller.autoReceiveFiles,
-                  onChanged: controller.setAutoReceiveFiles,
+                child: Column(
+                  children: [
+                    SwitchListTile(
+                      secondary: const Icon(Icons.download_outlined),
+                      title: const Text('自动接收文件'),
+                      subtitle: const Text('小文件自动下载，大文件仍需手动确认'),
+                      value: controller.autoReceiveFiles,
+                      onChanged: controller.setAutoReceiveFiles,
+                    ),
+                    const Divider(height: 1, indent: 56),
+                    ListTile(
+                      leading: const Icon(Icons.data_usage_outlined),
+                      title: const Text('自动接收大小上限'),
+                      subtitle: Text(
+                        '小于 ${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB '
+                        '的文件自动接收；达到上限后需要确认',
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB',
+                          ),
+                          const SizedBox(width: 4),
+                          const Icon(Icons.chevron_right),
+                        ],
+                      ),
+                      onTap: () => _showAutoReceiveLimitDialog(context),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 24),
@@ -147,6 +166,68 @@ class SettingsPage extends StatelessWidget {
       ),
     ),
   );
+
+  Future<void> _showAutoReceiveLimitDialog(BuildContext context) async {
+    final input = TextEditingController(
+      text: _formatMegabytes(controller.autoReceiveFileLimitBytes).toString(),
+    );
+    String? errorText;
+    final megabytes = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('自动接收大小上限'),
+          content: TextField(
+            controller: input,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: InputDecoration(
+              labelText: '文件大小',
+              suffixText: 'MB',
+              helperText: '可设置 1～512 MB，仅影响是否自动接收',
+              errorText: errorText,
+            ),
+            onSubmitted: (_) => _submitAutoReceiveLimit(
+              dialogContext,
+              input.text,
+              (message) => setDialogState(() => errorText = message),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => _submitAutoReceiveLimit(
+                dialogContext,
+                input.text,
+                (message) => setDialogState(() => errorText = message),
+              ),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    input.dispose();
+    if (megabytes == null) return;
+    await controller.setAutoReceiveFileLimitBytes(megabytes * 1024 * 1024);
+  }
+
+  void _submitAutoReceiveLimit(
+    BuildContext context,
+    String value,
+    ValueChanged<String?> setError,
+  ) {
+    final megabytes = int.tryParse(value);
+    if (megabytes == null || megabytes < 1 || megabytes > 512) {
+      setError('请输入 1～512 之间的整数');
+      return;
+    }
+    Navigator.pop(context, megabytes);
+  }
 }
 
 class _SettingsSectionTitle extends StatelessWidget {

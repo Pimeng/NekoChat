@@ -1,4 +1,11 @@
-enum MessageStatus { pending, awaitingAcceptance, sent, rejected, failed }
+enum MessageStatus {
+  pending,
+  awaitingAcceptance,
+  sent,
+  rejected,
+  failed,
+  recalled,
+}
 
 enum MessageKind { text, image, file }
 
@@ -158,6 +165,8 @@ class ChatMessage {
     this.replyToSenderId,
     this.replyToPreview,
     this.mentions = const [],
+    this.recalledAt,
+    this.recalledByDeviceId,
   });
   final String messageId;
   final String chatId;
@@ -181,6 +190,12 @@ class ChatMessage {
 
   /// 群消息中被 @ 到的成员设备号，用于高亮并提醒被提及的人。
   final List<String> mentions;
+
+  /// 撤回后只保留消息身份与时间线位置，原正文和附件引用会从数据库清除。
+  final DateTime? recalledAt;
+  final String? recalledByDeviceId;
+
+  bool get isRecalled => status == MessageStatus.recalled;
 
   bool get isReply => replyToMessageId != null;
 
@@ -209,7 +224,23 @@ class ChatMessage {
     replyToSenderId: replyToSenderId,
     replyToPreview: replyToPreview,
     mentions: mentions ?? this.mentions,
+    recalledAt: recalledAt,
+    recalledByDeviceId: recalledByDeviceId,
   );
+
+  ChatMessage asRecalled({required String byDeviceId, required DateTime at}) =>
+      ChatMessage(
+        messageId: messageId,
+        chatId: chatId,
+        groupId: groupId,
+        senderDeviceId: senderDeviceId,
+        content: '',
+        timestamp: timestamp,
+        status: MessageStatus.recalled,
+        kind: kind,
+        recalledAt: at,
+        recalledByDeviceId: byDeviceId,
+      );
 }
 
 class ChatGroup {

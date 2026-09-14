@@ -213,10 +213,6 @@ class WebSocketChatTransport implements ChatTransport {
   }) async {
     final file = File(filePath);
     if (!await file.exists()) throw StateError('文件不存在：$filePath');
-    final size = await file.length();
-    if (size > NetworkConfig.maxFileSizeBytes) {
-      throw StateError('文件超过 512 MB 限制');
-    }
     _fileOffers[transferId] = _FileOffer(
       file: file,
       eligibleAddresses: {...allowedAddresses},
@@ -252,7 +248,7 @@ class WebSocketChatTransport implements ChatTransport {
     String? mimeType,
     String? contentHash,
   }) async {
-    if (expectedSize < 0 || expectedSize > NetworkConfig.maxFileSizeBytes) {
+    if (expectedSize < 0) {
       throw StateError('文件大小无效');
     }
     final baseDirectory = await _downloadsDirectory();
@@ -295,14 +291,24 @@ class WebSocketChatTransport implements ChatTransport {
         await response.drain<void>();
         throw HttpException('文件下载失败：HTTP ${response.statusCode}');
       }
-      if (response.contentLength > NetworkConfig.maxFileSizeBytes ||
-          (response.contentLength >= 0 &&
-              response.contentLength != expectedSize)) {
+      if (response.contentLength >= 0 &&
+          response.contentLength != expectedSize) {
         await response.drain<void>();
         throw const HttpException('文件长度与声明不一致');
       }
       final sink = partial.openWrite();
-      await response.pipe(sink);
+      var received = 0;
+      try {
+        await for (final chunk in response) {
+          received += chunk.length;
+          if (received > expectedSize) {
+            throw const HttpException('文件长度超过声明大小');
+          }
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+      }
       final actualSize = await partial.length();
       if (actualSize != expectedSize) {
         throw const HttpException('文件接收不完整');

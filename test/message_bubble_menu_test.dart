@@ -119,4 +119,50 @@ void main() {
     expect(find.text('复制'), findsOneWidget);
     expect(find.text('引用回复'), findsOneWidget);
   });
+
+  testWidgets('两分钟内自己的消息菜单提供撤回', (tester) async {
+    final controller = renderOnlyController(
+      messages: [
+        ChatMessage(
+          messageId: 'm-recent',
+          chatId: 'chat-1',
+          senderDeviceId: 'local-device',
+          content: '刚发出的消息',
+          timestamp: DateTime.now(),
+          status: MessageStatus.sent,
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+    await tester.tap(find.text('刚发出的消息'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    expect(find.text('撤回'), findsOneWidget);
+  });
+
+  testWidgets('撤回消息只显示居中的灰色提示，不显示原内容', (tester) async {
+    final controller = renderOnlyController(
+      messages: [
+        ChatMessage(
+          messageId: 'm-recalled',
+          chatId: 'chat-1',
+          senderDeviceId: 'local-device',
+          content: '',
+          timestamp: DateTime.now(),
+          status: MessageStatus.recalled,
+          recalledAt: DateTime.now(),
+          recalledByDeviceId: 'local-device',
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+    expect(find.text('你撤回了一条消息'), findsOneWidget);
+    expect(find.text('引用回复'), findsNothing);
+    expect(find.byType(SelectionArea), findsNothing);
+  });
 }

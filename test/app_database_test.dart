@@ -283,6 +283,65 @@ void main() {
     expect(message.mentions, ['local-device', 'peer-1']);
   });
 
+  test('撤回会清除原内容并持久化灰字占位所需信息', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-recall-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final database = AppDatabase(directory: () async => directory);
+    await database.open(const [1, 2, 3, 4]);
+    addTearDown(database.close);
+    await database.saveChat(
+      const ChatSummary(
+        chatId: 'chat-1',
+        peerDeviceId: 'peer-1',
+        displayName: '李四',
+        state: ChatSessionState.active,
+      ),
+    );
+    final sentAt = DateTime.fromMillisecondsSinceEpoch(2000);
+    final recalledAt = DateTime.fromMillisecondsSinceEpoch(3000);
+    await database.saveMessage(
+      ChatMessage(
+        messageId: 'm-1',
+        chatId: 'chat-1',
+        senderDeviceId: 'local-device',
+        content: '需要消失的正文',
+        timestamp: sentAt,
+        status: MessageStatus.sent,
+        replyToMessageId: 'm-0',
+        replyToSenderId: 'peer-1',
+        replyToPreview: '引用内容',
+      ),
+    );
+
+    expect(
+      await database.recallMessage(
+        'm-1',
+        recalledByDeviceId: 'local-device',
+        recalledAt: recalledAt,
+      ),
+      isTrue,
+    );
+    expect(
+      await database.recallMessage(
+        'm-1',
+        recalledByDeviceId: 'local-device',
+        recalledAt: recalledAt,
+      ),
+      isFalse,
+    );
+    final message = (await database.loadMessage('m-1'))!;
+    expect(message.isRecalled, isTrue);
+    expect(message.content, isEmpty);
+    expect(message.replyToMessageId, isNull);
+    expect(message.recalledAt, recalledAt);
+    expect(message.recalledByDeviceId, 'local-device');
+    expect((await database.loadChats()).single.lastMessagePreview, '[消息已撤回]');
+    expect(await database.latestMessageTimestamp('chat-1', 0), 3000);
+    expect(await database.loadMessagesAfter('chat-1', 2500), hasLength(1));
+  });
+
   test('未读计数与最新消息摘要不会被会话重存覆盖', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-unread-',
@@ -501,5 +560,35 @@ void main() {
 
     expect(await database.loadPeerRemarks(), {'peer-1': '小李'});
     expect(await database.loadGroupRemarks(), {'group-1': '项目群'});
+  });
+
+  test('Schema v5 升级时补充撤回字段', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-recall-migration-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final path = p.join(directory.path, 'neko_chat.db');
+    final legacy = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 5,
+        onCreate: (database, _) => database.execute('''
+          CREATE TABLE messages (
+            message_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL
+          )
+        '''),
+      ),
+    );
+    await legacy.close();
+
+    final database = AppDatabase(directory: () async => directory);
+    await database.open(const [1, 2, 3, 4]);
+    addTearDown(database.close);
+    final columns = await database.database.rawQuery(
+      'PRAGMA table_info(messages)',
+    );
+    final names = columns.map((row) => row['name']).toSet();
+    expect(names, containsAll(['recalled_at', 'recalled_by_device_id']));
   });
 }

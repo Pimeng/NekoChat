@@ -8,6 +8,7 @@ import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
 import '../settings/settings_page.dart';
 import 'message_composer.dart';
+import 'mention_autocomplete.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key, required this.controller});
@@ -287,6 +288,9 @@ class _MainShellState extends State<MainShell> {
           onCancelReply: controller.cancelReply,
           onCopyMessage: controller.copyMessage,
           onReplyMessage: controller.beginReply,
+          canRecallMessage: controller.canRecallMessage,
+          onRecallMessage: controller.recallMessage,
+          recallNoticeFor: controller.recallNotice,
           actions: [
             PopupMenuButton<String>(
               tooltip: '会话操作',
@@ -388,8 +392,29 @@ class _MainShellState extends State<MainShell> {
           onCancelReply: controller.cancelReply,
           onCopyMessage: controller.copyMessage,
           onReplyMessage: controller.beginReply,
+          canRecallMessage: controller.canRecallMessage,
+          onRecallMessage: controller.recallMessage,
+          recallNoticeFor: controller.recallNotice,
           onMention: (name) => _insertMention(composer, name),
-          onPickMentionMember: () => _pickMentionMember(controller, composer),
+          loadMentionCandidates: () async {
+            final members = await controller.groupMembers(group.groupId);
+            return [
+              for (final member in members)
+                if (member.deviceId != controller.identity!.deviceId)
+                  MentionCandidate(
+                    deviceId: member.deviceId,
+                    displayName: controller.peerDisplayName(
+                      member.deviceId,
+                      member.displayName,
+                    ),
+                    insertionName: member.displayName,
+                    originalName:
+                        controller.peerRemarks.containsKey(member.deviceId)
+                        ? member.displayName
+                        : null,
+                  ),
+            ];
+          },
           actions: [
             if (group.ownerDeviceId == controller.identity!.deviceId)
               IconButton(
@@ -483,53 +508,6 @@ class _MainShellState extends State<MainShell> {
       ),
       composing: TextRange.empty,
     );
-  }
-
-  Future<void> _pickMentionMember(
-    AppController controller,
-    TextEditingController composer,
-  ) async {
-    final groupId = controller.selectedGroupId;
-    if (groupId == null) return;
-    final members = await controller.groupMembers(groupId);
-    final candidates = members
-        .where((member) => member.deviceId != controller.identity!.deviceId)
-        .toList();
-    if (!mounted || candidates.isEmpty) return;
-    final selected = await showDialog<GroupMember>(
-      context: context,
-      builder: (dialogContext) => SimpleDialog(
-        title: const Text('选择要 @ 的成员'),
-        children: [
-          for (final member in candidates)
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(dialogContext, member),
-              child: ListTile(
-                leading: CircleAvatar(
-                  child: Text(
-                    _avatarText(
-                      controller.peerDisplayName(
-                        member.deviceId,
-                        member.displayName,
-                      ),
-                    ),
-                  ),
-                ),
-                title: Text(
-                  controller.peerDisplayName(
-                    member.deviceId,
-                    member.displayName,
-                  ),
-                ),
-                subtitle: controller.peerRemarks.containsKey(member.deviceId)
-                    ? Text('原名：${member.displayName}')
-                    : null,
-              ),
-            ),
-        ],
-      ),
-    );
-    if (selected != null) _insertMention(composer, selected.displayName);
   }
 
   Future<void> _showCreateGroup(AppController controller) async {
@@ -1269,8 +1247,11 @@ class _ConversationPane extends StatefulWidget {
     this.onCancelReply,
     this.onCopyMessage,
     this.onReplyMessage,
+    this.canRecallMessage,
+    this.onRecallMessage,
+    this.recallNoticeFor,
     this.onMention,
-    this.onPickMentionMember,
+    this.loadMentionCandidates,
   });
   final String conversationId;
   final String title;
@@ -1303,12 +1284,15 @@ class _ConversationPane extends StatefulWidget {
   final VoidCallback? onCancelReply;
   final Future<void> Function(ChatMessage)? onCopyMessage;
   final void Function(ChatMessage)? onReplyMessage;
+  final bool Function(ChatMessage)? canRecallMessage;
+  final Future<void> Function(ChatMessage)? onRecallMessage;
+  final String Function(ChatMessage)? recallNoticeFor;
 
   /// 右键“@TA”时把昵称插进输入框。
   final void Function(String name)? onMention;
 
-  /// 群聊里点击按钮选择要 @ 的成员。
-  final Future<void> Function()? onPickMentionMember;
+  /// 群聊输入 @ 时加载候选成员；私聊为空，不启用候选菜单。
+  final Future<List<MentionCandidate>> Function()? loadMentionCandidates;
 
   @override
   State<_ConversationPane> createState() => _ConversationPaneState();
@@ -1398,12 +1382,6 @@ class _ConversationPaneState extends State<_ConversationPane> {
   void _handleReply(ChatMessage message) {
     widget.onReplyMessage?.call(message);
     _focusComposer();
-  }
-
-  /// 选完要 @ 的成员后同样把光标送回输入框（昵称已插到光标处）。
-  Future<void> _handlePickMentionMember() async {
-    await widget.onPickMentionMember?.call();
-    if (mounted) _composerFocus.requestFocus();
   }
 
   /// 发送前把附件与文字一起交给控制器，文字先发、附件按顺序跟在后面。
@@ -1603,6 +1581,14 @@ class _ConversationPaneState extends State<_ConversationPane> {
                     final mentioned = message.mentionsDevice(
                       widget.localDeviceId,
                     );
+                    if (message.isRecalled) {
+                      return _RecallNotice(
+                        key: _keyFor(message.messageId),
+                        text:
+                            widget.recallNoticeFor?.call(message) ?? '一条消息已撤回',
+                        highlighted: _highlightedMessageId == message.messageId,
+                      );
+                    }
                     return _MessageBubble(
                       key: _keyFor(message.messageId),
                       message: message,
@@ -1635,6 +1621,11 @@ class _ConversationPaneState extends State<_ConversationPane> {
                           : () => widget.onMention!(
                               widget.peerName(message.senderDeviceId),
                             ),
+                      onRecall:
+                          widget.canRecallMessage?.call(message) == true &&
+                              widget.onRecallMessage != null
+                          ? () => widget.onRecallMessage!(message)
+                          : null,
                       onShowFallbackMenu: _showFallbackMenu,
                     );
                   },
@@ -1668,23 +1659,24 @@ class _ConversationPaneState extends State<_ConversationPane> {
                     onPressed: widget.enabled ? _pickAttachments : null,
                     icon: const Icon(Icons.attach_file),
                   ),
-                  if (widget.onPickMentionMember != null)
-                    IconButton(
-                      tooltip: '@ 群成员',
-                      onPressed: widget.enabled
-                          ? () => unawaited(_handlePickMentionMember())
-                          : null,
-                      icon: const Icon(Icons.alternate_email),
-                    ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: MessageComposer(
-                      controller: widget.composer,
-                      focusNode: _composerFocus,
-                      enabled: widget.enabled,
-                      onSend: () => unawaited(_handleSend()),
-                      onPasteAttachments: _pasteAttachments,
-                    ),
+                    child: widget.loadMentionCandidates == null
+                        ? MessageComposer(
+                            controller: widget.composer,
+                            focusNode: _composerFocus,
+                            enabled: widget.enabled,
+                            onSend: () => unawaited(_handleSend()),
+                            onPasteAttachments: _pasteAttachments,
+                          )
+                        : MentionAutocomplete(
+                            controller: widget.composer,
+                            focusNode: _composerFocus,
+                            enabled: widget.enabled,
+                            onSend: () => unawaited(_handleSend()),
+                            onPasteAttachments: _pasteAttachments,
+                            loadCandidates: widget.loadMentionCandidates!,
+                          ),
                   ),
                 ],
               ),
@@ -1962,6 +1954,7 @@ class _MessageBubble extends StatelessWidget {
     this.onReply,
     this.onCopy,
     this.onMention,
+    this.onRecall,
     this.resolveMessage,
     this.onJumpToReply,
     this.onShowFallbackMenu,
@@ -1988,6 +1981,7 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback? onReply;
   final Future<void> Function()? onCopy;
   final VoidCallback? onMention;
+  final Future<void> Function()? onRecall;
 
   /// 按消息 id 找到本地的原消息，用于在引用块里展示图片缩略图。
   final ChatMessage? Function(String messageId)? resolveMessage;
@@ -2396,6 +2390,14 @@ class _MessageBubble extends StatelessWidget {
           onMention!();
         },
       ),
+    if (onRecall != null)
+      ContextMenuButtonItem(
+        label: '撤回',
+        onPressed: () {
+          dismiss();
+          unawaited(onRecall!());
+        },
+      ),
     if (_hasLocalAttachment)
       ContextMenuButtonItem(
         label: message.kind == MessageKind.image ? '打开图片' : '打开文件',
@@ -2456,6 +2458,42 @@ class _MessageBubble extends StatelessWidget {
       ],
     );
   }
+}
+
+class _RecallNotice extends StatelessWidget {
+  const _RecallNotice({
+    super.key,
+    required this.text,
+    required this.highlighted,
+  });
+
+  final String text;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) => AnimatedContainer(
+    duration: const Duration(milliseconds: 220),
+    width: double.infinity,
+    margin: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    color: highlighted
+        ? Theme.of(context).colorScheme.primary.withValues(alpha: .08)
+        : Colors.transparent,
+    alignment: Alignment.center,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest
+            .withValues(alpha: .55),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.labelMedium
+            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
+    ),
+  );
 }
 
 /// 把元信息（昵称、时间、引用摘要等）排除在文本选择之外，
@@ -2661,6 +2699,7 @@ IconData _statusIcon(MessageStatus status) => switch (status) {
   MessageStatus.sent => Icons.check,
   MessageStatus.rejected => Icons.block,
   MessageStatus.failed => Icons.error_outline,
+  MessageStatus.recalled => Icons.undo,
 };
 
 String _statusLabel(MessageStatus status, {required bool mine}) =>
@@ -2670,6 +2709,7 @@ String _statusLabel(MessageStatus status, {required bool mine}) =>
       MessageStatus.sent => mine ? '已接受' : '已接收',
       MessageStatus.rejected => '已拒绝',
       MessageStatus.failed => '失败',
+      MessageStatus.recalled => '已撤回',
     };
 
 String _formatFileSize(int bytes) {

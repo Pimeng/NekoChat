@@ -5,6 +5,22 @@ import 'package:neko_chat/app/app_controller.dart';
 import 'package:neko_chat/features/settings/settings_page.dart';
 
 void main() {
+  testWidgets('文件接收设置显示大小上限并校验输入范围', (tester) async {
+    final controller = AppController();
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsPage(controller: controller)),
+    );
+
+    expect(find.text('自动接收大小上限'), findsOneWidget);
+    expect(find.text('10 MB'), findsOneWidget);
+    await tester.tap(find.text('自动接收大小上限'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '0');
+    await tester.tap(find.text('保存'));
+    await tester.pump();
+    expect(find.text('请输入 1～512 之间的整数'), findsOneWidget);
+  });
+
   testWidgets('快捷键二级页可录入新组合', (tester) async {
     final controller = AppController();
     await tester.pumpWidget(

@@ -46,6 +46,7 @@ class AppController extends ChangeNotifier {
 
   static const _uuid = Uuid();
   static const _autoReceiveFilesSetting = 'auto_receive_files';
+  static const _autoReceiveFileLimitSetting = 'auto_receive_file_limit_bytes';
   static const _windowsNotificationsSetting = 'windows_notifications';
   static const _bossKeySetting = 'boss_key_enabled';
   static const _bossKeyShortcutSetting = 'boss_key_shortcut';
@@ -96,6 +97,9 @@ class AppController extends ChangeNotifier {
 
   /// 自动接收小于安全阈值的附件；大文件始终需要手动确认。
   bool autoReceiveFiles = true;
+
+  /// 小于该大小的附件可自动下载；达到上限后由接收方手动确认。
+  int autoReceiveFileLimitBytes = NetworkConfig.defaultAutoReceiveLimitBytes;
 
   /// 是否允许应用发送 Windows 系统通知。
   bool windowsNotificationsEnabled = true;
@@ -162,6 +166,14 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_autoReceiveFilesSetting),
       fallback: true,
     );
+    autoReceiveFileLimitBytes =
+        _settingInt(
+          await _database.loadSetting(_autoReceiveFileLimitSetting),
+          fallback: NetworkConfig.defaultAutoReceiveLimitBytes,
+        ).clamp(
+          NetworkConfig.minAutoReceiveLimitBytes,
+          NetworkConfig.maxAutoReceiveLimitBytes,
+        );
     windowsNotificationsEnabled = _settingBool(
       await _database.loadSetting(_windowsNotificationsSetting),
       fallback: true,
@@ -211,6 +223,20 @@ class AppController extends ChangeNotifier {
     if (autoReceiveFiles == value) return;
     await _database.saveSetting(_autoReceiveFilesSetting, value.toString());
     autoReceiveFiles = value;
+    notifyListeners();
+  }
+
+  Future<void> setAutoReceiveFileLimitBytes(int value) async {
+    final normalized = value.clamp(
+      NetworkConfig.minAutoReceiveLimitBytes,
+      NetworkConfig.maxAutoReceiveLimitBytes,
+    );
+    if (autoReceiveFileLimitBytes == normalized) return;
+    await _database.saveSetting(
+      _autoReceiveFileLimitSetting,
+      normalized.toString(),
+    );
+    autoReceiveFileLimitBytes = normalized;
     notifyListeners();
   }
 
@@ -569,7 +595,7 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  /// 校验并描述一个待发送附件。文件不存在或超过大小限制时返回 null 并提示。
+  /// 校验并描述一个待发送附件。接收策略由对端决定，发送端不按大小拦截。
   Future<PendingAttachment?> pendingAttachment(String filePath) async {
     final file = File(filePath);
     if (!await file.exists()) {
@@ -577,10 +603,6 @@ class AppController extends ChangeNotifier {
       return null;
     }
     final fileSize = await file.length();
-    if (fileSize > NetworkConfig.maxFileSizeBytes) {
-      _showTopRightMessage('文件不能超过 512 MB', icon: Icons.error_outline);
-      return null;
-    }
     final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
     return PendingAttachment(
       path: file.path,
@@ -647,11 +669,6 @@ class AppController extends ChangeNotifier {
       return;
     }
     final fileSize = await file.length();
-    if (fileSize > NetworkConfig.maxFileSizeBytes) {
-      errorMessage = '文件不能超过 512 MB';
-      notifyListeners();
-      return;
-    }
     final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
     final fileHash = mimeType.startsWith('image/')
         ? await sha256File(file)
@@ -731,9 +748,8 @@ class AppController extends ChangeNotifier {
       senderDeviceId: identity!.deviceId,
       content: p.basename(file.path),
       timestamp: DateTime.now(),
-      status: NetworkConfig.requiresFileAcceptance(fileSize)
-          ? MessageStatus.awaitingAcceptance
-          : MessageStatus.pending,
+      // 是否自动接收只能由接收端自己的设置决定；发送端统一等待接收响应。
+      status: MessageStatus.awaitingAcceptance,
       kind: mimeType.startsWith('image/')
           ? MessageKind.image
           : MessageKind.file,
@@ -1083,6 +1099,7 @@ class AppController extends ChangeNotifier {
 
   /// 引用框里展示的摘要文本。
   static String replyPreview(ChatMessage message) {
+    if (message.isRecalled) return '消息已撤回';
     final raw = message.kind == MessageKind.text
         ? message.content
         : (message.fileName ?? message.content);
@@ -1091,6 +1108,171 @@ class AppController extends ChangeNotifier {
       return normalized;
     }
     return '${normalized.substring(0, NetworkConfig.maxReplyPreviewLength)}…';
+  }
+
+  /// 当前用户是否有权撤回这条消息。私聊和普通群成员限 2 分钟；
+  /// 群主可在 1 小时内撤回群内任意消息（包括自己发送的消息）。
+  bool canRecallMessage(ChatMessage message, {DateTime? now}) {
+    final me = identity?.deviceId;
+    if (me == null || message.isRecalled) return false;
+    ChatGroup? group;
+    if (message.groupId != null) {
+      group = groups
+          .where((value) => value.groupId == message.groupId)
+          .firstOrNull;
+      if (group == null) return false;
+    }
+    return _canActorRecall(
+      message,
+      actorDeviceId: me,
+      group: group,
+      now: now ?? DateTime.now(),
+    );
+  }
+
+  static bool _canActorRecall(
+    ChatMessage message, {
+    required String actorDeviceId,
+    required ChatGroup? group,
+    required DateTime now,
+  }) {
+    if (message.isRecalled) return false;
+    final age = now.difference(message.timestamp);
+    if (age < -NetworkConfig.recallClockSkewTolerance) return false;
+    if (group?.ownerDeviceId == actorDeviceId) {
+      return age <= NetworkConfig.groupOwnerRecallWindow;
+    }
+    return message.senderDeviceId == actorDeviceId &&
+        age <= NetworkConfig.selfRecallWindow;
+  }
+
+  /// 撤回消息并把撤回事件发给对端。私聊没有离线补发，因此对方离线时不
+  /// 修改本地消息；群聊撤回会持久化，并在成员重连同步历史时继续生效。
+  Future<void> recallMessage(ChatMessage message) async {
+    if (!canRecallMessage(message)) {
+      final isGroupOwner =
+          message.groupId != null &&
+          groups.any(
+            (group) =>
+                group.groupId == message.groupId &&
+                group.ownerDeviceId == identity?.deviceId,
+          );
+      errorMessage = isGroupOwner ? '群主只能撤回 1 小时内的群消息' : '自己的消息只能在发送后 2 分钟内撤回';
+      notifyListeners();
+      return;
+    }
+    final recalledAt = DateTime.now();
+    final actor = identity!.deviceId;
+    if (message.groupId == null) {
+      final chat = chats
+          .where((value) => value.chatId == message.chatId)
+          .firstOrNull;
+      final peer = chat == null ? null : _onlinePeer(chat.peerDeviceId);
+      if (chat?.sessionId == null || peer == null) {
+        errorMessage = '对方当前离线，无法撤回私聊消息';
+        notifyListeners();
+        return;
+      }
+      try {
+        await _transport.send(
+          peer.ip,
+          peer.port,
+          ProtocolEnvelope(
+            type: MessageType.messageRecall,
+            payload: {
+              'sessionId': chat!.sessionId,
+              'messageId': message.messageId,
+              'senderDeviceId': actor,
+              'recalledAt': recalledAt.millisecondsSinceEpoch,
+            },
+          ),
+        );
+      } on Object catch (error, stack) {
+        _log.warning('发送私聊撤回失败', error, stack);
+        errorMessage = '撤回失败：无法连接对方';
+        notifyListeners();
+        return;
+      }
+      await _applyRecall(message, actor, recalledAt);
+      return;
+    }
+
+    final groupId = message.groupId!;
+    final members = await _database.loadGroupMembers(groupId);
+    await _applyRecall(message, actor, recalledAt);
+    final envelope = ProtocolEnvelope(
+      type: MessageType.groupMessageRecall,
+      payload: {
+        'groupId': groupId,
+        'messageId': message.messageId,
+        'senderDeviceId': actor,
+        'recalledAt': recalledAt.millisecondsSinceEpoch,
+      },
+    );
+    for (final member in members.where((value) => value.deviceId != actor)) {
+      final peer = _onlinePeer(member.deviceId);
+      if (peer == null) continue;
+      try {
+        await _transport.send(peer.ip, peer.port, envelope);
+      } on Object catch (error, stack) {
+        _log.warning('向群成员 ${member.deviceId} 发送撤回失败', error, stack);
+      }
+    }
+  }
+
+  String recallNotice(ChatMessage message) {
+    final actor = message.recalledByDeviceId;
+    if (actor == identity?.deviceId) {
+      if (message.senderDeviceId == actor) return '你撤回了一条消息';
+      return '你撤回了 ${_messageSenderName(message)} 的一条消息';
+    }
+    if (actor == message.senderDeviceId) {
+      return '${_messageSenderName(message)} 撤回了一条消息';
+    }
+    return '群主撤回了 ${_messageSenderName(message)} 的一条消息';
+  }
+
+  String _messageSenderName(ChatMessage message) {
+    if (message.senderDeviceId == identity?.deviceId) return '你';
+    final original =
+        trustedPeers[message.senderDeviceId]?.displayName ??
+        peers
+            .where((peer) => peer.deviceId == message.senderDeviceId)
+            .firstOrNull
+            ?.displayName ??
+        '一位群成员';
+    return peerDisplayName(message.senderDeviceId, original);
+  }
+
+  Future<void> _applyRecall(
+    ChatMessage message,
+    String actorDeviceId,
+    DateTime recalledAt,
+  ) async {
+    if (!await _database.recallMessage(
+      message.messageId,
+      recalledByDeviceId: actorDeviceId,
+      recalledAt: recalledAt,
+    )) {
+      return;
+    }
+    if (replyingTo?.messageId == message.messageId) replyingTo = null;
+    final index = messages.indexWhere(
+      (value) => value.messageId == message.messageId,
+    );
+    if (index >= 0) {
+      messages = [...messages]
+        ..[index] = message.asRecalled(
+          byDeviceId: actorDeviceId,
+          at: recalledAt,
+        );
+    }
+    if (message.groupId == null) {
+      await _reloadChats();
+    } else {
+      await _reloadGroups();
+    }
+    notifyListeners();
   }
 
   /// 由控制器统一维护未读，界面只读取即可。
@@ -1235,7 +1417,12 @@ class AppController extends ChangeNotifier {
     for (final member in members) {
       if (member.deviceId == identity!.deviceId) continue;
       if (mentions.length >= NetworkConfig.maxMentionCount) break;
-      if (content.contains('@${member.displayName}')) {
+      final localDisplayName = peerDisplayName(
+        member.deviceId,
+        member.displayName,
+      );
+      if (content.contains('@${member.displayName}') ||
+          content.contains('@$localDisplayName')) {
         mentions.add(member.deviceId);
       }
     }
@@ -1366,6 +1553,8 @@ class AppController extends ChangeNotifier {
           await _receiveChatReject(packet);
         case MessageType.message:
           await _receiveMessage(packet);
+        case MessageType.messageRecall:
+          await _receiveMessageRecall(packet);
         case MessageType.fileOffer:
           await _receiveFileOffer(packet);
         case MessageType.fileAccept:
@@ -1380,6 +1569,8 @@ class AppController extends ChangeNotifier {
           await _receiveGroupInviteResponse(packet);
         case MessageType.groupMessage:
           await _receiveGroupMessage(packet);
+        case MessageType.groupMessageRecall:
+          await _receiveGroupMessageRecall(packet);
         case MessageType.groupFileOffer:
           await _receiveGroupFileOffer(packet);
         case MessageType.groupUpdate:
@@ -1627,6 +1818,51 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _receiveMessageRecall(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final sessionId = payload['sessionId'];
+    final messageId = payload['messageId'];
+    final actorDeviceId = payload['senderDeviceId'];
+    final recalledAt = payload['recalledAt'];
+    if (sessionId is! String ||
+        messageId is! String ||
+        actorDeviceId is! String ||
+        recalledAt is! int ||
+        recalledAt < 0 ||
+        !isValidIdentifier(messageId) ||
+        !isValidIdentifier(actorDeviceId)) {
+      return;
+    }
+    final chat = chats
+        .where(
+          (value) =>
+              value.sessionId == sessionId &&
+              value.peerDeviceId == actorDeviceId &&
+              value.state == ChatSessionState.active,
+        )
+        .firstOrNull;
+    if (chat == null ||
+        trustedPeers[actorDeviceId]?.blocked == true ||
+        !_packetMatchesDevice(packet, actorDeviceId)) {
+      return;
+    }
+    final message = await _database.loadMessage(messageId);
+    final now = DateTime.now();
+    if (message == null ||
+        message.chatId != chat.chatId ||
+        message.groupId != null ||
+        message.senderDeviceId != actorDeviceId ||
+        !_canActorRecall(
+          message,
+          actorDeviceId: actorDeviceId,
+          group: null,
+          now: now,
+        )) {
+      return;
+    }
+    await _applyRecall(message, actorDeviceId, now);
+  }
+
   /// 解析入站消息的引用字段，非法时返回全空。
   (String?, String?, String?) _incomingReply(Map<String, dynamic> payload) {
     final id = payload['replyToMessageId'];
@@ -1709,7 +1945,6 @@ class AppController extends ChangeNotifier {
         fileName.length > 255 ||
         fileSize is! int ||
         fileSize < 0 ||
-        fileSize > NetworkConfig.maxFileSizeBytes ||
         mimeType is! String ||
         (fileHash != null && (fileHash is! String || !isSha256Hex(fileHash)))) {
       return null;
@@ -1723,7 +1958,8 @@ class AppController extends ChangeNotifier {
       content: fileName,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
       status:
-          autoReceiveFiles && !NetworkConfig.requiresFileAcceptance(fileSize)
+          autoReceiveFiles &&
+              NetworkConfig.canAutoReceive(fileSize, autoReceiveFileLimitBytes)
           ? MessageStatus.pending
           : MessageStatus.awaitingAcceptance,
       kind: mimeType.startsWith('image/')
@@ -1886,24 +2122,28 @@ class AppController extends ChangeNotifier {
         mimeType: message.mimeType,
         contentHash: message.fileHash,
       );
-      await _database.updateMessageAttachment(
+      final changed = await _database.updateMessageAttachment(
         message.messageId,
         filePath: filePath,
         status: MessageStatus.sent,
       );
-      _replaceVisibleMessage(
-        message.messageId,
-        filePath: filePath,
-        status: MessageStatus.sent,
-      );
+      if (changed > 0) {
+        _replaceVisibleMessage(
+          message.messageId,
+          filePath: filePath,
+          status: MessageStatus.sent,
+        );
+      }
     } on Object catch (error, stack) {
       _log.warning('文件下载失败', error, stack);
-      await _database.updateMessageAttachment(
+      final changed = await _database.updateMessageAttachment(
         message.messageId,
         filePath: null,
         status: MessageStatus.failed,
       );
-      _replaceVisibleMessage(message.messageId, status: MessageStatus.failed);
+      if (changed > 0) {
+        _replaceVisibleMessage(message.messageId, status: MessageStatus.failed);
+      }
     }
     notifyListeners();
   }
@@ -2103,6 +2343,45 @@ class AppController extends ChangeNotifier {
         onClick: () => selectGroup(groupId),
       );
     }
+  }
+
+  Future<void> _receiveGroupMessageRecall(IncomingPacket packet) async {
+    final payload = packet.envelope.payload;
+    final groupId = payload['groupId'];
+    final messageId = payload['messageId'];
+    final actorDeviceId = payload['senderDeviceId'];
+    final recalledAt = payload['recalledAt'];
+    if (groupId is! String ||
+        messageId is! String ||
+        actorDeviceId is! String ||
+        recalledAt is! int ||
+        recalledAt < 0 ||
+        !isValidIdentifier(groupId) ||
+        !isValidIdentifier(messageId) ||
+        !isValidIdentifier(actorDeviceId)) {
+      return;
+    }
+    final group = groups.where((value) => value.groupId == groupId).firstOrNull;
+    if (group == null ||
+        trustedPeers[actorDeviceId]?.blocked == true ||
+        !_packetMatchesDevice(packet, actorDeviceId)) {
+      return;
+    }
+    final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == actorDeviceId)) return;
+    final message = await _database.loadMessage(messageId);
+    final now = DateTime.now();
+    if (message == null ||
+        message.groupId != groupId ||
+        !_canActorRecall(
+          message,
+          actorDeviceId: actorDeviceId,
+          group: group,
+          now: now,
+        )) {
+      return;
+    }
+    await _applyRecall(message, actorDeviceId, now);
   }
 
   Future<void> _receiveGroupFileOffer(IncomingPacket packet) async {
@@ -2367,7 +2646,7 @@ class AppController extends ChangeNotifier {
   Future<void> _reloadGroups() async => groups = await _database.loadGroups();
 
   Future<void> _setMessageStatus(String id, MessageStatus status) async {
-    await _database.updateMessageStatus(id, status);
+    if (await _database.updateMessageStatus(id, status) == 0) return;
     _replaceVisibleMessage(id, status: status);
     notifyListeners();
   }
@@ -2389,6 +2668,12 @@ class AppController extends ChangeNotifier {
   DiscoveredPeer? _onlinePeer(String deviceId) => peers
       .where((peer) => peer.deviceId == deviceId && peer.online)
       .firstOrNull;
+
+  bool _packetMatchesDevice(IncomingPacket packet, String deviceId) {
+    final expected =
+        _onlinePeer(deviceId)?.ip ?? trustedPeers[deviceId]?.lastKnownIp;
+    return expected != null && expected == packet.remoteAddress;
+  }
 
   /// 设备上下线时刷新列表；新上线的设备会触发一次群历史补发。
   void _handlePeersChanged(List<DiscoveredPeer> value) {
@@ -2489,12 +2774,17 @@ class AppController extends ChangeNotifier {
     );
     final data = [
       for (final message in messages)
-        if (message.kind == MessageKind.text)
+        if (message.kind == MessageKind.text || message.isRecalled)
           {
             'messageId': message.messageId,
             'senderDeviceId': message.senderDeviceId,
             'timestamp': message.timestamp.millisecondsSinceEpoch,
             'content': message.content,
+            if (message.isRecalled) 'recalled': true,
+            if (message.isRecalled)
+              'recalledAt': message.recalledAt!.millisecondsSinceEpoch,
+            if (message.isRecalled)
+              'recalledByDeviceId': message.recalledByDeviceId,
             if (message.mentions.isNotEmpty) 'mentions': message.mentions,
             'replyToMessageId': ?message.replyToMessageId,
             'replyToSenderId': ?message.replyToSenderId,
@@ -2577,16 +2867,62 @@ class AppController extends ChangeNotifier {
       final messageSender = item['senderDeviceId'];
       final timestamp = item['timestamp'];
       final content = item['content'];
+      final recalled = item['recalled'] == true;
       if (messageId is! String ||
           messageSender is! String ||
           timestamp is! int ||
           content is! String ||
-          !isValidTextContent(content) ||
           !isValidIdentifier(messageId) ||
           !members.any((member) => member.deviceId == messageSender) ||
-          await _database.loadMessage(messageId) != null) {
+          (!recalled && !isValidTextContent(content))) {
         continue;
       }
+      if (recalled) {
+        final actor = item['recalledByDeviceId'];
+        final recalledAtValue = item['recalledAt'];
+        if (actor is! String ||
+            recalledAtValue is! int ||
+            !members.any((member) => member.deviceId == actor)) {
+          continue;
+        }
+        final original = ChatMessage(
+          messageId: messageId,
+          chatId: 'group:$groupId',
+          groupId: groupId,
+          senderDeviceId: messageSender,
+          content: '',
+          timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
+          status: MessageStatus.sent,
+        );
+        final recalledAt = DateTime.fromMillisecondsSinceEpoch(recalledAtValue);
+        if (recalledAt.isAfter(
+              DateTime.now().add(NetworkConfig.recallClockSkewTolerance),
+            ) ||
+            !_canActorRecall(
+              original,
+              actorDeviceId: actor,
+              group: group,
+              now: recalledAt,
+            )) {
+          continue;
+        }
+        final existing = await _database.loadMessage(messageId);
+        if (existing == null) {
+          final inserted = await _database.saveMessage(
+            original.asRecalled(byDeviceId: actor, at: recalledAt),
+          );
+          added = inserted || added;
+        } else {
+          final changed = await _database.recallMessage(
+            messageId,
+            recalledByDeviceId: actor,
+            recalledAt: recalledAt,
+          );
+          added = changed || added;
+        }
+        continue;
+      }
+      if (await _database.loadMessage(messageId) != null) continue;
       final reply = _incomingReply(item);
       final inserted = await _database.saveMessage(
         ChatMessage(
@@ -2684,6 +3020,9 @@ class AppController extends ChangeNotifier {
         'false' => false,
         _ => fallback,
       };
+
+  static int _settingInt(String? value, {required int fallback}) =>
+      int.tryParse(value ?? '') ?? fallback;
 
   static String? _normalizeRemark(String value) {
     final normalized = value.trim();

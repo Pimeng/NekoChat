@@ -31,7 +31,7 @@ class PlainSqliteBackend implements DatabaseBackend {
     return databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 5,
+        version: 6,
         onCreate: onCreate,
         onUpgrade: onUpgrade,
       ),
@@ -137,7 +137,9 @@ class AppDatabase {
         reply_to_message_id TEXT,
         reply_to_sender_id TEXT,
         reply_to_preview TEXT,
-        mentions TEXT
+        mentions TEXT,
+        recalled_at INTEGER,
+        recalled_by_device_id TEXT
       )
     ''');
     await db.execute(
@@ -244,6 +246,17 @@ class AppDatabase {
           remark TEXT NOT NULL
         )
       ''');
+    }
+    if (oldVersion < 6) {
+      final messageTables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+      );
+      if (messageTables.isNotEmpty) {
+        await db.execute('ALTER TABLE messages ADD COLUMN recalled_at INTEGER');
+        await db.execute(
+          'ALTER TABLE messages ADD COLUMN recalled_by_device_id TEXT',
+        );
+      }
     }
     _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
@@ -489,6 +502,8 @@ class AppDatabase {
       'mentions': message.mentions.isEmpty
           ? null
           : jsonEncode(message.mentions),
+      'recalled_at': message.recalledAt?.millisecondsSinceEpoch,
+      'recalled_by_device_id': message.recalledByDeviceId,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
     if (inserted == 0) return false;
     // 只在时间前进时更新最新消息，避免历史补发把预览倒退回旧消息。
@@ -511,6 +526,7 @@ class AppDatabase {
   }
 
   String _previewFor(ChatMessage message) {
+    if (message.isRecalled) return '[消息已撤回]';
     final raw = switch (message.kind) {
       MessageKind.text => message.content,
       MessageKind.image => '[图片] ${message.fileName ?? ''}',
@@ -525,7 +541,8 @@ class AppDatabase {
   /// 最近一段时间内的群消息时间戳，用于断线重连时请求缺失的消息。
   Future<int> latestMessageTimestamp(String chatId, int fallback) async {
     final rows = await database.rawQuery(
-      'SELECT MAX(timestamp) AS latest FROM messages WHERE chat_id = ?',
+      'SELECT MAX(CASE WHEN recalled_at > timestamp THEN recalled_at '
+      'ELSE timestamp END) AS latest FROM messages WHERE chat_id = ?',
       [chatId],
     );
     final latest = rows.first['latest'] as int?;
@@ -540,33 +557,92 @@ class AppDatabase {
     int since, {
     int limit = 300,
   }) async {
-    final rows = await database.query(
-      'messages',
-      where: 'chat_id = ? AND timestamp > ?',
-      whereArgs: [chatId, since],
-      orderBy: 'timestamp DESC',
-      limit: limit,
+    final rows = await database.rawQuery(
+      'SELECT * FROM messages WHERE chat_id = ? '
+      'AND (timestamp > ? OR recalled_at > ?) '
+      'ORDER BY CASE WHEN recalled_at > timestamp THEN recalled_at '
+      'ELSE timestamp END DESC LIMIT ?',
+      [chatId, since, since, limit],
     );
     return rows.map(_messageFromRow).toList().reversed.toList();
   }
 
-  Future<void> updateMessageStatus(String messageId, MessageStatus status) =>
+  Future<int> updateMessageStatus(String messageId, MessageStatus status) =>
       database.update(
         'messages',
         {'status': status.name},
-        where: 'message_id = ?',
-        whereArgs: [messageId],
+        where: 'message_id = ? AND status != ?',
+        whereArgs: [messageId, MessageStatus.recalled.name],
       );
 
-  Future<void> updateMessageAttachment(
+  /// 把原消息原地替换为撤回占位，并同步修正会话列表中的最新摘要。
+  /// 返回 false 表示消息不存在或已撤回，调用方据此避免重复刷新界面。
+  Future<bool> recallMessage(
+    String messageId, {
+    required String recalledByDeviceId,
+    required DateTime recalledAt,
+  }) async => database.transaction((txn) async {
+    final rows = await txn.query(
+      'messages',
+      columns: ['chat_id', 'group_id'],
+      where: 'message_id = ? AND status != ?',
+      whereArgs: [messageId, MessageStatus.recalled.name],
+      limit: 1,
+    );
+    if (rows.isEmpty) return false;
+    final row = rows.single;
+    final changed = await txn.update(
+      'messages',
+      {
+        'content': '',
+        'status': MessageStatus.recalled.name,
+        'file_name': null,
+        'file_path': null,
+        'file_size': null,
+        'mime_type': null,
+        'transfer_id': null,
+        'file_hash': null,
+        'reply_to_message_id': null,
+        'reply_to_sender_id': null,
+        'reply_to_preview': null,
+        'mentions': null,
+        'recalled_at': recalledAt.millisecondsSinceEpoch,
+        'recalled_by_device_id': recalledByDeviceId,
+      },
+      where: 'message_id = ? AND status != ?',
+      whereArgs: [messageId, MessageStatus.recalled.name],
+    );
+    if (changed == 0) return false;
+    final chatId = row['chat_id'] as String;
+    final latest = await txn.query(
+      'messages',
+      columns: ['message_id'],
+      where: 'chat_id = ?',
+      whereArgs: [chatId],
+      orderBy: 'timestamp DESC, rowid DESC',
+      limit: 1,
+    );
+    if (latest.isNotEmpty && latest.single['message_id'] == messageId) {
+      final groupId = row['group_id'] as String?;
+      await txn.update(
+        groupId == null ? 'chats' : 'groups',
+        {'last_message_preview': '[消息已撤回]'},
+        where: groupId == null ? 'chat_id = ?' : 'group_id = ?',
+        whereArgs: [groupId ?? chatId],
+      );
+    }
+    return true;
+  });
+
+  Future<int> updateMessageAttachment(
     String messageId, {
     required String? filePath,
     required MessageStatus status,
   }) => database.update(
     'messages',
     {'file_path': _encodeAttachment(filePath), 'status': status.name},
-    where: 'message_id = ?',
-    whereArgs: [messageId],
+    where: 'message_id = ? AND status != ?',
+    whereArgs: [messageId, MessageStatus.recalled.name],
   );
 
   /// 只更新附件的本地路径，用于用户在换机后重新指定文件位置。
@@ -617,6 +693,10 @@ class AppDatabase {
     replyToSenderId: row['reply_to_sender_id'] as String?,
     replyToPreview: row['reply_to_preview'] as String?,
     mentions: _decodeMentions(row['mentions'] as String?),
+    recalledAt: row['recalled_at'] == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(row['recalled_at'] as int),
+    recalledByDeviceId: row['recalled_by_device_id'] as String?,
   );
 
   static List<String> _decodeMentions(String? value) {

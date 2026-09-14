@@ -133,22 +133,23 @@ void main() {
     remoteAddress: '192.168.1.20',
   );
 
-  IncomingPacket fileOfferPacket(String sessionId) => IncomingPacket(
-    envelope: ProtocolEnvelope(
-      type: MessageType.fileOffer,
-      payload: {
-        'sessionId': sessionId,
-        'messageId': 'file-msg-1',
-        'senderDeviceId': 'peer-device',
-        'timestamp': 6000,
-        'transferId': 'transfer-1',
-        'fileName': '文档.txt',
-        'fileSize': 1024,
-        'mimeType': 'text/plain',
-      },
-    ),
-    remoteAddress: '192.168.1.20',
-  );
+  IncomingPacket fileOfferPacket(String sessionId, {int fileSize = 1024}) =>
+      IncomingPacket(
+        envelope: ProtocolEnvelope(
+          type: MessageType.fileOffer,
+          payload: {
+            'sessionId': sessionId,
+            'messageId': 'file-msg-1',
+            'senderDeviceId': 'peer-device',
+            'timestamp': 6000,
+            'transferId': 'transfer-1',
+            'fileName': '文档.txt',
+            'fileSize': fileSize,
+            'mimeType': 'text/plain',
+          },
+        ),
+        remoteAddress: '192.168.1.20',
+      );
 
   test('收到的聊天邀请超时后自动清除并回到无会话状态', () async {
     final directory = await Directory.systemTemp.createTemp(
@@ -438,6 +439,35 @@ void main() {
     expect(stored.single.status, MessageStatus.awaitingAcceptance);
   });
 
+  test('超过接收端自定义自动接收上限后等待手动确认', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-file-limit-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    setPeerOnline(setup);
+    await setup.controller.setAutoReceiveFileLimitBytes(1024 * 1024);
+
+    setup.transport.emit(fileOfferPacket(sessionId, fileSize: 2 * 1024 * 1024));
+    await _waitUntil(
+      () => setup.controller.chats.single.lastMessagePreview != null,
+    );
+    final stored = await setup.database.loadMessages(
+      setup.controller.chats.single.chatId,
+    );
+    expect(stored.single.status, MessageStatus.awaitingAcceptance);
+  });
+
   test('重新解锁后恢复文件接收和通知设置', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-settings-restore-',
@@ -454,6 +484,10 @@ void main() {
       ),
     );
     await seed.saveSetting('auto_receive_files', 'false');
+    await seed.saveSetting(
+      'auto_receive_file_limit_bytes',
+      (25 * 1024 * 1024).toString(),
+    );
     await seed.saveSetting('windows_notifications', 'false');
     await seed.saveSetting('boss_key_enabled', 'true');
     const restoredShortcut = BossKeyShortcut(
@@ -482,6 +516,7 @@ void main() {
 
     expect(setup.controller.stage, AppStage.ready);
     expect(setup.controller.autoReceiveFiles, isFalse);
+    expect(setup.controller.autoReceiveFileLimitBytes, 25 * 1024 * 1024);
     expect(setup.controller.windowsNotificationsEnabled, isFalse);
     expect(setup.controller.bossKeyEnabled, isTrue);
     expect(setup.controller.bossKeyShortcut, restoredShortcut);
@@ -681,6 +716,7 @@ void main() {
 
     final sent = setup.controller.messages.last;
     expect(sent.kind, MessageKind.file);
+    expect(sent.status, MessageStatus.awaitingAcceptance);
     expect(sent.replyToMessageId, original.messageId);
     expect(setup.controller.replyingTo, isNull);
   });
@@ -764,6 +800,155 @@ void main() {
     );
     expect(preview.length, NetworkConfig.maxReplyPreviewLength + 1);
     expect(preview.endsWith('…'), isTrue);
+  });
+
+  test('自己的私聊消息可在两分钟内撤回并同步给对方', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-recall-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 1),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    setPeerOnline(setup);
+    await setup.controller.selectChat(setup.controller.chats.single.chatId);
+    await setup.controller.sendMessage('马上撤回');
+    final message = setup.controller.messages.single;
+
+    expect(setup.controller.canRecallMessage(message), isTrue);
+    await setup.controller.recallMessage(message);
+
+    final stored = (await setup.database.loadMessage(message.messageId))!;
+    expect(stored.isRecalled, isTrue);
+    expect(stored.content, isEmpty);
+    expect(setup.controller.messages.single.isRecalled, isTrue);
+    final recall = setup.transport.sentEnvelopes.lastWhere(
+      (envelope) => envelope.type == MessageType.messageRecall,
+    );
+    expect(recall.payload['sessionId'], sessionId);
+    expect(recall.payload['messageId'], message.messageId);
+  });
+
+  test('接收端拒绝超过两分钟的私聊撤回', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-expired-recall-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 1),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    final oldTimestamp = DateTime.now()
+        .subtract(const Duration(minutes: 3))
+        .millisecondsSinceEpoch;
+    setup.transport.emit(
+      textMessagePacket(sessionId, '不能被过期撤回', timestamp: oldTimestamp),
+    );
+    await _waitUntil(
+      () => setup.controller.chats.single.lastMessagePreview == '不能被过期撤回',
+    );
+    setup.transport.emit(
+      IncomingPacket(
+        envelope: ProtocolEnvelope(
+          type: MessageType.messageRecall,
+          payload: {
+            'sessionId': sessionId,
+            'messageId': 'msg-1',
+            'senderDeviceId': 'peer-device',
+            'recalledAt': DateTime.now().millisecondsSinceEpoch,
+          },
+        ),
+        remoteAddress: '192.168.1.20',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect((await setup.database.loadMessage('msg-1'))?.isRecalled, isFalse);
+  });
+
+  test('群主可撤回一小时内的任意群消息，普通成员仍限自己的两分钟', () {
+    final now = DateTime(2026, 9, 14, 12);
+    final controller = AppController(bossKey: _FakeBossKeyService());
+    addTearDown(controller.dispose);
+    controller.identity = LocalIdentity(
+      deviceId: 'owner',
+      displayName: '群主',
+      createdAt: now,
+      lastLoginAt: now,
+    );
+    controller.groups = [
+      ChatGroup(
+        groupId: 'g-1',
+        name: '测试群',
+        ownerDeviceId: 'owner',
+        createdAt: now,
+      ),
+    ];
+    ChatMessage message(String sender, Duration age) => ChatMessage(
+      messageId: '$sender-${age.inSeconds}',
+      chatId: 'group:g-1',
+      groupId: 'g-1',
+      senderDeviceId: sender,
+      content: '消息',
+      timestamp: now.subtract(age),
+      status: MessageStatus.sent,
+    );
+
+    expect(
+      controller.canRecallMessage(
+        message('member', const Duration(minutes: 59)),
+        now: now,
+      ),
+      isTrue,
+    );
+    expect(
+      controller.canRecallMessage(
+        message('member', const Duration(minutes: 61)),
+        now: now,
+      ),
+      isFalse,
+    );
+    expect(
+      controller.canRecallMessage(
+        message('owner', const Duration(minutes: 3)),
+        now: now,
+      ),
+      isTrue,
+    );
+    expect(
+      controller.canRecallMessage(
+        message('owner', const Duration(minutes: 61)),
+        now: now,
+      ),
+      isFalse,
+    );
+    controller.identity = LocalIdentity(
+      deviceId: 'member',
+      displayName: '成员',
+      createdAt: now,
+      lastLoginAt: now,
+    );
+    expect(
+      controller.canRecallMessage(
+        message('member', const Duration(minutes: 3)),
+        now: now,
+      ),
+      isFalse,
+    );
   });
 }
 

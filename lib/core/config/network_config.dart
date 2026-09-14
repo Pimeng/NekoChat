@@ -7,8 +7,12 @@ abstract final class NetworkConfig {
   static const Duration offlineTimeout = Duration(seconds: 10);
   static const Duration requestTimeout = Duration(seconds: 30);
   static const Duration fileOfferLifetime = Duration(minutes: 10);
-  static const int maxFileSizeBytes = 512 * 1024 * 1024;
-  static const int largeFileThresholdBytes = 10 * 1024 * 1024;
+  static const Duration selfRecallWindow = Duration(minutes: 2);
+  static const Duration groupOwnerRecallWindow = Duration(hours: 1);
+  static const Duration recallClockSkewTolerance = Duration(seconds: 30);
+  static const int minAutoReceiveLimitBytes = 1 * 1024 * 1024;
+  static const int defaultAutoReceiveLimitBytes = 10 * 1024 * 1024;
+  static const int maxAutoReceiveLimitBytes = 512 * 1024 * 1024;
 
   /// 入站协议字段的长度上限，避免对端发送超大载荷占用本地存储。
   static const int maxDisplayNameLength = 32;
@@ -24,6 +28,6 @@ abstract final class NetworkConfig {
   /// 重连补发的最大时间跨度，避免一次同步过多历史。
   static const Duration historySyncWindow = Duration(days: 3);
 
-  static bool requiresFileAcceptance(int fileSize) =>
-      fileSize >= largeFileThresholdBytes;
+  static bool canAutoReceive(int fileSize, int limitBytes) =>
+      fileSize >= 0 && fileSize < limitBytes;
 }

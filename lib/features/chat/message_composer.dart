@@ -9,6 +9,10 @@ class MessageComposer extends StatelessWidget {
     required this.onSend,
     this.focusNode,
     this.onPasteAttachments,
+    this.onSuggestionPrevious,
+    this.onSuggestionNext,
+    this.onSuggestionAccept,
+    this.onSuggestionDismiss,
   });
 
   final TextEditingController controller;
@@ -18,6 +22,10 @@ class MessageComposer extends StatelessWidget {
   /// 由外部持有，方便引用回复后立刻把光标送回输入框。
   final FocusNode? focusNode;
   final Future<bool> Function()? onPasteAttachments;
+  final VoidCallback? onSuggestionPrevious;
+  final VoidCallback? onSuggestionNext;
+  final VoidCallback? onSuggestionAccept;
+  final VoidCallback? onSuggestionDismiss;
 
   @override
   Widget build(BuildContext context) {
@@ -27,16 +35,24 @@ class MessageComposer extends StatelessWidget {
         Expanded(
           child: CallbackShortcuts(
             bindings: {
-              const SingleActivator(LogicalKeyboardKey.enter): _send,
+              const SingleActivator(LogicalKeyboardKey.enter):
+                  onSuggestionAccept ?? _send,
               const SingleActivator(LogicalKeyboardKey.enter, control: true):
                   _insertNewline,
-              const SingleActivator(LogicalKeyboardKey.numpadEnter): _send,
+              const SingleActivator(LogicalKeyboardKey.numpadEnter):
+                  onSuggestionAccept ?? _send,
               const SingleActivator(
                 LogicalKeyboardKey.numpadEnter,
                 control: true,
               ): _insertNewline,
               const SingleActivator(LogicalKeyboardKey.keyV, control: true):
                   _paste,
+              const SingleActivator(LogicalKeyboardKey.arrowUp):
+                  ?onSuggestionPrevious,
+              const SingleActivator(LogicalKeyboardKey.arrowDown):
+                  ?onSuggestionNext,
+              const SingleActivator(LogicalKeyboardKey.escape):
+                  ?onSuggestionDismiss,
             },
             child: TextField(
               controller: controller,
