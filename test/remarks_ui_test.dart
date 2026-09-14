@@ -18,6 +18,23 @@ AppController _baseController() {
 }
 
 void main() {
+  testWidgets('点击左上角个人区域可编辑头像和昵称', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _baseController();
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+
+    expect(find.byTooltip('编辑头像和昵称'), findsOneWidget);
+    await tester.tap(find.byTooltip('编辑头像和昵称'));
+    await tester.pumpAndSettle();
+    expect(find.text('编辑个人资料'), findsOneWidget);
+    expect(find.text('选择头像'), findsOneWidget);
+    expect(find.widgetWithText(TextField, '昵称'), findsOneWidget);
+    expect(find.text('保存'), findsOneWidget);
+  });
+
   testWidgets('私聊优先显示人员备注，并保留原始昵称', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 720));
     addTearDown(() => tester.binding.setSurfaceSize(null));

@@ -21,6 +21,7 @@ abstract final class NetworkConfig {
   static const int maxReplyPreviewLength = 200;
   static const int maxMentionCount = 64;
   static const int maxRemarkLength = 40;
+  static const int maxProfileAvatarBytes = 20 * 1024 * 1024;
 
   /// 断线重连时一次最多补发的消息条数。
   static const int maxHistoryBatchSize = 300;

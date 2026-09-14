@@ -569,6 +569,70 @@ void main() {
     expect(setup.controller.groupRemarks, isEmpty);
   });
 
+  test('修改昵称会持久化并更新本机群成员资料', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-profile-name-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '旧昵称', password: '1234');
+    final group = await setup.controller.createGroup('测试群', const []);
+
+    await setup.controller.setDisplayName('新昵称');
+
+    expect(setup.controller.identity?.displayName, '新昵称');
+    expect((await setup.database.loadIdentity())?.displayName, '新昵称');
+    expect(
+      (await setup.database.loadGroupMembers(group.groupId)).single.displayName,
+      '新昵称',
+    );
+    expect(setup.discovery.identity.displayName, '新昵称');
+  });
+
+  test('自定义头像复制到数据目录，更换与移除时清理旧文件', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-avatar-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final first = File('${directory.path}${Platform.pathSeparator}first.png');
+    final second = File('${directory.path}${Platform.pathSeparator}second.png');
+    await first.writeAsBytes([1, 2, 3]);
+    await second.writeAsBytes([4, 5, 6]);
+
+    await setup.controller.setProfileAvatarFromPath(first.path);
+    final firstStored = setup.controller.profileAvatarPath!;
+    expect(await File(firstStored).exists(), isTrue);
+    expect(setup.database.isInsideDataDirectory(firstStored), isTrue);
+
+    await setup.controller.setProfileAvatarFromPath(second.path);
+    final secondStored = setup.controller.profileAvatarPath!;
+    expect(secondStored, isNot(firstStored));
+    expect(await File(firstStored).exists(), isFalse);
+    expect(await File(secondStored).exists(), isTrue);
+
+    await setup.controller.removeProfileAvatar();
+    expect(setup.controller.profileAvatarPath, isNull);
+    expect(await File(secondStored).exists(), isFalse);
+  });
+
   test('会话未打开时消息计为未读且不进入当前列表', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-unseen-',

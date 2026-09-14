@@ -74,5 +74,21 @@ void main() {
 
     expect(foundA.any((peer) => peer.deviceId == 'discovery-b'), isTrue);
     expect(foundB.any((peer) => peer.deviceId == 'discovery-a'), isTrue);
+
+    a.updateIdentity(a.identity.copyWith(displayName: '新昵称 A'));
+    final renameDeadline = DateTime.now().add(const Duration(seconds: 3));
+    while (!foundB.any(
+          (peer) =>
+              peer.deviceId == 'discovery-a' && peer.displayName == '新昵称 A',
+        ) &&
+        DateTime.now().isBefore(renameDeadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(
+      foundB.any(
+        (peer) => peer.deviceId == 'discovery-a' && peer.displayName == '新昵称 A',
+      ),
+      isTrue,
+    );
   });
 }

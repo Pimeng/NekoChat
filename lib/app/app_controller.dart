@@ -47,6 +47,7 @@ class AppController extends ChangeNotifier {
   static const _uuid = Uuid();
   static const _autoReceiveFilesSetting = 'auto_receive_files';
   static const _autoReceiveFileLimitSetting = 'auto_receive_file_limit_bytes';
+  static const _profileAvatarSetting = 'profile_avatar_path';
   static const _windowsNotificationsSetting = 'windows_notifications';
   static const _bossKeySetting = 'boss_key_enabled';
   static const _bossKeyShortcutSetting = 'boss_key_shortcut';
@@ -75,6 +76,7 @@ class AppController extends ChangeNotifier {
   String? topRightMessage;
   IconData topRightIcon = Icons.block;
   LocalIdentity? identity;
+  String? profileAvatarPath;
 
   /// 当前数据目录。数据库、解锁密钥和已接收的附件都在这里，整体拷贝即可搬走。
   String? dataDirectory;
@@ -187,6 +189,11 @@ class AppController extends ChangeNotifier {
     );
     peerRemarks = await _database.loadPeerRemarks();
     groupRemarks = await _database.loadGroupRemarks();
+    final storedAvatarPath = await _database.loadSetting(_profileAvatarSetting);
+    if (storedAvatarPath != null && storedAvatarPath.isNotEmpty) {
+      final resolved = _database.attachmentPaths.decode(storedAvatarPath);
+      if (await File(resolved).exists()) profileAvatarPath = resolved;
+    }
     trustedPeers = await _database.loadTrustedPeers();
     chats = await _database.loadChats();
     await _recoverInterruptedRequests();
@@ -223,6 +230,102 @@ class AppController extends ChangeNotifier {
     if (autoReceiveFiles == value) return;
     await _database.saveSetting(_autoReceiveFilesSetting, value.toString());
     autoReceiveFiles = value;
+    notifyListeners();
+  }
+
+  Future<void> pickProfileAvatar() async {
+    final result = await FilePicker.pickFile(
+      dialogTitle: '选择头像',
+      type: FileType.custom,
+      allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
+    );
+    final path = result?.path;
+    if (path != null) await setProfileAvatarFromPath(path);
+  }
+
+  Future<void> setProfileAvatarFromPath(String sourcePath) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) throw ArgumentError('头像文件不存在');
+    final size = await source.length();
+    if (size <= 0 || size > NetworkConfig.maxProfileAvatarBytes) {
+      throw ArgumentError('头像图片不能超过 20 MB');
+    }
+    final mimeType = lookupMimeType(source.path);
+    if (mimeType?.startsWith('image/') != true) {
+      throw ArgumentError('请选择 PNG、JPG、WebP 或 BMP 图片');
+    }
+    final extension = p.extension(source.path).toLowerCase();
+    final hash = await sha256File(source);
+    final directory = Directory(p.join(_database.directoryPath!, 'profile'));
+    await directory.create(recursive: true);
+    final target = File(p.join(directory.path, 'avatar_$hash$extension'));
+    if (!await target.exists()) {
+      final partial = File('${target.path}.part');
+      if (await partial.exists()) await partial.delete();
+      await source.copy(partial.path);
+      await partial.rename(target.path);
+    }
+    final previous = profileAvatarPath;
+    await _database.saveSetting(
+      _profileAvatarSetting,
+      _database.attachmentPaths.encode(target.path),
+    );
+    profileAvatarPath = target.path;
+    await _deletePreviousProfileAvatar(previous, except: target.path);
+    notifyListeners();
+  }
+
+  Future<void> removeProfileAvatar() async {
+    final previous = profileAvatarPath;
+    await _database.saveSetting(_profileAvatarSetting, '');
+    profileAvatarPath = null;
+    await _deletePreviousProfileAvatar(previous);
+    notifyListeners();
+  }
+
+  Future<void> _deletePreviousProfileAvatar(
+    String? path, {
+    String? except,
+  }) async {
+    if (path == null ||
+        path == except ||
+        !_database.isInsideDataDirectory(path)) {
+      return;
+    }
+    final file = File(path);
+    if (await file.exists()) await file.delete();
+  }
+
+  Future<void> setDisplayName(String value) async {
+    final normalized = value.trim();
+    if (!isValidDisplayName(normalized)) {
+      throw ArgumentError('昵称长度应为 1～${NetworkConfig.maxDisplayNameLength} 个字符');
+    }
+    final current = identity!;
+    if (current.displayName == normalized) return;
+    final updated = current.copyWith(displayName: normalized);
+    await _database.saveIdentity(updated);
+    identity = updated;
+    _discovery?.updateIdentity(updated);
+
+    for (final group in groups) {
+      final members = await _database.loadGroupMembers(group.groupId);
+      final me = members
+          .where((member) => member.deviceId == updated.deviceId)
+          .firstOrNull;
+      if (me == null) continue;
+      await _database.saveGroupMember(
+        GroupMember(
+          groupId: me.groupId,
+          deviceId: me.deviceId,
+          displayName: normalized,
+          role: me.role,
+        ),
+      );
+      await _fanOutGroupControl(group.groupId, members, 'profile', {
+        'displayName': normalized,
+      });
+    }
     notifyListeners();
   }
 
@@ -2440,6 +2543,22 @@ class AppController extends ChangeNotifier {
     if (!members.any((member) => member.deviceId == senderDeviceId)) return;
 
     switch (action) {
+      case 'profile':
+        final displayName = payload['displayName'];
+        if (displayName is! String || !isValidDisplayName(displayName)) {
+          return;
+        }
+        final sender = members
+            .where((member) => member.deviceId == senderDeviceId)
+            .first;
+        await _database.saveGroupMember(
+          GroupMember(
+            groupId: groupId,
+            deviceId: senderDeviceId,
+            displayName: displayName.trim(),
+            role: sender.role,
+          ),
+        );
       case 'rename':
         final name = payload['name'];
         if (senderDeviceId != group.ownerDeviceId ||

@@ -13,12 +13,11 @@ typedef TrustLookup = TrustedPeer? Function(String deviceId);
 typedef NetworkInterfacesProvider = Future<List<NetworkInterface>> Function();
 
 /// 构造发现服务的方式，便于在测试中替换为不绑定真实网卡的实现。
-typedef DiscoveryServiceFactory =
-    DiscoveryService Function({
-      required LocalIdentity identity,
-      required TrustLookup trustLookup,
-      required void Function(List<DiscoveredPeer> peers) onPeersChanged,
-    });
+typedef DiscoveryServiceFactory = DiscoveryService Function({
+  required LocalIdentity identity,
+  required TrustLookup trustLookup,
+  required void Function(List<DiscoveredPeer> peers) onPeersChanged,
+});
 
 class _InterfaceSender {
   const _InterfaceSender({required this.address, required this.socket});
@@ -41,7 +40,7 @@ class DiscoveryService {
              includeLinkLocal: false,
            ));
 
-  final LocalIdentity identity;
+  LocalIdentity identity;
   final TrustLookup trustLookup;
   final void Function(List<DiscoveredPeer> peers) onPeersChanged;
   final NetworkInterfacesProvider _interfacesProvider;
@@ -257,6 +256,12 @@ class DiscoveryService {
       );
     }
     _notify();
+  }
+
+  /// 昵称更新后立刻广播新身份，不必等待下一次定时公告。
+  void updateIdentity(LocalIdentity value) {
+    identity = value;
+    _announce();
   }
 
   void _notify() {

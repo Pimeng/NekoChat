@@ -31,6 +31,14 @@ class LocalIdentity {
   final String displayName;
   final DateTime createdAt;
   final DateTime lastLoginAt;
+
+  LocalIdentity copyWith({String? displayName, DateTime? lastLoginAt}) =>
+      LocalIdentity(
+        deviceId: deviceId,
+        displayName: displayName ?? this.displayName,
+        createdAt: createdAt,
+        lastLoginAt: lastLoginAt ?? this.lastLoginAt,
+      );
 }
 
 class TrustedPeer {

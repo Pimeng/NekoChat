@@ -5,6 +5,7 @@ NekoChat 是面向 Windows 机房的 Flutter 局域网聊天工具。它不依�
 ## 当前 MVP
 
 - 首次启动设置昵称、本地密码，并永久保存 UUID v4 `deviceId`
+- 左上角可更换本地自定义头像、重新设置昵称；昵称变更会立即重新广播
 - PBKDF2-HMAC-SHA256 + AES-256-GCM 封装随机数据库密钥；密码错误不会覆盖原身份
 - UDP Multicast + Broadcast 自动发现，逐个 IPv4 网卡收发，3 秒公告、10 秒离线
 - 发现来源 IP 只取 `Datagram.address`，聊天来源 IP 只取 Socket 的 `remoteAddress`

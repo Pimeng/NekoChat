@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../app/app_controller.dart';
 import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
+import '../../core/protocol/protocol.dart';
 import '../settings/settings_page.dart';
 import 'message_composer.dart';
 import 'mention_autocomplete.dart';
@@ -112,7 +113,8 @@ class _MainShellState extends State<MainShell> {
       child: Column(
         children: [
           _IdentityHeader(
-            identity: controller.identity!,
+            controller: controller,
+            onTap: () => _showProfileEditor(controller),
             unreadCount:
                 controller.chats.fold(
                   0,
@@ -251,16 +253,22 @@ class _MainShellState extends State<MainShell> {
       if (chat != null) {
         final online = _peerOnline(controller, chat.peerDeviceId);
         final conversationId = chat.chatId;
+        final originalDisplayName =
+            controller.peers
+                .where((peer) => peer.deviceId == chat.peerDeviceId)
+                .firstOrNull
+                ?.displayName ??
+            chat.displayName;
         final displayName = controller.peerDisplayName(
           chat.peerDeviceId,
-          chat.displayName,
+          originalDisplayName,
         );
         return _ConversationPane(
           key: ValueKey(chat.chatId),
           conversationId: conversationId,
           title: displayName,
           subtitle: [
-            if (displayName != chat.displayName) '原名：${chat.displayName}',
+            if (displayName != originalDisplayName) '原名：$originalDisplayName',
             online ? '在线' : '离线 · 消息不会离线排队',
           ].join(' · '),
           messages: controller.messages,
@@ -363,11 +371,11 @@ class _MainShellState extends State<MainShell> {
           peerName: (deviceId) {
             if (deviceId == controller.identity!.deviceId) return '我';
             final originalName =
-                controller.trustedPeers[deviceId]?.displayName ??
                 controller.peers
                     .where((peer) => peer.deviceId == deviceId)
                     .firstOrNull
                     ?.displayName ??
+                controller.trustedPeers[deviceId]?.displayName ??
                 '群成员';
             return controller.peerDisplayName(deviceId, originalName);
           },
@@ -488,6 +496,158 @@ class _MainShellState extends State<MainShell> {
     }
     return _WelcomePane(controller: controller);
   }
+
+  Future<void> _showProfileEditor(AppController controller) async {
+    final name = TextEditingController(text: controller.identity!.displayName);
+    String? errorText;
+    var saving = false;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('编辑个人资料'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _ProfileAvatar(
+                  identity: controller.identity!,
+                  imagePath: controller.profileAvatarPath,
+                  radius: 46,
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: saving
+                          ? null
+                          : () async {
+                              try {
+                                await controller.pickProfileAvatar();
+                                if (dialogContext.mounted) {
+                                  setDialogState(() => errorText = null);
+                                }
+                              } on Object catch (error) {
+                                if (dialogContext.mounted) {
+                                  setDialogState(
+                                    () => errorText = _profileError(error),
+                                  );
+                                }
+                              }
+                            },
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: Text(
+                        controller.profileAvatarPath == null ? '选择头像' : '更换头像',
+                      ),
+                    ),
+                    if (controller.profileAvatarPath != null)
+                      TextButton.icon(
+                        onPressed: saving
+                            ? null
+                            : () async {
+                                await controller.removeProfileAvatar();
+                                if (dialogContext.mounted) {
+                                  setDialogState(() => errorText = null);
+                                }
+                              },
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('恢复默认'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                TextField(
+                  controller: name,
+                  autofocus: true,
+                  maxLength: NetworkConfig.maxDisplayNameLength,
+                  decoration: InputDecoration(
+                    labelText: '昵称',
+                    prefixIcon: const Icon(Icons.badge_outlined),
+                    errorText: errorText,
+                  ),
+                  onSubmitted: saving
+                      ? null
+                      : (_) => _saveProfileName(
+                          dialogContext,
+                          controller,
+                          name.text,
+                          setDialogState,
+                          (value) => saving = value,
+                          (message) => errorText = message,
+                        ),
+                ),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '头像保存在本机数据目录；昵称会同步给局域网内的其他设备。',
+                    style: TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: saving ? null : () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: saving
+                  ? null
+                  : () => _saveProfileName(
+                      dialogContext,
+                      controller,
+                      name.text,
+                      setDialogState,
+                      (value) => saving = value,
+                      (message) => errorText = message,
+                    ),
+              child: saving
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+  }
+
+  Future<void> _saveProfileName(
+    BuildContext dialogContext,
+    AppController controller,
+    String value,
+    StateSetter setDialogState,
+    ValueChanged<bool> setSaving,
+    ValueChanged<String?> setError,
+  ) async {
+    if (!isValidDisplayName(value)) {
+      setDialogState(() => setError('昵称长度应为 1～32 个字符'));
+      return;
+    }
+    setDialogState(() => setSaving(true));
+    try {
+      await controller.setDisplayName(value);
+      if (dialogContext.mounted) Navigator.pop(dialogContext);
+    } on Object catch (error) {
+      if (dialogContext.mounted) {
+        setDialogState(() {
+          setSaving(false);
+          setError(_profileError(error));
+        });
+      }
+    }
+  }
+
+  String _profileError(Object error) => error is ArgumentError
+      ? error.message?.toString() ?? '个人资料无效'
+      : '保存失败：$error';
 
   /// 把“@昵称 ”插到输入框光标处。
   void _insertMention(TextEditingController composer, String name) {
@@ -862,58 +1022,105 @@ class _MainShellState extends State<MainShell> {
 }
 
 class _IdentityHeader extends StatelessWidget {
-  const _IdentityHeader({required this.identity, this.unreadCount = 0});
-  final LocalIdentity identity;
+  const _IdentityHeader({
+    required this.controller,
+    required this.onTap,
+    this.unreadCount = 0,
+  });
+  final AppController controller;
+  final VoidCallback onTap;
   final int unreadCount;
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.fromLTRB(18, 18, 14, 14),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.primaryContainer
-          .withValues(alpha: .45),
-    ),
-    child: Row(
-      children: [
-        CircleAvatar(
-          radius: 23,
-          backgroundColor: Theme.of(context).colorScheme.primary,
-          foregroundColor: Theme.of(context).colorScheme.onPrimary,
-          child: Text(_avatarText(identity.displayName)),
+  Widget build(BuildContext context) {
+    final identity = controller.identity!;
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 18, 14, 14),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.primaryContainer
+              .withValues(alpha: .45),
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                identity.displayName,
-                style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                ),
-                overflow: TextOverflow.ellipsis,
+        child: Row(
+          children: [
+            _ProfileAvatar(
+              identity: identity,
+              imagePath: controller.profileAvatarPath,
+              radius: 23,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    identity.displayName,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    '设备 ${identity.deviceId.substring(0, 8)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ),
-              Text(
-                '设备 ${identity.deviceId.substring(0, 8)}',
-                style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Tooltip(
+              message: '编辑头像和昵称',
+              child: Icon(
+                Icons.edit_outlined,
+                size: 20,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            if (unreadCount > 0) ...[
+              const SizedBox(width: 10),
+              Tooltip(
+                message: '有 $unreadCount 条未读消息',
+                child: _UnreadBadge(count: unreadCount),
               ),
             ],
-          ),
+          ],
         ),
-        Tooltip(
-          message: '局域网发现已开启',
-          child: Icon(Icons.lan, color: Theme.of(context).colorScheme.primary),
-        ),
-        if (unreadCount > 0) ...[
-          const SizedBox(width: 10),
-          Tooltip(
-            message: '有 $unreadCount 条未读消息',
-            child: _UnreadBadge(count: unreadCount),
-          ),
-        ],
-      ],
-    ),
-  );
+      ),
+    );
+  }
+}
+
+class _ProfileAvatar extends StatelessWidget {
+  const _ProfileAvatar({
+    required this.identity,
+    required this.imagePath,
+    required this.radius,
+  });
+
+  final LocalIdentity identity;
+  final String? imagePath;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = imagePath;
+    final fallback = CircleAvatar(
+      radius: radius,
+      backgroundColor: Theme.of(context).colorScheme.primary,
+      foregroundColor: Theme.of(context).colorScheme.onPrimary,
+      child: Text(_avatarText(identity.displayName)),
+    );
+    if (path == null || !File(path).existsSync()) return fallback;
+    return ClipOval(
+      child: Image.file(
+        File(path),
+        width: radius * 2,
+        height: radius * 2,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => fallback,
+      ),
+    );
+  }
 }
 
 /// 未读消息徽标，样式参考聊天软件的红色圆角计数。
