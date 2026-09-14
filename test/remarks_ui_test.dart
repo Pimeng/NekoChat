@@ -198,18 +198,46 @@ void main() {
 
     expect(find.text('搜索设备或会话'), findsOneWidget);
     expect(find.byTooltip('收起侧边栏'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      340,
+    );
 
     await tester.tap(find.byTooltip('收起侧边栏'));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    final collapsingWidth = tester
+        .getSize(find.byKey(const ValueKey('sidebar-animation')))
+        .width;
+    expect(collapsingWidth, greaterThan(0));
+    expect(collapsingWidth, lessThan(340));
+    await tester.pumpAndSettle();
 
     expect(find.text('搜索设备或会话'), findsNothing);
     expect(find.byTooltip('展开侧边栏'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      0,
+    );
 
     await tester.tap(find.byTooltip('展开侧边栏'));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+
+    final expandingWidth = tester
+        .getSize(find.byKey(const ValueKey('sidebar-animation')))
+        .width;
+    expect(expandingWidth, greaterThan(0));
+    expect(expandingWidth, lessThan(340));
+    await tester.pumpAndSettle();
 
     expect(find.text('搜索设备或会话'), findsOneWidget);
     expect(find.byTooltip('收起侧边栏'), findsOneWidget);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      340,
+    );
   });
 
   testWidgets('点击左上角个人区域可编辑头像和昵称', (tester) async {

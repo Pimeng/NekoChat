@@ -76,16 +76,31 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> {
+  static const _sidebarWidth = 320.0;
+  static const _sidebarAnimationDuration = Duration(milliseconds: 240);
+
   final _search = TextEditingController();
   final Map<String, TextEditingController> _composers = {};
   final Map<String, List<PendingAttachment>> _pendingAttachments = {};
   bool _sidebarVisible = true;
+  bool _sidebarMounted = true;
 
   TextEditingController _composerFor(String conversationId) =>
       _composers.putIfAbsent(conversationId, TextEditingController.new);
 
   List<PendingAttachment> _pendingFor(String conversationId) =>
       _pendingAttachments.putIfAbsent(conversationId, () => []);
+
+  void _toggleSidebar() {
+    setState(() {
+      if (_sidebarVisible) {
+        _sidebarVisible = false;
+      } else {
+        _sidebarMounted = true;
+        _sidebarVisible = true;
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -105,10 +120,33 @@ class _MainShellState extends State<MainShell> {
           children: [
             Row(
               children: [
-                if (_sidebarVisible) ...[
-                  SizedBox(width: 340, child: _buildSidebar(controller)),
-                  const VerticalDivider(width: 1),
-                ],
+                AnimatedContainer(
+                  key: const ValueKey('sidebar-animation'),
+                  width: _sidebarVisible ? _sidebarWidth : 0,
+                  duration: _sidebarAnimationDuration,
+                  curve: Curves.easeInOutCubic,
+                  onEnd: () {
+                    if (!_sidebarVisible && _sidebarMounted) {
+                      setState(() => _sidebarMounted = false);
+                    }
+                  },
+                  child: ClipRect(
+                    child: _sidebarMounted
+                        ? OverflowBox(
+                            alignment: Alignment.centerLeft,
+                            minWidth: _sidebarWidth,
+                            maxWidth: _sidebarWidth,
+                            child: _buildSidebar(controller),
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                ),
+                AnimatedContainer(
+                  width: _sidebarVisible ? 1 : 0,
+                  duration: _sidebarAnimationDuration,
+                  curve: Curves.easeInOutCubic,
+                  color: Theme.of(context).dividerColor,
+                ),
                 Expanded(
                   child: Stack(
                     fit: StackFit.expand,
@@ -119,9 +157,7 @@ class _MainShellState extends State<MainShell> {
                         left: 10,
                         child: IconButton.filledTonal(
                           tooltip: _sidebarVisible ? '收起侧边栏' : '展开侧边栏',
-                          onPressed: () => setState(
-                            () => _sidebarVisible = !_sidebarVisible,
-                          ),
+                          onPressed: _toggleSidebar,
                           icon: Icon(
                             _sidebarVisible
                                 ? Icons.keyboard_double_arrow_left
