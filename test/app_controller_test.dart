@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:neko_chat/app/app_controller.dart';
 import 'package:neko_chat/core/boss_key/boss_key_service.dart';
@@ -678,6 +679,39 @@ void main() {
       '新昵称',
     );
     expect(setup.discovery.identity.displayName, '新昵称');
+  });
+
+  test('没有在线群成员时文件发送失败通过右上角弹出提醒', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-offline-group-file-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final group = await setup.controller.createGroup('测试群', const []);
+    final file = File('${directory.path}${Platform.pathSeparator}离线文件.txt');
+    await file.writeAsString('offline');
+
+    await setup.controller.sendMessageWithAttachments(
+      conversationId: 'group:${group.groupId}',
+      content: '',
+      attachments: [(await setup.controller.pendingAttachment(file.path))!],
+    );
+
+    expect(setup.controller.errorMessage, isNull);
+    expect(setup.controller.topRightMessage, '当前没有在线群成员，文件未发送');
+    expect(setup.controller.topRightIcon, Icons.error_outline);
+    final stored = await setup.database.loadMessages('group:${group.groupId}');
+    expect(stored.single.status, MessageStatus.failed);
   });
 
   test('自定义头像复制到数据目录，更换与移除时清理旧文件', () async {

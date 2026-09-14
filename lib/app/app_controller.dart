@@ -1668,8 +1668,7 @@ class AppController extends ChangeNotifier {
     notifyListeners();
     if (recipients.isEmpty) {
       await _setMessageStatus(message.messageId, MessageStatus.failed);
-      errorMessage = '当前没有在线群成员，文件未发送';
-      notifyListeners();
+      _showTopRightMessage('当前没有在线群成员，文件未发送', icon: Icons.error_outline);
       return;
     }
     try {
