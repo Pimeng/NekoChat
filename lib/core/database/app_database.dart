@@ -222,6 +222,25 @@ class AppDatabase {
     _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
 
+  /// 读取单个应用设置。未写入过的设置由上层决定默认值。
+  Future<String?> loadSetting(String key) async {
+    final rows = await database.query(
+      'settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['value'] as String;
+  }
+
+  /// 以覆盖方式保存设置，避免重复点击产生多条记录。
+  Future<void> saveSetting(String key, String value) => database.insert(
+    'settings',
+    {'key': key, 'value': value},
+    conflictAlgorithm: ConflictAlgorithm.replace,
+  );
+
   Future<LocalIdentity?> loadIdentity() async {
     final rows = await database.query('local_identities', limit: 1);
     if (rows.isEmpty) return null;

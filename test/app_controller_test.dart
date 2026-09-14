@@ -34,12 +34,13 @@ void main() {
     Directory directory, {
     required Duration requestTimeout,
     SystemNotificationService? notifications,
+    bool hasExistingKey = false,
   }) {
     final database = AppDatabase(directory: () async => directory);
     final transport = _FakeTransport();
     final discovery = _FakeDiscoveryService();
     final controller = AppController(
-      keyProvider: _FakeKeyProvider(),
+      keyProvider: _FakeKeyProvider(existingKey: hasExistingKey),
       database: database,
       transport: transport,
       notifications: notifications ?? _FakeNotifications(),
@@ -121,6 +122,23 @@ void main() {
         'senderDeviceId': 'peer-device',
         'timestamp': timestamp,
         'content': content,
+      },
+    ),
+    remoteAddress: '192.168.1.20',
+  );
+
+  IncomingPacket fileOfferPacket(String sessionId) => IncomingPacket(
+    envelope: ProtocolEnvelope(
+      type: MessageType.fileOffer,
+      payload: {
+        'sessionId': sessionId,
+        'messageId': 'file-msg-1',
+        'senderDeviceId': 'peer-device',
+        'timestamp': 6000,
+        'transferId': 'transfer-1',
+        'fileName': '文档.txt',
+        'fileSize': 1024,
+        'mimeType': 'text/plain',
       },
     ),
     remoteAddress: '192.168.1.20',
@@ -296,6 +314,107 @@ void main() {
     expect(setup.controller.messages.single.content, '后台到达');
     expect(setup.controller.chats.single.unreadCount, 0);
     expect(notifications.shown, contains('message:msg-1'));
+  });
+
+  test('关闭 Windows 通知后不发送消息或测试通知', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-notification-setting-',
+    );
+    final notifications = _FakeNotifications(focused: false);
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+      notifications: notifications,
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    notifications.shown.clear();
+    await setup.controller.setWindowsNotificationsEnabled(false);
+
+    setup.transport.emit(textMessagePacket(sessionId, '静默到达'));
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 1);
+    await setup.controller.showTestNotification();
+
+    expect(notifications.shown, isEmpty);
+  });
+
+  test('关闭自动接收后小文件也等待手动确认', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-file-setting-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    setPeerOnline(setup);
+    await setup.controller.setAutoReceiveFiles(false);
+
+    setup.transport.emit(fileOfferPacket(sessionId));
+    await _waitUntil(
+      () => setup.controller.chats.single.lastMessagePreview != null,
+    );
+    final stored = await setup.database.loadMessages(
+      setup.controller.chats.single.chatId,
+    );
+
+    expect(stored.single.status, MessageStatus.awaitingAcceptance);
+  });
+
+  test('重新解锁后恢复文件接收和通知设置', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-settings-restore-',
+    );
+    final seed = AppDatabase(directory: () async => directory);
+    await seed.open(List<int>.generate(32, (index) => index));
+    final now = DateTime.fromMillisecondsSinceEpoch(1000);
+    await seed.saveIdentity(
+      LocalIdentity(
+        deviceId: 'local-device',
+        displayName: '本机',
+        createdAt: now,
+        lastLoginAt: now,
+      ),
+    );
+    await seed.saveSetting('auto_receive_files', 'false');
+    await seed.saveSetting('windows_notifications', 'false');
+    await seed.close();
+
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+      hasExistingKey: true,
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    expect(setup.controller.stage, AppStage.locked);
+    await setup.controller.unlock('1234');
+
+    expect(setup.controller.stage, AppStage.ready);
+    expect(setup.controller.autoReceiveFiles, isFalse);
+    expect(setup.controller.windowsNotificationsEnabled, isFalse);
   });
 
   test('会话未打开时消息计为未读且不进入当前列表', () async {
@@ -545,10 +664,13 @@ Future<void> _waitUntil(
 }
 
 class _FakeKeyProvider implements LocalDatabaseKeyProvider {
+  _FakeKeyProvider({this.existingKey = false});
+
+  final bool existingKey;
   final List<int> _key = List<int>.generate(32, (index) => index);
 
   @override
-  Future<bool> hasExistingKey() async => false;
+  Future<bool> hasExistingKey() async => existingKey;
 
   @override
   Future<List<int>> create(String password) async => _key;

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
 import '../../core/models/models.dart';
+import '../settings/settings_page.dart';
 import 'message_composer.dart';
 
 class MainShell extends StatefulWidget {
@@ -223,22 +224,15 @@ class _MainShellState extends State<MainShell> {
             ),
           ),
           const Divider(height: 1),
-          if (controller.dataDirectory != null)
-            ListTile(
-              leading: const Icon(Icons.folder_outlined),
-              title: const Text('数据文件夹'),
-              subtitle: Text(
-                controller.dataDirectory!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              onTap: controller.openDataDirectory,
-            ),
           ListTile(
-            leading: const Icon(Icons.notifications_active_outlined),
-            title: const Text('系统通知'),
-            subtitle: const Text('点击发送测试通知'),
-            onTap: controller.showTestNotification,
+            leading: const Icon(Icons.settings_outlined),
+            title: const Text('设置'),
+            subtitle: const Text('文件接收、通知与存储'),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => SettingsPage(controller: controller),
+              ),
+            ),
           ),
         ],
       ),

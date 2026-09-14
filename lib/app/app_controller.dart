@@ -42,6 +42,8 @@ class AppController extends ChangeNotifier {
        _discoveryFactory = discoveryFactory ?? _defaultDiscoveryFactory;
 
   static const _uuid = Uuid();
+  static const _autoReceiveFilesSetting = 'auto_receive_files';
+  static const _windowsNotificationsSetting = 'windows_notifications';
   final LocalDatabaseKeyProvider _keyProvider;
   final AppDatabase _database;
   final ChatTransport _transport;
@@ -83,6 +85,12 @@ class AppController extends ChangeNotifier {
   String? selectedChatId;
   String? selectedGroupId;
   List<ChatMessage> messages = [];
+
+  /// 自动接收小于安全阈值的附件；大文件始终需要手动确认。
+  bool autoReceiveFiles = true;
+
+  /// 是否允许应用发送 Windows 系统通知。
+  bool windowsNotificationsEnabled = true;
 
   /// 当前正在引用的消息。存在时下一条消息会带上引用信息，发送后自动清空。
   ChatMessage? replyingTo;
@@ -134,6 +142,14 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _enterReady() async {
+    autoReceiveFiles = _settingBool(
+      await _database.loadSetting(_autoReceiveFilesSetting),
+      fallback: true,
+    );
+    windowsNotificationsEnabled = _settingBool(
+      await _database.loadSetting(_windowsNotificationsSetting),
+      fallback: true,
+    );
     trustedPeers = await _database.loadTrustedPeers();
     chats = await _database.loadChats();
     await _recoverInterruptedRequests();
@@ -151,6 +167,20 @@ class AppController extends ChangeNotifier {
     dataDirectory = _database.directoryPath;
     stage = AppStage.ready;
     _log.info('应用已就绪，deviceId=${localIdentity.deviceId}');
+    notifyListeners();
+  }
+
+  Future<void> setAutoReceiveFiles(bool value) async {
+    if (autoReceiveFiles == value) return;
+    await _database.saveSetting(_autoReceiveFilesSetting, value.toString());
+    autoReceiveFiles = value;
+    notifyListeners();
+  }
+
+  Future<void> setWindowsNotificationsEnabled(bool value) async {
+    if (windowsNotificationsEnabled == value) return;
+    await _database.saveSetting(_windowsNotificationsSetting, value.toString());
+    windowsNotificationsEnabled = value;
     notifyListeners();
   }
 
@@ -1327,7 +1357,7 @@ class AppController extends ChangeNotifier {
     _scheduleRequestTimeout(request);
     await _upsertChat(deviceId, displayName, ChatSessionState.pendingIncoming);
     notifyListeners();
-    if (!_notifications.appIsFocused) {
+    if (windowsNotificationsEnabled && !_notifications.appIsFocused) {
       await _notifications.show(
         identifier: 'chat-request:$requestId',
         title: '新的聊天邀请',
@@ -1374,7 +1404,7 @@ class AppController extends ChangeNotifier {
     );
     _discovery?.refreshTrust();
     notifyListeners();
-    if (!_notifications.appIsFocused) {
+    if (windowsNotificationsEnabled && !_notifications.appIsFocused) {
       final chatId = _privateChatId(identity!.deviceId, deviceId);
       await _notifications.show(
         identifier: 'chat-accept:$sessionId',
@@ -1453,11 +1483,12 @@ class AppController extends ChangeNotifier {
     }
     await _reloadChats();
     notifyListeners();
-    if (shouldNotifyForConversation(
-      appIsFocused: _notifications.appIsFocused,
-      selectedConversationId: selectedChatId,
-      incomingConversationId: chat.chatId,
-    )) {
+    if (windowsNotificationsEnabled &&
+        shouldNotifyForConversation(
+          appIsFocused: _notifications.appIsFocused,
+          selectedConversationId: selectedChatId,
+          incomingConversationId: chat.chatId,
+        )) {
       await _notifications.show(
         identifier: 'message:$messageId',
         title: chat.displayName,
@@ -1558,9 +1589,10 @@ class AppController extends ChangeNotifier {
       senderDeviceId: senderDeviceId,
       content: fileName,
       timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp),
-      status: NetworkConfig.requiresFileAcceptance(fileSize)
-          ? MessageStatus.awaitingAcceptance
-          : MessageStatus.pending,
+      status:
+          autoReceiveFiles && !NetworkConfig.requiresFileAcceptance(fileSize)
+          ? MessageStatus.pending
+          : MessageStatus.awaitingAcceptance,
       kind: mimeType.startsWith('image/')
           ? MessageKind.image
           : MessageKind.file,
@@ -1747,13 +1779,14 @@ class AppController extends ChangeNotifier {
     String senderName,
     String conversationId,
   ) async {
-    if (!shouldNotifyForConversation(
-      appIsFocused: _notifications.appIsFocused,
-      selectedConversationId: selectedGroupId == null
-          ? selectedChatId
-          : 'group:$selectedGroupId',
-      incomingConversationId: conversationId,
-    )) {
+    if (!windowsNotificationsEnabled ||
+        !shouldNotifyForConversation(
+          appIsFocused: _notifications.appIsFocused,
+          selectedConversationId: selectedGroupId == null
+              ? selectedChatId
+              : 'group:$selectedGroupId',
+          incomingConversationId: conversationId,
+        )) {
       return;
     }
     await _notifications.show(
@@ -1813,7 +1846,7 @@ class AppController extends ChangeNotifier {
     );
     _pendingGroupPayloads[inviteId] = payload;
     notifyListeners();
-    if (!_notifications.appIsFocused) {
+    if (windowsNotificationsEnabled && !_notifications.appIsFocused) {
       await _notifications.show(
         identifier: 'group-invite:$inviteId',
         title: '新的群聊邀请',
@@ -1913,13 +1946,15 @@ class AppController extends ChangeNotifier {
         icon: Icons.alternate_email,
       );
     }
-    final shouldNotify = shouldNotifyForConversation(
-      appIsFocused: _notifications.appIsFocused,
-      selectedConversationId: selectedGroupId == null
-          ? selectedChatId
-          : 'group:$selectedGroupId',
-      incomingConversationId: 'group:$groupId',
-    );
+    final shouldNotify =
+        windowsNotificationsEnabled &&
+        shouldNotifyForConversation(
+          appIsFocused: _notifications.appIsFocused,
+          selectedConversationId: selectedGroupId == null
+              ? selectedChatId
+              : 'group:$selectedGroupId',
+          incomingConversationId: 'group:$groupId',
+        );
     if (shouldNotify) {
       await _notifications.show(
         identifier: 'group-message:$messageId',
@@ -2480,12 +2515,25 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> showTestNotification() => _notifications.show(
-    identifier: 'neko-chat:test',
-    title: 'NekoChat 系统通知已启用',
-    body: '新的聊天邀请和消息会通过这里提醒你。',
-    onClick: () {},
-  );
+  Future<void> showTestNotification() async {
+    if (!windowsNotificationsEnabled) {
+      _showTopRightMessage('请先开启 Windows 通知', icon: Icons.notifications_off);
+      return;
+    }
+    await _notifications.show(
+      identifier: 'neko-chat:test',
+      title: 'NekoChat 系统通知已启用',
+      body: '新的聊天邀请和消息会通过这里提醒你。',
+      onClick: () {},
+    );
+  }
+
+  static bool _settingBool(String? value, {required bool fallback}) =>
+      switch (value) {
+        'true' => true,
+        'false' => false,
+        _ => fallback,
+      };
 
   void _fail(
     String message,

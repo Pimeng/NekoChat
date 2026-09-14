@@ -437,4 +437,23 @@ void main() {
     ]);
     expect((await database.loadChats()).single.unreadCount, 20);
   });
+
+  test('应用设置可覆盖并在重开数据库后恢复', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-settings-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+
+    final first = AppDatabase(directory: () async => directory);
+    await first.open(const [1, 2, 3, 4]);
+    expect(await first.loadSetting('auto_receive_files'), isNull);
+    await first.saveSetting('auto_receive_files', 'true');
+    await first.saveSetting('auto_receive_files', 'false');
+    await first.close();
+
+    final reopened = AppDatabase(directory: () async => directory);
+    await reopened.open(const [1, 2, 3, 4]);
+    addTearDown(reopened.close);
+    expect(await reopened.loadSetting('auto_receive_files'), 'false');
+  });
 }
