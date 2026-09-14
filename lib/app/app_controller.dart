@@ -17,6 +17,7 @@ import '../core/boss_key/boss_key_service.dart';
 import '../core/database/app_database.dart';
 import '../core/files/attachment_path.dart';
 import '../core/files/content_hash.dart';
+import '../core/files/open_path.dart';
 import '../core/identity/database_key_provider.dart';
 import '../core/identity/identity_service.dart';
 import '../core/models/models.dart';
@@ -1077,12 +1078,12 @@ class AppController extends ChangeNotifier {
   }) async {
     try {
       if (Platform.isWindows) {
-        final arguments = revealPath == null
-            ? [directoryPath]
-            : ['/select,', revealPath];
         await Process.start(
           'explorer.exe',
-          arguments,
+          windowsExplorerArguments(
+            directoryPath: directoryPath,
+            revealPath: revealPath,
+          ),
           mode: ProcessStartMode.detached,
         );
         return;
