@@ -2,7 +2,7 @@
 #define RUNNER_FLUTTER_WINDOW_H_
 
 #include <flutter/dart_project.h>
-#include <flutter/flutter_view_controller.h>
+#include <flutter/binary_messenger.h>
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
@@ -30,8 +30,8 @@ class FlutterWindow : public Win32Window {
   // The project to run.
   flutter::DartProject project_;
 
-  // The Flutter instance hosted by this window.
-  std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+  // Shared-engine messenger used by the existing runner channels.
+  std::unique_ptr<flutter::BinaryMessenger> messenger_;
 
   // Channel used to tell Dart that another instance was launched while this
   // one is still running.

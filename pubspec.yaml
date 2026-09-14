@@ -47,6 +47,7 @@ dependencies:
   url_launcher: ^6.3.2
   pasteboard: ^0.5.0
   desktop_drop: ^0.8.4
+  multiview_desktop: ^1.2.2
 
 dev_dependencies:
   flutter_test:

@@ -5,6 +5,24 @@ import 'package:neko_chat/app/app_controller.dart';
 import 'package:neko_chat/features/settings/settings_page.dart';
 
 void main() {
+  testWidgets('局域网相互发现开关默认开启', (tester) async {
+    final controller = AppController();
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsPage(controller: controller)),
+    );
+
+    expect(find.text('局域网相互发现'), findsOneWidget);
+    expect(find.text('允许本机与同一局域网内的 NekoChat 设备相互发现'), findsOneWidget);
+    expect(
+      tester
+          .widget<SwitchListTile>(
+            find.widgetWithText(SwitchListTile, '局域网相互发现'),
+          )
+          .value,
+      isTrue,
+    );
+  });
+
   testWidgets('文件接收设置显示大小上限并校验输入范围', (tester) async {
     await tester.binding.setSurfaceSize(const Size(373, 640));
     addTearDown(() => tester.binding.setSurfaceSize(null));

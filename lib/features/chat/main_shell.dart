@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
+import 'package:multiview_desktop/multiview_desktop.dart';
 
 import '../../app/app_controller.dart';
 import '../../core/config/network_config.dart';
@@ -12,9 +13,63 @@ import '../settings/settings_page.dart';
 import 'message_composer.dart';
 import 'mention_autocomplete.dart';
 
+final Map<String, int> _detachedConversationWindowIds = {};
+
+Future<void> openConversationInWindow(
+  BuildContext context,
+  AppController controller,
+  String conversationId,
+) async {
+  final existingId = _detachedConversationWindowIds[conversationId];
+  if (existingId != null &&
+      MultiViewDesktop.allWindowViewIds.contains(existingId)) {
+    final window = MultiViewDesktop.fromId(existingId);
+    await window.show();
+    await window.focus();
+    return;
+  }
+  _detachedConversationWindowIds.remove(conversationId);
+
+  final chat = controller.chats
+      .where((value) => value.chatId == conversationId)
+      .firstOrNull;
+  if (chat == null) return;
+  final title = controller.peerDisplayName(chat.peerDeviceId, chat.displayName);
+  try {
+    final viewId = await openWindow(
+      (_, _) => _DetachedConversationWindow(
+        controller: controller,
+        conversationId: conversationId,
+      ),
+      options: WindowOptions(
+        title: '$title - NekoChat',
+        size: const Size(920, 720),
+        minimumSize: const Size(640, 480),
+      ),
+      parentContext: context,
+    );
+    _detachedConversationWindowIds[conversationId] = viewId;
+  } on Object catch (error) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('无法打开独立会话窗口：$error')));
+  }
+}
+
+typedef ConversationWindowOpener = Future<void> Function(
+  BuildContext context,
+  AppController controller,
+  String conversationId,
+);
+
 class MainShell extends StatefulWidget {
-  const MainShell({super.key, required this.controller});
+  const MainShell({
+    super.key,
+    required this.controller,
+    this.openConversationWindow = openConversationInWindow,
+  });
   final AppController controller;
+  final ConversationWindowOpener openConversationWindow;
 
   @override
   State<MainShell> createState() => _MainShellState();
@@ -24,6 +79,7 @@ class _MainShellState extends State<MainShell> {
   final _search = TextEditingController();
   final Map<String, TextEditingController> _composers = {};
   final Map<String, List<PendingAttachment>> _pendingAttachments = {};
+  bool _sidebarVisible = true;
 
   TextEditingController _composerFor(String conversationId) =>
       _composers.putIfAbsent(conversationId, TextEditingController.new);
@@ -49,9 +105,33 @@ class _MainShellState extends State<MainShell> {
           children: [
             Row(
               children: [
-                SizedBox(width: 340, child: _buildSidebar(controller)),
-                const VerticalDivider(width: 1),
-                Expanded(child: _buildContent(controller)),
+                if (_sidebarVisible) ...[
+                  SizedBox(width: 340, child: _buildSidebar(controller)),
+                  const VerticalDivider(width: 1),
+                ],
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _buildContent(controller),
+                      Positioned(
+                        top: 14,
+                        left: 10,
+                        child: IconButton.filledTonal(
+                          tooltip: _sidebarVisible ? '收起侧边栏' : '展开侧边栏',
+                          onPressed: () => setState(
+                            () => _sidebarVisible = !_sidebarVisible,
+                          ),
+                          icon: Icon(
+                            _sidebarVisible
+                                ? Icons.keyboard_double_arrow_left
+                                : Icons.keyboard_double_arrow_right,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
             if (controller.topRightMessage != null)
@@ -175,6 +255,8 @@ class _MainShellState extends State<MainShell> {
                       selected:
                           entry.chat != null &&
                           controller.selectedChatId == entry.chat!.chatId,
+                      onSecondaryTapDown: (details) =>
+                          _showPeerContextMenu(controller, entry, details),
                       onTap: () async {
                         final chat = entry.chat;
                         if (chat?.state == ChatSessionState.active ||
@@ -941,6 +1023,123 @@ class _MainShellState extends State<MainShell> {
     onSave: (value) => controller.setPeerRemark(deviceId, value),
   );
 
+  Future<void> _showPeerContextMenu(
+    AppController controller,
+    _UnifiedPeerEntry entry,
+    TapDownDetails details,
+  ) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final position = details.globalPosition;
+    final action = await showMenu<_PeerContextAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 0, 0),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        PopupMenuItem(
+          value: _PeerContextAction.openInWindow,
+          enabled: entry.chat != null,
+          child: const ListTile(
+            leading: Icon(Icons.open_in_new),
+            title: Text('在独立窗口打开'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _PeerContextAction.remark,
+          child: ListTile(
+            leading: Icon(Icons.drive_file_rename_outline),
+            title: Text('修改备注'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _PeerContextAction.delete,
+          enabled: entry.chat != null,
+          child: const ListTile(
+            leading: Icon(Icons.delete_outline),
+            title: Text('删除对话'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _PeerContextAction.block,
+          enabled:
+              entry.trustedPeer != null && entry.trustedPeer?.blocked != true,
+          child: ListTile(
+            leading: const Icon(Icons.block),
+            title: Text(entry.trustedPeer?.blocked == true ? '已拉黑' : '拉黑此人'),
+          ),
+        ),
+      ],
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _PeerContextAction.openInWindow:
+        final chat = entry.chat;
+        if (chat != null) {
+          await widget.openConversationWindow(context, controller, chat.chatId);
+        }
+      case _PeerContextAction.remark:
+        await _showPeerRemark(
+          controller,
+          entry.deviceId,
+          entry.originalDisplayName,
+        );
+      case _PeerContextAction.delete:
+        final chat = entry.chat;
+        if (chat != null && await _confirmDeleteChat(entry.displayName)) {
+          await controller.deleteChat(chat);
+          final composer = _composers.remove(chat.chatId);
+          composer?.dispose();
+          _pendingAttachments.remove(chat.chatId);
+        }
+      case _PeerContextAction.block:
+        if (await _confirmBlockPeer(entry.displayName)) {
+          await controller.setBlocked(entry.deviceId, true);
+        }
+    }
+  }
+
+  Future<bool> _confirmDeleteChat(String displayName) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('删除对话？'),
+          content: Text('将删除与“$displayName”的本地聊天记录，此操作无法撤销。已接收的文件不会被删除。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('删除'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  Future<bool> _confirmBlockPeer(String displayName) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('拉黑此人？'),
+          content: Text('拉黑“$displayName”后，将不再接受此人的聊天请求和消息。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('拉黑'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
   Future<void> _showGroupRemark(AppController controller, ChatGroup group) =>
       _showRemarkEditor(
         title: '群聊备注',
@@ -1242,10 +1441,12 @@ class _UnifiedPeerTile extends StatelessWidget {
     required this.entry,
     required this.selected,
     required this.onTap,
+    required this.onSecondaryTapDown,
   });
   final _UnifiedPeerEntry entry;
   final bool selected;
   final VoidCallback onTap;
+  final GestureTapDownCallback onSecondaryTapDown;
 
   @override
   Widget build(BuildContext context) {
@@ -1256,66 +1457,72 @@ class _UnifiedPeerTile extends StatelessWidget {
     final pending =
         chat?.state == ChatSessionState.pendingIncoming ||
         chat?.state == ChatSessionState.pendingOutgoing;
-    return ListTile(
-      selected: selected,
-      enabled: !blocked && (online || chat != null),
-      leading: Stack(
-        children: [
-          CircleAvatar(child: Text(_avatarText(entry.displayName))),
-          Positioned(
-            right: 0,
-            bottom: 0,
-            child: Container(
-              width: 11,
-              height: 11,
-              decoration: BoxDecoration(
-                color: online ? Colors.green : Colors.grey,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.surface,
-                  width: 2,
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: onSecondaryTapDown,
+      child: ListTile(
+        selected: selected,
+        enabled: !blocked && (online || chat != null),
+        leading: Stack(
+          children: [
+            CircleAvatar(child: Text(_avatarText(entry.displayName))),
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 11,
+                height: 11,
+                decoration: BoxDecoration(
+                  color: online ? Colors.green : Colors.grey,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.surface,
+                    width: 2,
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
-      ),
-      title: Row(
-        children: [
-          Flexible(
-            child: Text(entry.displayName, overflow: TextOverflow.ellipsis),
-          ),
-          if (entry.trustedPeer != null && !blocked) ...[
-            const SizedBox(width: 4),
-            const Icon(Icons.verified, color: Colors.blue, size: 16),
           ],
-        ],
-      ),
-      subtitle: Text(
-        _peerListSubtitle(entry),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: pending
-          ? const SizedBox.square(
-              dimension: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : (chat?.unreadCount ?? 0) > 0 || chat?.lastMessageAt != null
-          ? _ConversationMeta(
-              time: chat?.lastMessageAt,
-              unreadCount: chat?.unreadCount ?? 0,
-            )
-          : Icon(
-              chat?.state == ChatSessionState.active
-                  ? Icons.chat_bubble_outline
-                  : Icons.chevron_right,
-              size: 20,
+        ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(entry.displayName, overflow: TextOverflow.ellipsis),
             ),
-      onTap: onTap,
+            if (entry.trustedPeer != null && !blocked) ...[
+              const SizedBox(width: 4),
+              const Icon(Icons.verified, color: Colors.blue, size: 16),
+            ],
+          ],
+        ),
+        subtitle: Text(
+          _peerListSubtitle(entry),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: pending
+            ? const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : (chat?.unreadCount ?? 0) > 0 || chat?.lastMessageAt != null
+            ? _ConversationMeta(
+                time: chat?.lastMessageAt,
+                unreadCount: chat?.unreadCount ?? 0,
+              )
+            : Icon(
+                chat?.state == ChatSessionState.active
+                    ? Icons.chat_bubble_outline
+                    : Icons.chevron_right,
+                size: 20,
+              ),
+        onTap: onTap,
+      ),
     );
   }
 }
+
+enum _PeerContextAction { openInWindow, remark, delete, block }
 
 class _ChatRequestCard extends StatelessWidget {
   const _ChatRequestCard({required this.controller, required this.request});
@@ -1435,6 +1642,144 @@ class _GroupInviteCard extends StatelessWidget {
   );
 }
 
+class _DetachedConversationWindow extends StatefulWidget {
+  const _DetachedConversationWindow({
+    required this.controller,
+    required this.conversationId,
+  });
+
+  final AppController controller;
+  final String conversationId;
+
+  @override
+  State<_DetachedConversationWindow> createState() =>
+      _DetachedConversationWindowState();
+}
+
+class _DetachedConversationWindowState
+    extends State<_DetachedConversationWindow> {
+  final _composer = TextEditingController();
+  final List<PendingAttachment> _pendingAttachments = [];
+  List<ChatMessage> _messages = const [];
+  ChatMessage? _replyingTo;
+  int _refreshGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_handleControllerChanged);
+    unawaited(
+      widget.controller.setConversationWindowOpen(widget.conversationId, true),
+    );
+    _refreshMessages();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleControllerChanged);
+    unawaited(
+      widget.controller.setConversationWindowOpen(widget.conversationId, false),
+    );
+    _composer.dispose();
+    super.dispose();
+  }
+
+  void _handleControllerChanged() {
+    if (mounted) setState(() {});
+    _refreshMessages();
+  }
+
+  Future<void> _refreshMessages() async {
+    final generation = ++_refreshGeneration;
+    final messages = await widget.controller.loadMessagesForConversation(
+      widget.conversationId,
+    );
+    if (!mounted || generation != _refreshGeneration) return;
+    setState(() => _messages = messages);
+  }
+
+  Future<void> _send(String text, List<PendingAttachment> attachments) async {
+    final reply = _replyingTo;
+    await widget.controller.sendMessageWithAttachmentsTo(
+      conversationId: widget.conversationId,
+      content: text,
+      attachments: attachments,
+      reply: reply,
+    );
+    if (mounted && identical(_replyingTo, reply)) {
+      setState(() => _replyingTo = null);
+    }
+    await _refreshMessages();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final chat = controller.chats
+        .where((value) => value.chatId == widget.conversationId)
+        .firstOrNull;
+    if (chat == null || controller.identity == null) {
+      return const Scaffold(body: Center(child: Text('这个会话已不存在')));
+    }
+    final peer = controller.peers
+        .where((value) => value.deviceId == chat.peerDeviceId)
+        .firstOrNull;
+    final title = controller.peerDisplayName(
+      chat.peerDeviceId,
+      chat.displayName,
+    );
+    return Scaffold(
+      body: SafeArea(
+        child: _ConversationPane(
+          conversationId: widget.conversationId,
+          title: title,
+          subtitle: [
+            if (title != chat.displayName) '原名：${chat.displayName}',
+            peer?.online == true ? '${peer!.ip} · 在线' : '离线',
+          ].join(' · '),
+          messages: _messages,
+          localDeviceId: controller.identity!.deviceId,
+          peerName: (deviceId) =>
+              deviceId == controller.identity!.deviceId ? '我' : title,
+          composer: _composer,
+          pendingAttachments: _pendingAttachments,
+          enabled:
+              peer?.online == true && chat.state == ChatSessionState.active,
+          onSend: _send,
+          onPickAttachments: controller.pickAttachments,
+          onDropFiles: (paths) async {
+            await controller.sendDroppedFiles(
+              conversationId: widget.conversationId,
+              filePaths: paths,
+            );
+            await _refreshMessages();
+          },
+          onReadClipboardAttachments: controller.readClipboardAttachments,
+          onOpenAttachment: controller.openAttachment,
+          onOpenAttachmentFolder: controller.openAttachmentFolder,
+          onAcceptFile: controller.acceptIncomingFile,
+          onRejectFile: controller.rejectIncomingFile,
+          onRetryFile: controller.retryFileDownload,
+          onRelocateFile: controller.relocateAttachment,
+          missingHintFor: controller.attachmentMissingHint,
+          replyingTo: _replyingTo,
+          onCancelReply: () => setState(() => _replyingTo = null),
+          onCopyMessage: controller.copyMessage,
+          onReplyMessage: (message) => setState(
+            () =>
+                _replyingTo = identical(_replyingTo, message) ? null : message,
+          ),
+          canRecallMessage: controller.canRecallMessage,
+          onRecallMessage: controller.recallMessage,
+          recallNoticeFor: controller.recallNotice,
+          actions: const [],
+          headerLeftPadding: 22,
+        ),
+      ),
+    );
+  }
+}
+
 class _ConversationPane extends StatefulWidget {
   const _ConversationPane({
     super.key,
@@ -1468,6 +1813,7 @@ class _ConversationPane extends StatefulWidget {
     this.recallNoticeFor,
     this.onMention,
     this.loadMentionCandidates,
+    this.headerLeftPadding = 64,
   });
   final String conversationId;
   final String title;
@@ -1510,6 +1856,7 @@ class _ConversationPane extends StatefulWidget {
 
   /// 群聊输入 @ 时加载候选成员；私聊为空，不启用候选菜单。
   final Future<List<MentionCandidate>> Function()? loadMentionCandidates;
+  final double headerLeftPadding;
 
   @override
   State<_ConversationPane> createState() => _ConversationPaneState();
@@ -1763,7 +2110,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
       children: [
         Container(
           height: 72,
-          padding: const EdgeInsets.symmetric(horizontal: 22),
+          padding: EdgeInsets.only(left: widget.headerLeftPadding, right: 22),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surface,
             border: Border(

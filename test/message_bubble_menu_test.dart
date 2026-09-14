@@ -74,9 +74,12 @@ void main() {
 
     // 图片气泡里没有可选中的文字，必须靠自绘菜单，否则右键毫无反应。
     expect(find.text('引用回复'), findsNothing);
-    final imageMenuTarget = find.byWidgetPredicate(
-      (widget) =>
-          widget is GestureDetector && widget.onSecondaryTapDown != null,
+    final imageMenuTarget = find.ancestor(
+      of: find.byType(Image),
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is GestureDetector && widget.onSecondaryTapDown != null,
+      ),
     );
     expect(imageMenuTarget, findsOneWidget);
     await tester.tap(imageMenuTarget, buttons: kSecondaryMouseButton);

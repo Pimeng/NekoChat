@@ -426,6 +426,14 @@ class AppDatabase {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  /// 删除私聊及其本地消息记录；已接收的附件文件仍由用户自行管理。
+  Future<void> deleteChat(String chatId) async {
+    await database.transaction((txn) async {
+      await txn.delete('messages', where: 'chat_id = ?', whereArgs: [chatId]);
+      await txn.delete('chats', where: 'chat_id = ?', whereArgs: [chatId]);
+    });
+  }
+
   /// 直接设置会话未读数并返回新的值。
   Future<int> setChatUnread(String chatId, int unreadCount) async {
     final value = unreadCount < 0 ? 0 : unreadCount;

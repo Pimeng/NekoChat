@@ -67,7 +67,8 @@ void main() {
     await a.start();
     await b.start();
     final deadline = DateTime.now().add(const Duration(seconds: 5));
-    while ((foundA.isEmpty || foundB.isEmpty) &&
+    while ((!foundA.any((peer) => peer.deviceId == 'discovery-b') ||
+            !foundB.any((peer) => peer.deviceId == 'discovery-a')) &&
         DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }

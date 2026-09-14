@@ -5,6 +5,7 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   desktop_drop
   local_notifier
+  multiview_desktop
   pasteboard
   screen_retriever_windows
   url_launcher_windows

@@ -258,6 +258,53 @@ void main() {
     expect(setup.controller.messages.single.content, '在吗');
   });
 
+  test('独立窗口固定查看会话时实时收消息且不累计未读', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-detached-window-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    final chatId = setup.controller.chats.single.chatId;
+    await setup.controller.setConversationWindowOpen(chatId, true);
+
+    setup.transport.emit(textMessagePacket(sessionId, '独立窗口收到'));
+    await _waitUntil(
+      () => setup.controller.chats.single.lastMessagePreview == '独立窗口收到',
+    );
+
+    expect(setup.controller.selectedChatId, isNull);
+    expect(setup.controller.chats.single.unreadCount, 0);
+    expect(
+      (await setup.controller.loadMessagesForConversation(chatId))
+          .single
+          .content,
+      '独立窗口收到',
+    );
+
+    await setup.controller.setConversationWindowOpen(chatId, false);
+    setup.transport.emit(
+      textMessagePacket(
+        sessionId,
+        '窗口关闭后收到',
+        messageId: 'msg-after-close',
+        timestamp: 6000,
+      ),
+    );
+    await _waitUntil(() => setup.controller.chats.single.unreadCount == 1);
+  });
+
   test('重复收到同一消息不会重复计未读或追加到列表', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-duplicate-',
@@ -489,6 +536,7 @@ void main() {
       (25 * 1024 * 1024).toString(),
     );
     await seed.saveSetting('windows_notifications', 'false');
+    await seed.saveSetting('lan_discovery_enabled', 'false');
     await seed.saveSetting('boss_key_enabled', 'true');
     const restoredShortcut = BossKeyShortcut(
       virtualKey: 0x4b,
@@ -518,9 +566,44 @@ void main() {
     expect(setup.controller.autoReceiveFiles, isFalse);
     expect(setup.controller.autoReceiveFileLimitBytes, 25 * 1024 * 1024);
     expect(setup.controller.windowsNotificationsEnabled, isFalse);
+    expect(setup.controller.lanDiscoveryEnabled, isFalse);
+    expect(setup.discovery.startCount, 0);
     expect(setup.controller.bossKeyEnabled, isTrue);
     expect(setup.controller.bossKeyShortcut, restoredShortcut);
     expect(setup.bossKey.enabledValues, [true]);
+  });
+
+  test('局域网相互发现默认开启，并可即时停止、清空设备和恢复', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-discovery-setting-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    expect(setup.controller.lanDiscoveryEnabled, isTrue);
+    expect(setup.discovery.startCount, 1);
+
+    setPeerOnline(setup);
+    expect(setup.controller.peers, isNotEmpty);
+    await setup.controller.setLanDiscoveryEnabled(false);
+    expect(setup.controller.lanDiscoveryEnabled, isFalse);
+    expect(setup.controller.peers, isEmpty);
+    expect(setup.discovery.stopCount, 1);
+    expect(await setup.database.loadSetting('lan_discovery_enabled'), 'false');
+
+    await setup.controller.setLanDiscoveryEnabled(true);
+    expect(setup.controller.lanDiscoveryEnabled, isTrue);
+    expect(setup.discovery.startCount, 2);
+    expect(await setup.database.loadSetting('lan_discovery_enabled'), 'true');
   });
 
   test('人员和群聊备注本地生效，不覆盖原始名称', () async {
@@ -822,6 +905,38 @@ void main() {
     expect(stored, hasLength(1));
     expect(stored.single.fileName, '目标.txt');
     expect(setup.controller.messages, isEmpty);
+  });
+
+  test('删除私聊会同时清除会话索引和本地消息记录', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-delete-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    final chat = setup.controller.chats.single;
+    await setup.controller.selectChat(chat.chatId);
+    setup.transport.emit(textMessagePacket(sessionId, '准备删除的消息'));
+    await _waitUntil(() => setup.controller.messages.isNotEmpty);
+
+    await setup.controller.deleteChat(chat);
+
+    expect(setup.controller.chats, isEmpty);
+    expect(setup.controller.selectedChatId, isNull);
+    expect(setup.controller.messages, isEmpty);
+    expect(await setup.database.loadChats(), isEmpty);
+    expect(await setup.database.loadMessages(chat.chatId), isEmpty);
   });
 
   test('拖放多个文件会忽略目录和失效路径并按原顺序立即发送', () async {
@@ -1206,6 +1321,8 @@ class _FakeDiscoveryService extends DiscoveryService {
 
   /// 控制器注册的发现回调，测试用它模拟设备上下线。
   void Function(List<DiscoveredPeer> peers)? _emitPeers;
+  int startCount = 0;
+  int stopCount = 0;
 
   void bind(void Function(List<DiscoveredPeer> peers) onPeersChanged) =>
       _emitPeers = onPeersChanged;
@@ -1213,10 +1330,10 @@ class _FakeDiscoveryService extends DiscoveryService {
   void emit(List<DiscoveredPeer> peers) => _emitPeers?.call(peers);
 
   @override
-  Future<void> start() async {}
+  Future<void> start() async => startCount += 1;
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop() async => stopCount += 1;
 
   @override
   void refreshTrust() {}

@@ -21,6 +21,17 @@ class SettingsPage extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
             children: [
+              const _SettingsSectionTitle('局域网'),
+              Card(
+                child: SwitchListTile(
+                  secondary: const Icon(Icons.wifi_find_outlined),
+                  title: const Text('局域网相互发现'),
+                  subtitle: const Text('允许本机与同一局域网内的 NekoChat 设备相互发现'),
+                  value: controller.lanDiscoveryEnabled,
+                  onChanged: controller.setLanDiscoveryEnabled,
+                ),
+              ),
+              const SizedBox(height: 24),
               const _SettingsSectionTitle('隐私'),
               Card(
                 child: Column(

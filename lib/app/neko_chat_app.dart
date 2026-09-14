@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
+import 'package:multiview_desktop/multiview_desktop.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../core/single_instance/single_instance_service.dart';
@@ -49,7 +50,9 @@ class _NekoChatAppState extends State<NekoChatApp> {
       );
       if (record.error != null) debugPrint('  ${record.error}');
     });
-    controller = AppController()..initialize();
+    controller = AppController(
+      onBossKeyVisibilityChanged: _setSecondaryWindowsHidden,
+    )..initialize();
     _singleInstance = widget.singleInstanceService ?? SingleInstanceService();
     _singleInstanceSubscription = _singleInstance.onAlreadyRunning.listen(
       (_) => _bringWindowToFront(),
@@ -68,6 +71,16 @@ class _NekoChatAppState extends State<NekoChatApp> {
     } on Object catch (error, stack) {
       _log.warning('无法将现有窗口置前', error, stack);
     }
+  }
+
+  /// 老板键隐藏主窗口时同步隐藏所有独立会话窗口，避免内容残留在桌面。
+  Future<void> _setSecondaryWindowsHidden(bool hidden) async {
+    await Future.wait(
+      MultiViewDesktop.allWindowViewIds.map((viewId) {
+        final window = MultiViewDesktop.fromId(viewId);
+        return hidden ? window.hide() : window.show();
+      }),
+    );
   }
 
   @override

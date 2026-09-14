@@ -36,6 +36,7 @@ class AppController extends ChangeNotifier {
     SystemNotificationService? notifications,
     BossKeyService? bossKey,
     DiscoveryServiceFactory? discoveryFactory,
+    this.onBossKeyVisibilityChanged,
     this._requestTimeout = NetworkConfig.requestTimeout,
   }) : _keyProvider = keyProvider ?? EncryptedFileDatabaseKeyProvider(),
        _database = database ?? AppDatabase(),
@@ -49,6 +50,7 @@ class AppController extends ChangeNotifier {
   static const _autoReceiveFileLimitSetting = 'auto_receive_file_limit_bytes';
   static const _profileAvatarSetting = 'profile_avatar_path';
   static const _windowsNotificationsSetting = 'windows_notifications';
+  static const _lanDiscoverySetting = 'lan_discovery_enabled';
   static const _bossKeySetting = 'boss_key_enabled';
   static const _bossKeyShortcutSetting = 'boss_key_shortcut';
   final LocalDatabaseKeyProvider _keyProvider;
@@ -58,6 +60,7 @@ class AppController extends ChangeNotifier {
   final BossKeyService _bossKey;
   final DiscoveryServiceFactory _discoveryFactory;
   final Duration _requestTimeout;
+  final FutureOr<void> Function(bool hidden)? onBossKeyVisibilityChanged;
   final _log = Logger('AppController');
   DiscoveryService? _discovery;
 
@@ -96,6 +99,7 @@ class AppController extends ChangeNotifier {
   String? selectedChatId;
   String? selectedGroupId;
   List<ChatMessage> messages = [];
+  final Set<String> _openConversationWindows = {};
 
   /// 自动接收小于安全阈值的附件；大文件始终需要手动确认。
   bool autoReceiveFiles = true;
@@ -105,6 +109,9 @@ class AppController extends ChangeNotifier {
 
   /// 是否允许应用发送 Windows 系统通知。
   bool windowsNotificationsEnabled = true;
+
+  /// 是否广播本机并监听局域网内其他 NekoChat 设备，默认开启。
+  bool lanDiscoveryEnabled = true;
 
   /// 老板键默认关闭；开启后由 Windows 全局注册 Alt+F。
   bool bossKeyEnabled = false;
@@ -180,6 +187,10 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_windowsNotificationsSetting),
       fallback: true,
     );
+    lanDiscoveryEnabled = _settingBool(
+      await _database.loadSetting(_lanDiscoverySetting),
+      fallback: true,
+    );
     bossKeyEnabled = _settingBool(
       await _database.loadSetting(_bossKeySetting),
       fallback: false,
@@ -218,7 +229,7 @@ class AppController extends ChangeNotifier {
       trustLookup: (id) => trustedPeers[id],
       onPeersChanged: _handlePeersChanged,
     );
-    await _discovery!.start();
+    if (lanDiscoveryEnabled) await _discovery!.start();
     errorMessage = null;
     dataDirectory = _database.directoryPath;
     stage = AppStage.ready;
@@ -350,6 +361,23 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setLanDiscoveryEnabled(bool value) async {
+    if (lanDiscoveryEnabled == value) return;
+    final discovery = _discovery;
+    if (value) {
+      await discovery?.start();
+    } else {
+      await discovery?.stop();
+    }
+    await _database.saveSetting(_lanDiscoverySetting, value.toString());
+    lanDiscoveryEnabled = value;
+    if (!value) {
+      _historySyncedDevices.clear();
+      peers = [];
+    }
+    notifyListeners();
+  }
+
   String peerDisplayName(String deviceId, String originalName) =>
       peerRemarks[deviceId] ?? originalName;
 
@@ -435,6 +463,8 @@ class AppController extends ChangeNotifier {
   void _handleBossKeyVisibilityChanged(bool hidden) {
     bossKeyHidden = hidden;
     if (hidden) unawaited(_notifications.clearAll());
+    final handler = onBossKeyVisibilityChanged;
+    if (handler != null) unawaited(Future.sync(() => handler(hidden)));
     notifyListeners();
   }
 
@@ -745,15 +775,27 @@ class AppController extends ChangeNotifier {
     String? conversationId,
     required String content,
     required List<PendingAttachment> attachments,
+  }) => sendMessageWithAttachmentsTo(
+    conversationId:
+        conversationId ??
+        (selectedGroupId == null ? selectedChatId : 'group:$selectedGroupId'),
+    content: content,
+    attachments: attachments,
+    reply: replyingTo,
+  );
+
+  /// 向一个固定会话发送文字和附件，供不跟随主窗口选择的独立会话窗口使用。
+  Future<void> sendMessageWithAttachmentsTo({
+    required String? conversationId,
+    required String content,
+    required List<PendingAttachment> attachments,
+    ChatMessage? reply,
   }) async {
     if (content.trim().isEmpty && attachments.isEmpty) return;
     final groupId = conversationId?.startsWith('group:') == true
         ? conversationId!.substring('group:'.length)
-        : conversationId == null
-        ? selectedGroupId
         : null;
-    final chatId = groupId == null ? (conversationId ?? selectedChatId) : null;
-    final reply = replyingTo;
+    final chatId = groupId == null ? conversationId : null;
     if (content.trim().isNotEmpty) {
       await _sendMessageTo(
         content,
@@ -771,6 +813,35 @@ class AppController extends ChangeNotifier {
       );
     }
   }
+
+  /// 读取指定会话的持久化消息，不改变主窗口当前选中的会话。
+  Future<List<ChatMessage>> loadMessagesForConversation(
+    String conversationId,
+  ) => _database.loadMessages(conversationId);
+
+  /// 登记独立窗口正在展示的会话，并在打开时清除该会话未读数。
+  Future<void> setConversationWindowOpen(
+    String conversationId,
+    bool open,
+  ) async {
+    if (open) {
+      _openConversationWindows.add(conversationId);
+      if (conversationId.startsWith('group:')) {
+        await _clearUnread(groupId: conversationId.substring('group:'.length));
+      } else {
+        await _clearUnread(chatId: conversationId);
+      }
+      notifyListeners();
+    } else {
+      _openConversationWindows.remove(conversationId);
+    }
+  }
+
+  bool _isConversationOpen(String conversationId) =>
+      _openConversationWindows.contains(conversationId) ||
+      (conversationId.startsWith('group:')
+          ? selectedGroupId == conversationId.substring('group:'.length)
+          : selectedChatId == conversationId);
 
   Future<void> sendFile(String filePath) async {
     await _sendFileTo(
@@ -1031,6 +1102,17 @@ class AppController extends ChangeNotifier {
     if (selectedChatId == chat.chatId) {
       selectedChatId = null;
       messages = [];
+    }
+    notifyListeners();
+  }
+
+  Future<void> deleteChat(ChatSummary chat) async {
+    await _database.deleteChat(chat.chatId);
+    chats = chats.where((value) => value.chatId != chat.chatId).toList();
+    if (selectedChatId == chat.chatId) {
+      selectedChatId = null;
+      messages = [];
+      replyingTo = null;
     }
     notifyListeners();
   }
@@ -1919,16 +2001,18 @@ class AppController extends ChangeNotifier {
     );
     // 只要当前打开的就是这个会话，消息就立刻显示在列表里（哪怕窗口没聚焦）；
     // 只有会话没打开时才累计未读，靠红点提醒。
-    final conversationOpen = selectedChatId == chat.chatId;
+    final conversationOpen = _isConversationOpen(chat.chatId);
     if (!await _database.saveMessage(message)) return;
-    if (conversationOpen) {
+    if (selectedChatId == chat.chatId) {
       messages = [...messages, message];
-    } else {
+    }
+    if (!conversationOpen) {
       await _markUnread(chatId: chat.chatId);
     }
     await _reloadChats();
     notifyListeners();
-    if (_systemNotificationsAllowed &&
+    if (!_openConversationWindows.contains(chat.chatId) &&
+        _systemNotificationsAllowed &&
         shouldNotifyForConversation(
           appIsFocused: _notifications.appIsFocused,
           selectedConversationId: selectedChatId,
@@ -2026,10 +2110,11 @@ class AppController extends ChangeNotifier {
     }
     if (!await _database.saveMessage(message)) return;
     // 会话已打开就立刻显示，附件同样不依赖窗口焦点。
-    final conversationOpen = selectedChatId == chat.chatId;
-    if (conversationOpen) {
+    final conversationOpen = _isConversationOpen(chat.chatId);
+    if (selectedChatId == chat.chatId) {
       messages = [...messages, message];
-    } else {
+    }
+    if (!conversationOpen) {
       await _markUnread(chatId: chat.chatId);
     }
     await _reloadChats();
@@ -2278,7 +2363,8 @@ class AppController extends ChangeNotifier {
     String senderName,
     String conversationId,
   ) async {
-    if (!_systemNotificationsAllowed ||
+    if (_openConversationWindows.contains(conversationId) ||
+        !_systemNotificationsAllowed ||
         !shouldNotifyForConversation(
           appIsFocused: _notifications.appIsFocused,
           selectedConversationId: selectedGroupId == null
@@ -2426,11 +2512,12 @@ class AppController extends ChangeNotifier {
     );
     final mentionMe = mentions.contains(identity!.deviceId);
     // 会话已打开就立刻显示；未读只统计没打开的那个会话。
-    final conversationOpen = selectedGroupId == groupId;
+    final conversationOpen = _isConversationOpen('group:$groupId');
     if (!await _database.saveMessage(message)) return;
-    if (conversationOpen) {
+    if (selectedGroupId == groupId) {
       messages = [...messages, message];
-    } else {
+    }
+    if (!conversationOpen) {
       await _markUnread(groupId: groupId);
     }
     await _reloadGroups();
@@ -2449,6 +2536,7 @@ class AppController extends ChangeNotifier {
       );
     }
     final shouldNotify =
+        !_openConversationWindows.contains('group:$groupId') &&
         _systemNotificationsAllowed &&
         shouldNotifyForConversation(
           appIsFocused: _notifications.appIsFocused,
@@ -2529,10 +2617,11 @@ class AppController extends ChangeNotifier {
     }
     if (!await _database.saveMessage(message)) return;
     // 会话已打开就立刻显示，附件同样不依赖窗口焦点。
-    final conversationOpen = selectedGroupId == groupId;
-    if (conversationOpen) {
+    final conversationOpen = _isConversationOpen('group:$groupId');
+    if (selectedGroupId == groupId) {
       messages = [...messages, message];
-    } else {
+    }
+    if (!conversationOpen) {
       await _markUnread(groupId: groupId);
     }
     await _reloadGroups();
