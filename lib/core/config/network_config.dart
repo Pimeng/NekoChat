@@ -16,6 +16,7 @@ abstract final class NetworkConfig {
   static const int maxTextMessageLength = 10000;
   static const int maxReplyPreviewLength = 200;
   static const int maxMentionCount = 64;
+  static const int maxRemarkLength = 40;
 
   /// 断线重连时一次最多补发的消息条数。
   static const int maxHistoryBatchSize = 300;

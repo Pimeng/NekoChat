@@ -488,6 +488,52 @@ void main() {
     expect(setup.bossKey.enabledValues, [true]);
   });
 
+  test('人员和群聊备注本地生效，不覆盖原始名称', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-remarks-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    await activateChat(setup);
+    final chat = setup.controller.chats.single;
+    final group = await setup.controller.createGroup('原始群名', const []);
+
+    await setup.controller.setPeerRemark(chat.peerDeviceId, 'UI 小李');
+    await setup.controller.setGroupRemark(group.groupId, '发布战情室');
+
+    expect(
+      setup.controller.peerDisplayName(chat.peerDeviceId, chat.displayName),
+      'UI 小李',
+    );
+    expect(
+      setup.controller.groupDisplayName(group.groupId, group.name),
+      '发布战情室',
+    );
+    expect(setup.controller.chats.single.displayName, '李四');
+    expect(setup.controller.groups.single.name, '原始群名');
+    setPeerOnline(setup);
+    await setup.controller.inviteToGroup(group, setup.controller.peers.single);
+    final invitation = setup.transport.sentEnvelopes.lastWhere(
+      (envelope) => envelope.type == MessageType.groupInvite,
+    );
+    expect(invitation.payload['groupName'], '原始群名');
+
+    await setup.controller.setPeerRemark(chat.peerDeviceId, '   ');
+    await setup.controller.setGroupRemark(group.groupId, '');
+    expect(setup.controller.peerRemarks, isEmpty);
+    expect(setup.controller.groupRemarks, isEmpty);
+  });
+
   test('会话未打开时消息计为未读且不进入当前列表', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-unseen-',
@@ -778,6 +824,7 @@ class _FakeBossKeyService implements BossKeyService {
 
 class _FakeTransport implements ChatTransport {
   void Function(IncomingPacket packet)? _onPacket;
+  final List<ProtocolEnvelope> sentEnvelopes = [];
 
   void emit(IncomingPacket packet) => _onPacket?.call(packet);
 
@@ -787,7 +834,8 @@ class _FakeTransport implements ChatTransport {
   }
 
   @override
-  Future<void> send(String ip, int port, ProtocolEnvelope envelope) async {}
+  Future<void> send(String ip, int port, ProtocolEnvelope envelope) async =>
+      sentEnvelopes.add(envelope);
 
   @override
   Future<void> offerFile({

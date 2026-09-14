@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
+import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
 import '../settings/settings_page.dart';
 import 'message_composer.dart';
@@ -73,6 +74,7 @@ class _MainShellState extends State<MainShell> {
           (entry) =>
               query.isEmpty ||
               entry.displayName.toLowerCase().contains(query) ||
+              entry.originalDisplayName.toLowerCase().contains(query) ||
               (entry.peer?.ip.contains(query) ?? false),
         )
         .toList();
@@ -87,7 +89,12 @@ class _MainShellState extends State<MainShell> {
         controller.groups
             .where(
               (group) =>
-                  query.isEmpty || group.name.toLowerCase().contains(query),
+                  query.isEmpty ||
+                  group.name.toLowerCase().contains(query) ||
+                  controller
+                      .groupDisplayName(group.groupId, group.name)
+                      .toLowerCase()
+                      .contains(query),
             )
             .toList()
           ..sort((a, b) {
@@ -198,16 +205,12 @@ class _MainShellState extends State<MainShell> {
                         child: Icon(Icons.groups, size: 20),
                       ),
                       title: Text(
-                        group.name,
+                        controller.groupDisplayName(group.groupId, group.name),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        group.lastMessagePreview ??
-                            (group.ownerDeviceId ==
-                                    controller.identity!.deviceId
-                                ? '我创建的群聊'
-                                : '已加入'),
+                        _groupListSubtitle(controller, group),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -247,15 +250,22 @@ class _MainShellState extends State<MainShell> {
       if (chat != null) {
         final online = _peerOnline(controller, chat.peerDeviceId);
         final conversationId = chat.chatId;
+        final displayName = controller.peerDisplayName(
+          chat.peerDeviceId,
+          chat.displayName,
+        );
         return _ConversationPane(
           key: ValueKey(chat.chatId),
           conversationId: conversationId,
-          title: chat.displayName,
-          subtitle: online ? '在线' : '离线 · 消息不会离线排队',
+          title: displayName,
+          subtitle: [
+            if (displayName != chat.displayName) '原名：${chat.displayName}',
+            online ? '在线' : '离线 · 消息不会离线排队',
+          ].join(' · '),
           messages: controller.messages,
           localDeviceId: controller.identity!.deviceId,
           peerName: (deviceId) =>
-              deviceId == chat.peerDeviceId ? chat.displayName : '我',
+              deviceId == chat.peerDeviceId ? displayName : '我',
           composer: _composerFor(conversationId),
           pendingAttachments: _pendingFor(conversationId),
           enabled: online && chat.state == ChatSessionState.active,
@@ -281,20 +291,38 @@ class _MainShellState extends State<MainShell> {
             PopupMenuButton<String>(
               tooltip: '会话操作',
               onSelected: (value) async {
+                if (value == 'remark') {
+                  await _showPeerRemark(
+                    controller,
+                    chat.peerDeviceId,
+                    chat.displayName,
+                  );
+                }
                 if (value == 'close') await controller.closeChat(chat);
                 if (value == 'block') {
                   await controller.setBlocked(chat.peerDeviceId, true);
                 }
               },
-              itemBuilder: (_) => const [
+              itemBuilder: (_) => [
                 PopupMenuItem(
+                  value: 'remark',
+                  child: ListTile(
+                    leading: const Icon(Icons.drive_file_rename_outline),
+                    title: Text(
+                      controller.peerRemarks.containsKey(chat.peerDeviceId)
+                          ? '修改人员备注'
+                          : '添加人员备注',
+                    ),
+                  ),
+                ),
+                const PopupMenuItem(
                   value: 'close',
                   child: ListTile(
                     leading: Icon(Icons.close),
                     title: Text('关闭对话'),
                   ),
                 ),
-                PopupMenuItem(
+                const PopupMenuItem(
                   value: 'block',
                   child: ListTile(
                     leading: Icon(Icons.block),
@@ -314,21 +342,30 @@ class _MainShellState extends State<MainShell> {
       if (group != null) {
         final conversationId = 'group:${group.groupId}';
         final composer = _composerFor(conversationId);
+        final displayName = controller.groupDisplayName(
+          group.groupId,
+          group.name,
+        );
         return _ConversationPane(
           key: ValueKey(conversationId),
           conversationId: conversationId,
-          title: group.name,
-          subtitle: '局域网实时群聊 · 离线成员不会收到消息',
+          title: displayName,
+          subtitle: [
+            if (displayName != group.name) '原群名：${group.name}',
+            '局域网实时群聊 · 离线成员不会收到消息',
+          ].join(' · '),
           messages: controller.messages,
           localDeviceId: controller.identity!.deviceId,
           peerName: (deviceId) {
             if (deviceId == controller.identity!.deviceId) return '我';
-            return controller.trustedPeers[deviceId]?.displayName ??
+            final originalName =
+                controller.trustedPeers[deviceId]?.displayName ??
                 controller.peers
                     .where((peer) => peer.deviceId == deviceId)
                     .firstOrNull
                     ?.displayName ??
                 '群成员';
+            return controller.peerDisplayName(deviceId, originalName);
           },
           composer: composer,
           pendingAttachments: _pendingFor(conversationId),
@@ -363,6 +400,9 @@ class _MainShellState extends State<MainShell> {
             PopupMenuButton<String>(
               tooltip: '群聊操作',
               onSelected: (value) async {
+                if (value == 'remark') {
+                  await _showGroupRemark(controller, group);
+                }
                 if (value == 'members') {
                   await _showGroupMembers(controller, group);
                 }
@@ -374,6 +414,17 @@ class _MainShellState extends State<MainShell> {
                 }
               },
               itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'remark',
+                  child: ListTile(
+                    leading: const Icon(Icons.drive_file_rename_outline),
+                    title: Text(
+                      controller.groupRemarks.containsKey(group.groupId)
+                          ? '修改群聊备注'
+                          : '添加群聊备注',
+                    ),
+                  ),
+                ),
                 const PopupMenuItem(
                   value: 'members',
                   child: ListTile(
@@ -455,9 +506,24 @@ class _MainShellState extends State<MainShell> {
               onPressed: () => Navigator.pop(dialogContext, member),
               child: ListTile(
                 leading: CircleAvatar(
-                  child: Text(_avatarText(member.displayName)),
+                  child: Text(
+                    _avatarText(
+                      controller.peerDisplayName(
+                        member.deviceId,
+                        member.displayName,
+                      ),
+                    ),
+                  ),
                 ),
-                title: Text(member.displayName),
+                title: Text(
+                  controller.peerDisplayName(
+                    member.deviceId,
+                    member.displayName,
+                  ),
+                ),
+                subtitle: controller.peerRemarks.containsKey(member.deviceId)
+                    ? Text('原名：${member.displayName}')
+                    : null,
               ),
             ),
         ],
@@ -502,8 +568,17 @@ class _MainShellState extends State<MainShell> {
                         for (final peer in available)
                           CheckboxListTile(
                             value: selected.contains(peer.deviceId),
-                            title: Text(peer.displayName),
-                            subtitle: Text(peer.ip),
+                            title: Text(
+                              controller.peerDisplayName(
+                                peer.deviceId,
+                                peer.displayName,
+                              ),
+                            ),
+                            subtitle: Text(
+                              controller.peerRemarks.containsKey(peer.deviceId)
+                                  ? '${peer.displayName} · ${peer.ip}'
+                                  : peer.ip,
+                            ),
                             onChanged: (value) => setDialogState(
                               () => value == true
                                   ? selected.add(peer.deviceId)
@@ -563,8 +638,17 @@ class _MainShellState extends State<MainShell> {
                     onPressed: () => Navigator.pop(dialogContext, value),
                     child: ListTile(
                       leading: const Icon(Icons.person_add),
-                      title: Text(value.displayName),
-                      subtitle: Text(value.ip),
+                      title: Text(
+                        controller.peerDisplayName(
+                          value.deviceId,
+                          value.displayName,
+                        ),
+                      ),
+                      subtitle: Text(
+                        controller.peerRemarks.containsKey(value.deviceId)
+                            ? '${value.displayName} · ${value.ip}'
+                            : value.ip,
+                      ),
                     ),
                   ),
               ],
@@ -581,46 +665,90 @@ class _MainShellState extends State<MainShell> {
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('${group.name} · 群成员'),
-        content: SizedBox(
-          width: 420,
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              for (final member in members)
-                ListTile(
-                  leading: CircleAvatar(
-                    child: Text(_avatarText(member.displayName)),
-                  ),
-                  title: Text(member.displayName),
-                  subtitle: Text(
-                    member.role == GroupRole.owner ? 'Owner' : 'Member',
-                  ),
-                  trailing:
-                      group.ownerDeviceId == controller.identity!.deviceId &&
-                          member.deviceId != controller.identity!.deviceId
-                      ? IconButton(
-                          tooltip: '移除成员',
-                          onPressed: () async {
-                            await controller.removeGroupMember(group, member);
-                            if (dialogContext.mounted) {
-                              Navigator.pop(dialogContext);
-                            }
-                          },
-                          icon: const Icon(Icons.person_remove_outlined),
-                        )
-                      : null,
-                ),
-            ],
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(
+            '${controller.groupDisplayName(group.groupId, group.name)} · 群成员',
           ),
+          content: SizedBox(
+            width: 420,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final member in members)
+                  ListTile(
+                    leading: CircleAvatar(
+                      child: Text(
+                        _avatarText(
+                          controller.peerDisplayName(
+                            member.deviceId,
+                            member.displayName,
+                          ),
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      controller.peerDisplayName(
+                        member.deviceId,
+                        member.displayName,
+                      ),
+                    ),
+                    subtitle: Text(
+                      [
+                        if (controller.peerRemarks.containsKey(member.deviceId))
+                          '原名：${member.displayName}',
+                        member.role == GroupRole.owner ? 'Owner' : 'Member',
+                      ].join(' · '),
+                    ),
+                    trailing: member.deviceId == controller.identity!.deviceId
+                        ? null
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: '修改人员备注',
+                                onPressed: () async {
+                                  await _showPeerRemark(
+                                    controller,
+                                    member.deviceId,
+                                    member.displayName,
+                                  );
+                                  if (dialogContext.mounted) {
+                                    setDialogState(() {});
+                                  }
+                                },
+                                icon: const Icon(Icons.edit_note_outlined),
+                              ),
+                              if (group.ownerDeviceId ==
+                                  controller.identity!.deviceId)
+                                IconButton(
+                                  tooltip: '移除成员',
+                                  onPressed: () async {
+                                    await controller.removeGroupMember(
+                                      group,
+                                      member,
+                                    );
+                                    if (dialogContext.mounted) {
+                                      Navigator.pop(dialogContext);
+                                    }
+                                  },
+                                  icon: const Icon(
+                                    Icons.person_remove_outlined,
+                                  ),
+                                ),
+                            ],
+                          ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('关闭'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('关闭'),
-          ),
-        ],
       ),
     );
   }
@@ -654,6 +782,77 @@ class _MainShellState extends State<MainShell> {
     );
     if (accepted == true) await controller.renameGroup(group, name.text);
     name.dispose();
+  }
+
+  Future<void> _showPeerRemark(
+    AppController controller,
+    String deviceId,
+    String originalName,
+  ) => _showRemarkEditor(
+    title: '人员备注',
+    originalName: originalName,
+    currentRemark: controller.peerRemarks[deviceId],
+    onSave: (value) => controller.setPeerRemark(deviceId, value),
+  );
+
+  Future<void> _showGroupRemark(AppController controller, ChatGroup group) =>
+      _showRemarkEditor(
+        title: '群聊备注',
+        originalName: group.name,
+        currentRemark: controller.groupRemarks[group.groupId],
+        onSave: (value) => controller.setGroupRemark(group.groupId, value),
+      );
+
+  Future<void> _showRemarkEditor({
+    required String title,
+    required String originalName,
+    required String? currentRemark,
+    required Future<void> Function(String value) onSave,
+  }) async {
+    final remark = TextEditingController(text: currentRemark);
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('原始名称：$originalName'),
+              const SizedBox(height: 14),
+              TextField(
+                controller: remark,
+                autofocus: true,
+                maxLength: NetworkConfig.maxRemarkLength,
+                decoration: const InputDecoration(
+                  labelText: '备注',
+                  hintText: '留空即清除备注',
+                ),
+                onSubmitted: (_) => Navigator.pop(dialogContext, true),
+              ),
+              const Text(
+                '备注只保存在本机，不会发送给对方。',
+                style: TextStyle(color: Colors.black54, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true) await onSave(remark.text);
+    remark.dispose();
   }
 
   Future<void> _confirmLeaveGroup(
@@ -831,6 +1030,7 @@ class _UnifiedPeerEntry {
   const _UnifiedPeerEntry({
     required this.deviceId,
     required this.displayName,
+    required this.originalDisplayName,
     required this.peer,
     required this.chat,
     required this.trustedPeer,
@@ -838,6 +1038,7 @@ class _UnifiedPeerEntry {
 
   final String deviceId;
   final String displayName;
+  final String originalDisplayName;
   final DiscoveredPeer? peer;
   final ChatSummary? chat;
   final TrustedPeer? trustedPeer;
@@ -898,7 +1099,7 @@ class _UnifiedPeerTile extends StatelessWidget {
         ],
       ),
       subtitle: Text(
-        entry.chat?.lastMessagePreview ?? _unifiedPeerSubtitle(entry),
+        _peerListSubtitle(entry),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
@@ -939,8 +1140,8 @@ class _ChatRequestCard extends StatelessWidget {
         children: [
           Text(
             request.incoming
-                ? '${request.displayName} 请求与你聊天'
-                : '等待 ${request.displayName} 确认',
+                ? '${controller.peerDisplayName(request.peerDeviceId, request.displayName)} 请求与你聊天'
+                : '等待 ${controller.peerDisplayName(request.peerDeviceId, request.displayName)} 确认',
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 5),
@@ -1000,11 +1201,15 @@ class _GroupInviteCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            '${invitation.ownerDisplayName} 邀请你加入',
+            '${controller.peerDisplayName(invitation.ownerDeviceId, invitation.ownerDisplayName)} '
+            '邀请你加入',
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
           Text(
-            invitation.groupName,
+            controller.groupDisplayName(
+              invitation.groupId,
+              invitation.groupName,
+            ),
             style: Theme.of(context).textTheme.titleMedium,
           ),
           Text(
@@ -2371,15 +2576,20 @@ List<_UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
         .map((peer) => peer.deviceId),
     ...chatsByPeer.keys,
   };
+  String originalName(String deviceId) =>
+      peersById[deviceId]?.displayName ??
+      chatsByPeer[deviceId]?.displayName ??
+      controller.trustedPeers[deviceId]?.displayName ??
+      '未知设备';
   final entries = [
     for (final deviceId in deviceIds)
       _UnifiedPeerEntry(
         deviceId: deviceId,
-        displayName:
-            peersById[deviceId]?.displayName ??
-            chatsByPeer[deviceId]?.displayName ??
-            controller.trustedPeers[deviceId]?.displayName ??
-            '未知设备',
+        displayName: controller.peerDisplayName(
+          deviceId,
+          originalName(deviceId),
+        ),
+        originalDisplayName: originalName(deviceId),
         peer: peersById[deviceId],
         chat: chatsByPeer[deviceId],
         trustedPeer: controller.trustedPeers[deviceId],
@@ -2395,6 +2605,20 @@ List<_UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
     return a.displayName.compareTo(b.displayName);
   });
   return entries;
+}
+
+String _peerListSubtitle(_UnifiedPeerEntry entry) {
+  final status = entry.chat?.lastMessagePreview ?? _unifiedPeerSubtitle(entry);
+  if (entry.displayName == entry.originalDisplayName) return status;
+  return '${entry.originalDisplayName} · $status';
+}
+
+String _groupListSubtitle(AppController controller, ChatGroup group) {
+  final status =
+      group.lastMessagePreview ??
+      (group.ownerDeviceId == controller.identity!.deviceId ? '我创建的群聊' : '已加入');
+  if (!controller.groupRemarks.containsKey(group.groupId)) return status;
+  return '${group.name} · $status';
 }
 
 String _unifiedPeerSubtitle(_UnifiedPeerEntry entry) {

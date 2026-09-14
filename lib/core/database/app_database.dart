@@ -31,7 +31,7 @@ class PlainSqliteBackend implements DatabaseBackend {
     return databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 4,
+        version: 5,
         onCreate: onCreate,
         onUpgrade: onUpgrade,
       ),
@@ -175,6 +175,18 @@ class AppDatabase {
     await db.execute(
       'CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
     );
+    await db.execute('''
+      CREATE TABLE peer_remarks (
+        device_id TEXT PRIMARY KEY,
+        remark TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE group_remarks (
+        group_id TEXT PRIMARY KEY,
+        remark TEXT NOT NULL
+      )
+    ''');
     _log.info('数据库 Schema v$version 已创建');
   }
 
@@ -219,6 +231,20 @@ class AppDatabase {
       );
       await db.execute('ALTER TABLE groups ADD COLUMN last_message_at INTEGER');
     }
+    if (oldVersion < 5) {
+      await db.execute('''
+        CREATE TABLE peer_remarks (
+          device_id TEXT PRIMARY KEY,
+          remark TEXT NOT NULL
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE group_remarks (
+          group_id TEXT PRIMARY KEY,
+          remark TEXT NOT NULL
+        )
+      ''');
+    }
     _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
 
@@ -240,6 +266,38 @@ class AppDatabase {
     {'key': key, 'value': value},
     conflictAlgorithm: ConflictAlgorithm.replace,
   );
+
+  Future<Map<String, String>> loadPeerRemarks() async => {
+    for (final row in await database.query('peer_remarks'))
+      row['device_id'] as String: row['remark'] as String,
+  };
+
+  Future<Map<String, String>> loadGroupRemarks() async => {
+    for (final row in await database.query('group_remarks'))
+      row['group_id'] as String: row['remark'] as String,
+  };
+
+  Future<void> setPeerRemark(String deviceId, String? remark) => remark == null
+      ? database.delete(
+          'peer_remarks',
+          where: 'device_id = ?',
+          whereArgs: [deviceId],
+        )
+      : database.insert('peer_remarks', {
+          'device_id': deviceId,
+          'remark': remark,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+  Future<void> setGroupRemark(String groupId, String? remark) => remark == null
+      ? database.delete(
+          'group_remarks',
+          where: 'group_id = ?',
+          whereArgs: [groupId],
+        )
+      : database.insert('group_remarks', {
+          'group_id': groupId,
+          'remark': remark,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
 
   Future<LocalIdentity?> loadIdentity() async {
     final rows = await database.query('local_identities', limit: 1);

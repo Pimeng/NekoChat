@@ -81,6 +81,8 @@ class AppController extends ChangeNotifier {
   List<DiscoveredPeer> peers = [];
   List<ChatSummary> chats = [];
   List<ChatGroup> groups = [];
+  Map<String, String> peerRemarks = {};
+  Map<String, String> groupRemarks = {};
   final Map<String, ChatRequest> chatRequests = {};
   final Map<String, Timer> _chatRequestTimers = {};
   Timer? _topRightMessageTimer;
@@ -171,6 +173,8 @@ class AppController extends ChangeNotifier {
     bossKeyShortcut = BossKeyShortcut.decode(
       await _database.loadSetting(_bossKeyShortcutSetting),
     );
+    peerRemarks = await _database.loadPeerRemarks();
+    groupRemarks = await _database.loadGroupRemarks();
     trustedPeers = await _database.loadTrustedPeers();
     chats = await _database.loadChats();
     await _recoverInterruptedRequests();
@@ -214,6 +218,34 @@ class AppController extends ChangeNotifier {
     if (windowsNotificationsEnabled == value) return;
     await _database.saveSetting(_windowsNotificationsSetting, value.toString());
     windowsNotificationsEnabled = value;
+    notifyListeners();
+  }
+
+  String peerDisplayName(String deviceId, String originalName) =>
+      peerRemarks[deviceId] ?? originalName;
+
+  String groupDisplayName(String groupId, String originalName) =>
+      groupRemarks[groupId] ?? originalName;
+
+  Future<void> setPeerRemark(String deviceId, String value) async {
+    final remark = _normalizeRemark(value);
+    await _database.setPeerRemark(deviceId, remark);
+    if (remark == null) {
+      peerRemarks.remove(deviceId);
+    } else {
+      peerRemarks[deviceId] = remark;
+    }
+    notifyListeners();
+  }
+
+  Future<void> setGroupRemark(String groupId, String value) async {
+    final remark = _normalizeRemark(value);
+    await _database.setGroupRemark(groupId, remark);
+    if (remark == null) {
+      groupRemarks.remove(groupId);
+    } else {
+      groupRemarks[groupId] = remark;
+    }
     notifyListeners();
   }
 
@@ -339,7 +371,7 @@ class AppController extends ChangeNotifier {
       _removeChatRequest(requestId);
       await _upsertChat(peer.deviceId, peer.displayName, ChatSessionState.none);
       _log.warning('聊天邀请发送失败', error, stack);
-      errorMessage = '无法连接 ${peer.displayName}';
+      errorMessage = '无法连接 ${peerDisplayName(peer.deviceId, peer.displayName)}';
       notifyListeners();
     }
   }
@@ -643,7 +675,9 @@ class AppController extends ChangeNotifier {
     }
     final peer = _onlinePeer(chat.peerDeviceId);
     if (peer == null) {
-      errorMessage = '${chat.displayName} 当前离线，无法发送文件';
+      errorMessage =
+          '${peerDisplayName(chat.peerDeviceId, chat.displayName)} '
+          '当前离线，无法发送文件';
       notifyListeners();
       return;
     }
@@ -1454,7 +1488,9 @@ class AppController extends ChangeNotifier {
       await _notifications.show(
         identifier: 'chat-request:$requestId',
         title: '新的聊天邀请',
-        body: '$displayName 请求与你聊天，验证码 ${request.verificationCode}',
+        body:
+            '${peerDisplayName(deviceId, displayName)} 请求与你聊天，'
+            '验证码 ${request.verificationCode}',
         onClick: () {},
       );
     }
@@ -1501,7 +1537,7 @@ class AppController extends ChangeNotifier {
       final chatId = _privateChatId(identity!.deviceId, deviceId);
       await _notifications.show(
         identifier: 'chat-accept:$sessionId',
-        title: '$displayName 已接受聊天邀请',
+        title: '${peerDisplayName(deviceId, displayName)} 已接受聊天邀请',
         body: '点击进入会话',
         onClick: () => selectChat(chatId),
       );
@@ -1584,7 +1620,7 @@ class AppController extends ChangeNotifier {
         )) {
       await _notifications.show(
         identifier: 'message:$messageId',
-        title: chat.displayName,
+        title: peerDisplayName(chat.peerDeviceId, chat.displayName),
         body: _notificationPreview(content),
         onClick: () => selectChat(chat.chatId),
       );
@@ -1637,7 +1673,11 @@ class AppController extends ChangeNotifier {
     }
     await _reloadChats();
     notifyListeners();
-    await _notifyIncomingFile(message, chat.displayName, chat.chatId);
+    await _notifyIncomingFile(
+      message,
+      peerDisplayName(chat.peerDeviceId, chat.displayName),
+      chat.chatId,
+    );
     if (message.status == MessageStatus.pending) {
       await _acceptIncomingFile(
         message,
@@ -1804,7 +1844,8 @@ class AppController extends ChangeNotifier {
       );
       if (!accepted) {
         _showTopRightMessage(
-          '${chat!.displayName} 已拒收${message.kind == MessageKind.image ? '图片' : '文件'}“${message.fileName}”',
+          '${peerDisplayName(chat!.peerDeviceId, chat.displayName)} '
+          '已拒收${message.kind == MessageKind.image ? '图片' : '文件'}“${message.fileName}”',
         );
       }
       return;
@@ -1943,7 +1984,9 @@ class AppController extends ChangeNotifier {
       await _notifications.show(
         identifier: 'group-invite:$inviteId',
         title: '新的群聊邀请',
-        body: '$ownerDisplayName 邀请你加入“$groupName”',
+        body:
+            '${peerDisplayName(ownerDeviceId, ownerDisplayName)} '
+            '邀请你加入“${groupDisplayName(groupId, groupName)}”',
         onClick: () {},
       );
     }
@@ -2035,7 +2078,8 @@ class AppController extends ChangeNotifier {
         '群成员';
     if (mentionMe) {
       _showTopRightMessage(
-        '$senderName 在“${group.name}”里 @ 了你',
+        '${peerDisplayName(senderDeviceId, senderName)} '
+        '在“${groupDisplayName(groupId, group.name)}”里 @ 了你',
         icon: Icons.alternate_email,
       );
     }
@@ -2051,8 +2095,11 @@ class AppController extends ChangeNotifier {
     if (shouldNotify) {
       await _notifications.show(
         identifier: 'group-message:$messageId',
-        title: mentionMe ? '${group.name} · @你' : group.name,
-        body: '$senderName：${_notificationPreview(content)}',
+        title: mentionMe
+            ? '${groupDisplayName(groupId, group.name)} · @你'
+            : groupDisplayName(groupId, group.name),
+        body:
+            '${peerDisplayName(senderDeviceId, senderName)}：${_notificationPreview(content)}',
         onClick: () => selectGroup(groupId),
       );
     }
@@ -2086,7 +2133,11 @@ class AppController extends ChangeNotifier {
     }
     await _reloadGroups();
     notifyListeners();
-    await _notifyIncomingFile(message, group.name, 'group:$groupId');
+    await _notifyIncomingFile(
+      message,
+      groupDisplayName(groupId, group.name),
+      'group:$groupId',
+    );
     if (message.status == MessageStatus.pending) {
       await _acceptIncomingFile(
         message,
@@ -2238,11 +2289,14 @@ class AppController extends ChangeNotifier {
     );
     if (request.incoming) {
       _showTopRightMessage(
-        '来自 ${request.displayName} 的聊天邀请已超时',
+        '来自 ${peerDisplayName(request.peerDeviceId, request.displayName)} '
+        '的聊天邀请已超时',
         icon: Icons.schedule,
       );
     } else {
-      errorMessage = '与 ${request.displayName} 的连接请求已超时，可以重试';
+      errorMessage =
+          '与 ${peerDisplayName(request.peerDeviceId, request.displayName)} '
+          '的连接请求已超时，可以重试';
     }
     notifyListeners();
   }
@@ -2557,7 +2611,10 @@ class AppController extends ChangeNotifier {
     }
     await _reloadGroups();
     notifyListeners();
-    _showTopRightMessage('已同步“${group.name}”的离线消息', icon: Icons.sync);
+    _showTopRightMessage(
+      '已同步“${groupDisplayName(groupId, group.name)}”的离线消息',
+      icon: Icons.sync,
+    );
   }
 
   Future<void> _sendToAddress(String ip, ProtocolEnvelope envelope) =>
@@ -2627,6 +2684,15 @@ class AppController extends ChangeNotifier {
         'false' => false,
         _ => fallback,
       };
+
+  static String? _normalizeRemark(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) return null;
+    if (normalized.characters.length > NetworkConfig.maxRemarkLength) {
+      throw ArgumentError('备注不能超过 ${NetworkConfig.maxRemarkLength} 个字符');
+    }
+    return normalized;
+  }
 
   void _fail(
     String message,

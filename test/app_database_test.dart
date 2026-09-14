@@ -456,4 +456,50 @@ void main() {
     addTearDown(reopened.close);
     expect(await reopened.loadSetting('auto_receive_files'), 'false');
   });
+
+  test('人员和群聊备注只按本地 ID 持久化，并可清除', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-remarks-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+
+    final first = AppDatabase(directory: () async => directory);
+    await first.open(const [1, 2, 3, 4]);
+    await first.setPeerRemark('peer-1', '设计组小李');
+    await first.setGroupRemark('group-1', '新版本战情室');
+    await first.close();
+
+    final reopened = AppDatabase(directory: () async => directory);
+    await reopened.open(const [1, 2, 3, 4]);
+    addTearDown(reopened.close);
+    expect(await reopened.loadPeerRemarks(), {'peer-1': '设计组小李'});
+    expect(await reopened.loadGroupRemarks(), {'group-1': '新版本战情室'});
+
+    await reopened.setPeerRemark('peer-1', null);
+    await reopened.setGroupRemark('group-1', null);
+    expect(await reopened.loadPeerRemarks(), isEmpty);
+    expect(await reopened.loadGroupRemarks(), isEmpty);
+  });
+
+  test('Schema v4 升级时创建本地备注表', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-remarks-migration-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final path = p.join(directory.path, 'neko_chat.db');
+    final legacy = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(version: 4),
+    );
+    await legacy.close();
+
+    final database = AppDatabase(directory: () async => directory);
+    await database.open(const [1, 2, 3, 4]);
+    addTearDown(database.close);
+    await database.setPeerRemark('peer-1', '小李');
+    await database.setGroupRemark('group-1', '项目群');
+
+    expect(await database.loadPeerRemarks(), {'peer-1': '小李'});
+    expect(await database.loadGroupRemarks(), {'group-1': '项目群'});
+  });
 }
