@@ -200,7 +200,7 @@ void main() {
     expect(find.byTooltip('收起侧边栏'), findsOneWidget);
     expect(
       tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
-      340,
+      320,
     );
 
     await tester.tap(find.byTooltip('收起侧边栏'));
@@ -211,7 +211,7 @@ void main() {
         .getSize(find.byKey(const ValueKey('sidebar-animation')))
         .width;
     expect(collapsingWidth, greaterThan(0));
-    expect(collapsingWidth, lessThan(340));
+    expect(collapsingWidth, lessThan(320));
     await tester.pumpAndSettle();
 
     expect(find.text('搜索设备或会话'), findsNothing);
@@ -229,14 +229,90 @@ void main() {
         .getSize(find.byKey(const ValueKey('sidebar-animation')))
         .width;
     expect(expandingWidth, greaterThan(0));
-    expect(expandingWidth, lessThan(340));
+    expect(expandingWidth, lessThan(320));
     await tester.pumpAndSettle();
 
     expect(find.text('搜索设备或会话'), findsOneWidget);
     expect(find.byTooltip('收起侧边栏'), findsOneWidget);
     expect(
       tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
-      340,
+      320,
+    );
+  });
+
+  testWidgets('拖动分隔线可调整侧边栏宽度并保留收起动画', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _baseController();
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+
+    final handle = find.byKey(const ValueKey('sidebar-resize-handle'));
+    expect(handle, findsOneWidget);
+    await tester.drag(handle, const Offset(100, 0));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      420,
+    );
+
+    await tester.drag(handle, const Offset(500, 0));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      480,
+    );
+
+    await tester.drag(handle, const Offset(-500, 0));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      240,
+    );
+
+    await tester.tap(find.byTooltip('收起侧边栏'));
+    await tester.pumpAndSettle();
+    expect(handle, findsNothing);
+    await tester.tap(find.byTooltip('展开侧边栏'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      240,
+    );
+  });
+
+  testWidgets('窄窗口下会话标题和副标题不会撑破顶栏', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(720, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _baseController();
+    addTearDown(controller.dispose);
+    controller.chats = const [
+      ChatSummary(
+        chatId: 'chat-1',
+        peerDeviceId: 'peer-1',
+        displayName: '这是一个非常长的原始联系人名称',
+        state: ChatSessionState.active,
+        sessionId: 'session-1',
+      ),
+    ];
+    controller.selectedChatId = 'chat-1';
+    controller.peerRemarks = {'peer-1': '这是一个非常长的联系人备注名称'};
+
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+    await tester.drag(
+      find.byKey(const ValueKey('sidebar-resize-handle')),
+      const Offset(160, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      480,
     );
   });
 

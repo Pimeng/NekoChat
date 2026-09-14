@@ -76,14 +76,19 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> {
-  static const _sidebarWidth = 320.0;
+  static const _defaultSidebarWidth = 320.0;
+  static const _minimumSidebarWidth = 240.0;
+  static const _maximumSidebarWidth = 480.0;
+  static const _sidebarResizeHandleWidth = 12.0;
   static const _sidebarAnimationDuration = Duration(milliseconds: 240);
 
   final _search = TextEditingController();
   final Map<String, TextEditingController> _composers = {};
   final Map<String, List<PendingAttachment>> _pendingAttachments = {};
+  double _sidebarWidth = _defaultSidebarWidth;
   bool _sidebarVisible = true;
   bool _sidebarMounted = true;
+  bool _resizingSidebar = false;
 
   TextEditingController _composerFor(String conversationId) =>
       _composers.putIfAbsent(conversationId, TextEditingController.new);
@@ -100,6 +105,24 @@ class _MainShellState extends State<MainShell> {
         _sidebarVisible = true;
       }
     });
+  }
+
+  void _startResizingSidebar(DragStartDetails details) {
+    setState(() => _resizingSidebar = true);
+  }
+
+  void _resizeSidebar(DragUpdateDetails details) {
+    setState(() {
+      _sidebarWidth = (_sidebarWidth + details.delta.dx).clamp(
+        _minimumSidebarWidth,
+        _maximumSidebarWidth,
+      );
+    });
+  }
+
+  void _stopResizingSidebar([DragEndDetails? details]) {
+    if (!_resizingSidebar) return;
+    setState(() => _resizingSidebar = false);
   }
 
   @override
@@ -123,7 +146,9 @@ class _MainShellState extends State<MainShell> {
                 AnimatedContainer(
                   key: const ValueKey('sidebar-animation'),
                   width: _sidebarVisible ? _sidebarWidth : 0,
-                  duration: _sidebarAnimationDuration,
+                  duration: _resizingSidebar
+                      ? Duration.zero
+                      : _sidebarAnimationDuration,
                   curve: Curves.easeInOutCubic,
                   onEnd: () {
                     if (!_sidebarVisible && _sidebarMounted) {
@@ -143,7 +168,9 @@ class _MainShellState extends State<MainShell> {
                 ),
                 AnimatedContainer(
                   width: _sidebarVisible ? 1 : 0,
-                  duration: _sidebarAnimationDuration,
+                  duration: _resizingSidebar
+                      ? Duration.zero
+                      : _sidebarAnimationDuration,
                   curve: Curves.easeInOutCubic,
                   color: Theme.of(context).dividerColor,
                 ),
@@ -170,6 +197,27 @@ class _MainShellState extends State<MainShell> {
                 ),
               ],
             ),
+            if (_sidebarVisible)
+              Positioned(
+                key: const ValueKey('sidebar-resize-handle'),
+                top: 0,
+                bottom: 0,
+                left: _sidebarWidth - (_sidebarResizeHandleWidth - 1) / 2,
+                width: _sidebarResizeHandleWidth,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeColumn,
+                  child: Semantics(
+                    label: '调整侧边栏宽度',
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragStart: _startResizingSidebar,
+                      onHorizontalDragUpdate: _resizeSidebar,
+                      onHorizontalDragEnd: _stopResizingSidebar,
+                      onHorizontalDragCancel: _stopResizingSidebar,
+                    ),
+                  ),
+                ),
+              ),
             if (controller.topRightMessage != null)
               Positioned(
                 top: 14,
@@ -2162,6 +2210,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
                   children: [
                     Text(
                       widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 19,
                         fontWeight: FontWeight.w700,
@@ -2169,6 +2219,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
                     ),
                     Text(
                       widget.subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ],
