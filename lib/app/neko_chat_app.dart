@@ -9,6 +9,20 @@ import '../features/chat/main_shell.dart';
 import '../features/onboarding/auth_page.dart';
 import 'app_controller.dart';
 
+ThemeData buildNekoChatTheme() => ThemeData(
+  useMaterial3: true,
+  fontFamily: 'LXGWWenKai',
+  colorScheme: ColorScheme.fromSeed(
+    seedColor: const Color(0xff4666e5),
+    brightness: Brightness.light,
+  ),
+  scaffoldBackgroundColor: const Color(0xfff7f8fc),
+  inputDecorationTheme: const InputDecorationTheme(
+    border: OutlineInputBorder(),
+  ),
+  cardTheme: const CardThemeData(margin: EdgeInsets.zero),
+);
+
 class NekoChatApp extends StatefulWidget {
   const NekoChatApp({super.key, this.singleInstanceService});
 
@@ -69,18 +83,7 @@ class _NekoChatAppState extends State<NekoChatApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'NekoChat 局域网聊天',
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xff4666e5),
-          brightness: Brightness.light,
-        ),
-        scaffoldBackgroundColor: const Color(0xfff7f8fc),
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(),
-        ),
-        cardTheme: const CardThemeData(margin: EdgeInsets.zero),
-      ),
+      theme: buildNekoChatTheme(),
       home: AnimatedBuilder(
         animation: controller,
         builder: (context, _) => switch (controller.stage) {

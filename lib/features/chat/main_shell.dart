@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
@@ -284,6 +285,10 @@ class _MainShellState extends State<MainShell> {
             attachments: attachments,
           ),
           onPickAttachments: controller.pickAttachments,
+          onDropFiles: (paths) => controller.sendDroppedFiles(
+            conversationId: conversationId,
+            filePaths: paths,
+          ),
           onReadClipboardAttachments: controller.readClipboardAttachments,
           onOpenAttachment: controller.openAttachment,
           onOpenAttachmentFolder: controller.openAttachmentFolder,
@@ -388,6 +393,10 @@ class _MainShellState extends State<MainShell> {
             attachments: attachments,
           ),
           onPickAttachments: controller.pickAttachments,
+          onDropFiles: (paths) => controller.sendDroppedFiles(
+            conversationId: conversationId,
+            filePaths: paths,
+          ),
           onReadClipboardAttachments: controller.readClipboardAttachments,
           onOpenAttachment: controller.openAttachment,
           onOpenAttachmentFolder: controller.openAttachmentFolder,
@@ -498,7 +507,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   Future<void> _showProfileEditor(AppController controller) async {
-    final name = TextEditingController(text: controller.identity!.displayName);
+    var displayName = controller.identity!.displayName;
     String? errorText;
     var saving = false;
     await showDialog<void>(
@@ -559,8 +568,8 @@ class _MainShellState extends State<MainShell> {
                   ],
                 ),
                 const SizedBox(height: 18),
-                TextField(
-                  controller: name,
+                TextFormField(
+                  initialValue: displayName,
                   autofocus: true,
                   maxLength: NetworkConfig.maxDisplayNameLength,
                   decoration: InputDecoration(
@@ -568,12 +577,13 @@ class _MainShellState extends State<MainShell> {
                     prefixIcon: const Icon(Icons.badge_outlined),
                     errorText: errorText,
                   ),
-                  onSubmitted: saving
+                  onChanged: (value) => displayName = value,
+                  onFieldSubmitted: saving
                       ? null
-                      : (_) => _saveProfileName(
+                      : (value) => _saveProfileName(
                           dialogContext,
                           controller,
-                          name.text,
+                          value,
                           setDialogState,
                           (value) => saving = value,
                           (message) => errorText = message,
@@ -600,7 +610,7 @@ class _MainShellState extends State<MainShell> {
                   : () => _saveProfileName(
                       dialogContext,
                       controller,
-                      name.text,
+                      displayName,
                       setDialogState,
                       (value) => saving = value,
                       (message) => errorText = message,
@@ -616,7 +626,6 @@ class _MainShellState extends State<MainShell> {
         ),
       ),
     );
-    name.dispose();
   }
 
   Future<void> _saveProfileName(
@@ -671,7 +680,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   Future<void> _showCreateGroup(AppController controller) async {
-    final name = TextEditingController();
+    var name = '';
     final available = controller.peers
         .where((peer) => peer.online && peer.trusted)
         .toList();
@@ -687,11 +696,11 @@ class _MainShellState extends State<MainShell> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                TextField(
-                  controller: name,
+                TextFormField(
                   autofocus: true,
                   maxLength: 40,
                   decoration: const InputDecoration(labelText: '群名称'),
+                  onChanged: (value) => name = value,
                 ),
                 const SizedBox(height: 10),
                 const Text('邀请已验证且在线的设备'),
@@ -742,14 +751,13 @@ class _MainShellState extends State<MainShell> {
         ),
       ),
     );
-    if (create == true && name.text.trim().isNotEmpty) {
+    if (create == true && name.trim().isNotEmpty) {
       final group = await controller.createGroup(
-        name.text,
+        name,
         available.where((peer) => selected.contains(peer.deviceId)).toList(),
       );
       await controller.selectGroup(group.groupId);
     }
-    name.dispose();
   }
 
   Future<void> _showInviteMembers(
@@ -895,16 +903,17 @@ class _MainShellState extends State<MainShell> {
     AppController controller,
     ChatGroup group,
   ) async {
-    final name = TextEditingController(text: group.name);
+    var name = group.name;
     final accepted = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('修改群名'),
-        content: TextField(
-          controller: name,
+        content: TextFormField(
+          initialValue: name,
           autofocus: true,
           maxLength: 40,
           decoration: const InputDecoration(labelText: '群名称'),
+          onChanged: (value) => name = value,
         ),
         actions: [
           TextButton(
@@ -918,8 +927,7 @@ class _MainShellState extends State<MainShell> {
         ],
       ),
     );
-    if (accepted == true) await controller.renameGroup(group, name.text);
-    name.dispose();
+    if (accepted == true) await controller.renameGroup(group, name);
   }
 
   Future<void> _showPeerRemark(
@@ -947,7 +955,7 @@ class _MainShellState extends State<MainShell> {
     required String? currentRemark,
     required Future<void> Function(String value) onSave,
   }) async {
-    final remark = TextEditingController(text: currentRemark);
+    var remark = currentRemark ?? '';
     final accepted = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -960,15 +968,16 @@ class _MainShellState extends State<MainShell> {
             children: [
               Text('原始名称：$originalName'),
               const SizedBox(height: 14),
-              TextField(
-                controller: remark,
+              TextFormField(
+                initialValue: remark,
                 autofocus: true,
                 maxLength: NetworkConfig.maxRemarkLength,
                 decoration: const InputDecoration(
                   labelText: '备注',
                   hintText: '留空即清除备注',
                 ),
-                onSubmitted: (_) => Navigator.pop(dialogContext, true),
+                onChanged: (value) => remark = value,
+                onFieldSubmitted: (_) => Navigator.pop(dialogContext, true),
               ),
               const Text(
                 '备注只保存在本机，不会发送给对方。',
@@ -989,8 +998,7 @@ class _MainShellState extends State<MainShell> {
         ],
       ),
     );
-    if (accepted == true) await onSave(remark.text);
-    remark.dispose();
+    if (accepted == true) await onSave(remark);
   }
 
   Future<void> _confirmLeaveGroup(
@@ -1441,6 +1449,7 @@ class _ConversationPane extends StatefulWidget {
     required this.enabled,
     required this.onSend,
     required this.onPickAttachments,
+    required this.onDropFiles,
     required this.onReadClipboardAttachments,
     required this.onOpenAttachment,
     required this.onOpenAttachmentFolder,
@@ -1476,6 +1485,7 @@ class _ConversationPane extends StatefulWidget {
 
   /// 打开文件选择框 / 读取剪贴板，返回待暂存的附件。
   final Future<List<PendingAttachment>> Function() onPickAttachments;
+  final Future<void> Function(List<String> paths) onDropFiles;
   final Future<List<PendingAttachment>> Function() onReadClipboardAttachments;
   final Future<void> Function(ChatMessage) onOpenAttachment;
   final Future<void> Function(ChatMessage) onOpenAttachmentFolder;
@@ -1513,6 +1523,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
   final FocusNode _composerFocus = FocusNode();
   Timer? _highlightTimer;
   String? _highlightedMessageId;
+  bool _draggingFiles = false;
+  bool _sendingDroppedFiles = false;
 
   /// 图片气泡的自绘右键菜单。
   OverlayEntry? _fallbackMenu;
@@ -1620,6 +1632,33 @@ class _ConversationPaneState extends State<_ConversationPane> {
     _addAttachments(await widget.onPickAttachments());
   }
 
+  /// 文件拖入后不进入待发送区，直接绑定当前会话并按拖入顺序发送。
+  Future<void> _sendDroppedFiles(DropDoneDetails details) async {
+    if (_sendingDroppedFiles || !widget.enabled) return;
+    final paths = [
+      for (final item in details.files)
+        if (item is! DropItemDirectory) item.path,
+    ];
+    if (paths.isEmpty) {
+      if (mounted) setState(() => _draggingFiles = false);
+      return;
+    }
+    setState(() {
+      _draggingFiles = false;
+      _sendingDroppedFiles = true;
+    });
+    try {
+      await widget.onDropFiles(paths);
+    } finally {
+      if (mounted) setState(() => _sendingDroppedFiles = false);
+    }
+  }
+
+  void _setDraggingFiles(bool value) {
+    if (!mounted || _draggingFiles == value || _sendingDroppedFiles) return;
+    setState(() => _draggingFiles = value);
+  }
+
   /// 剪贴板里有附件时只暂存，不插入文字，也不直接发送。
   Future<bool> _pasteAttachments() async {
     final attachments = await widget.onReadClipboardAttachments();
@@ -1720,7 +1759,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
     final messagesById = {
       for (final message in messages) message.messageId: message,
     };
-    return Column(
+    final content = Column(
       children: [
         Container(
           height: 72,
@@ -1891,6 +1930,68 @@ class _ConversationPaneState extends State<_ConversationPane> {
           ),
         ),
       ],
+    );
+    return DropTarget(
+      enable: widget.enabled,
+      onDragEntered: (_) => _setDraggingFiles(true),
+      onDragExited: (_) => _setDraggingFiles(false),
+      onDragDone: (details) => unawaited(_sendDroppedFiles(details)),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          content,
+          if (_draggingFiles || _sendingDroppedFiles)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(
+                  key: const ValueKey('file-drop-overlay'),
+                  color: Theme.of(context).colorScheme.surface
+                      .withValues(alpha: 0.88),
+                  alignment: Alignment.center,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 28,
+                      vertical: 22,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.primary,
+                        width: 2,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _sendingDroppedFiles
+                              ? Icons.upload_file
+                              : Icons.file_download_outlined,
+                          size: 44,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          _sendingDroppedFiles ? '正在发送文件…' : '松开发送文件',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        if (!_sendingDroppedFiles) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            '支持同时拖入多个文件，将立即发送',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

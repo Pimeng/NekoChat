@@ -6,6 +6,8 @@ import 'package:neko_chat/features/settings/settings_page.dart';
 
 void main() {
   testWidgets('文件接收设置显示大小上限并校验输入范围', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(373, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = AppController();
     await tester.pumpWidget(
       MaterialApp(home: SettingsPage(controller: controller)),
@@ -15,7 +17,9 @@ void main() {
     expect(find.text('10 MB'), findsOneWidget);
     await tester.tap(find.text('自动接收大小上限'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField), '0');
+    final helper = tester.widget<Text>(find.text('可设置 1～512 MB，仅影响是否自动接收'));
+    expect(helper.maxLines, 2);
+    await tester.enterText(find.byType(TextFormField), '0');
     await tester.tap(find.text('保存'));
     await tester.pump();
     expect(find.text('请输入 1～512 之间的整数'), findsOneWidget);

@@ -17,6 +17,27 @@ AppController _baseController() {
   return controller;
 }
 
+class _ProfileSaveController extends AppController {
+  @override
+  Future<void> setDisplayName(String value) async {
+    identity = identity!.copyWith(displayName: value.trim());
+    notifyListeners();
+  }
+}
+
+_ProfileSaveController _profileSaveController() {
+  final now = DateTime.fromMillisecondsSinceEpoch(1000);
+  final controller = _ProfileSaveController();
+  controller.stage = AppStage.ready;
+  controller.identity = LocalIdentity(
+    deviceId: 'local-device',
+    displayName: '我',
+    createdAt: now,
+    lastLoginAt: now,
+  );
+  return controller;
+}
+
 void main() {
   testWidgets('点击左上角个人区域可编辑头像和昵称', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 720));
@@ -31,8 +52,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('编辑个人资料'), findsOneWidget);
     expect(find.text('选择头像'), findsOneWidget);
-    expect(find.widgetWithText(TextField, '昵称'), findsOneWidget);
+    expect(find.widgetWithText(TextFormField, '昵称'), findsOneWidget);
     expect(find.text('保存'), findsOneWidget);
+  });
+
+  testWidgets('保存个人资料后退出动画不会继续使用已销毁的输入控制器', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _profileSaveController();
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+
+    await tester.tap(find.byTooltip('编辑头像和昵称'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField), '新昵称');
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(controller.identity!.displayName, '新昵称');
+    expect(find.text('编辑个人资料'), findsNothing);
   });
 
   testWidgets('私聊优先显示人员备注，并保留原始昵称', (tester) async {

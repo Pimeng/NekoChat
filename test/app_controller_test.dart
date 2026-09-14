@@ -824,6 +824,54 @@ void main() {
     expect(setup.controller.messages, isEmpty);
   });
 
+  test('拖放多个文件会忽略目录和失效路径并按原顺序立即发送', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-drop-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    await activateChat(setup);
+    final chat = setup.controller.chats.single;
+    await setup.controller.selectChat(chat.chatId);
+    setPeerOnline(setup);
+
+    final droppedDirectory = Directory(
+      '${directory.path}${Platform.pathSeparator}资料夹',
+    );
+    await droppedDirectory.create();
+    final first = File('${directory.path}${Platform.pathSeparator}一.txt');
+    final second = File('${directory.path}${Platform.pathSeparator}二.pdf');
+    await first.writeAsString('first');
+    await second.writeAsBytes(List<int>.filled(16, 2));
+
+    await setup.controller.sendDroppedFiles(
+      conversationId: chat.chatId,
+      filePaths: [
+        droppedDirectory.path,
+        first.path,
+        '${directory.path}${Platform.pathSeparator}不存在.txt',
+        second.path,
+      ],
+    );
+    await _waitUntil(() => setup.controller.messages.length == 2);
+
+    expect(setup.controller.messages.map((message) => message.fileName), [
+      '一.txt',
+      '二.pdf',
+    ]);
+  });
+
   test('引用附件时用文件名作为摘要，并压缩空白', () {
     ChatMessage message({
       required MessageKind kind,

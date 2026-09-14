@@ -168,30 +168,34 @@ class SettingsPage extends StatelessWidget {
   );
 
   Future<void> _showAutoReceiveLimitDialog(BuildContext context) async {
-    final input = TextEditingController(
-      text: _formatMegabytes(controller.autoReceiveFileLimitBytes).toString(),
-    );
+    var input = _formatMegabytes(controller.autoReceiveFileLimitBytes)
+        .toString();
     String? errorText;
     final megabytes = await showDialog<int>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: const Text('自动接收大小上限'),
-          content: TextField(
-            controller: input,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: InputDecoration(
-              labelText: '文件大小',
-              suffixText: 'MB',
-              helperText: '可设置 1～512 MB，仅影响是否自动接收',
-              errorText: errorText,
-            ),
-            onSubmitted: (_) => _submitAutoReceiveLimit(
-              dialogContext,
-              input.text,
-              (message) => setDialogState(() => errorText = message),
+          content: SizedBox(
+            width: 360,
+            child: TextFormField(
+              initialValue: input,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: InputDecoration(
+                labelText: '文件大小',
+                suffixText: 'MB',
+                helperText: '可设置 1～512 MB，仅影响是否自动接收',
+                helperMaxLines: 2,
+                errorText: errorText,
+              ),
+              onChanged: (value) => input = value,
+              onFieldSubmitted: (value) => _submitAutoReceiveLimit(
+                dialogContext,
+                value,
+                (message) => setDialogState(() => errorText = message),
+              ),
             ),
           ),
           actions: [
@@ -202,7 +206,7 @@ class SettingsPage extends StatelessWidget {
             FilledButton(
               onPressed: () => _submitAutoReceiveLimit(
                 dialogContext,
-                input.text,
+                input,
                 (message) => setDialogState(() => errorText = message),
               ),
               child: const Text('保存'),
@@ -211,7 +215,6 @@ class SettingsPage extends StatelessWidget {
         ),
       ),
     );
-    input.dispose();
     if (megabytes == null) return;
     await controller.setAutoReceiveFileLimitBytes(megabytes * 1024 * 1024);
   }

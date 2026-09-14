@@ -716,6 +716,28 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  /// 把从系统文件管理器拖入的文件立即发送到拖放发生时的会话。
+  ///
+  /// Windows 的拖放事件不会区分文件与目录，因此这里再次检查实体类型；
+  /// 目录和已经失效的路径会被忽略，多个有效文件保持资源管理器给出的顺序。
+  Future<void> sendDroppedFiles({
+    required String conversationId,
+    required Iterable<String> filePaths,
+  }) async {
+    final attachments = <PendingAttachment>[];
+    for (final filePath in filePaths) {
+      if (!await FileSystemEntity.isFile(filePath)) continue;
+      final attachment = await pendingAttachment(filePath);
+      if (attachment != null) attachments.add(attachment);
+    }
+    if (attachments.isEmpty) return;
+    await sendMessageWithAttachments(
+      conversationId: conversationId,
+      content: '',
+      attachments: attachments,
+    );
+  }
+
   /// 发送输入框里的文字与附件：文字先发（引用挂在文字上），附件按顺序紧跟其后。
   ///
   /// 没有文字时引用会落到第一个附件上，这样「引用 + 图片」也能成立。
