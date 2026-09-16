@@ -82,6 +82,14 @@ class AppController extends ChangeNotifier {
   LocalIdentity? identity;
   String? profileAvatarPath;
 
+  /// 本机头像的 SHA-256，用于向其他设备声明头像是否变化。
+  String? profileAvatarHash;
+
+  /// 局域网内其他设备同步过来的头像本地路径，按 deviceId 索引。
+  final Map<String, String> peerAvatarPaths = {};
+  final Map<String, String> _peerAvatarHashes = {};
+  final Set<String> _avatarDownloadsInFlight = {};
+
   /// 当前数据目录。数据库、解锁密钥和已接收的附件都在这里，整体拷贝即可搬走。
   String? dataDirectory;
   Map<String, TrustedPeer> trustedPeers = {};
@@ -206,6 +214,11 @@ class AppController extends ChangeNotifier {
       final resolved = _database.attachmentPaths.decode(storedAvatarPath);
       if (await File(resolved).exists()) profileAvatarPath = resolved;
     }
+    profileAvatarHash = profileAvatarPath == null
+        ? null
+        : await sha256File(File(profileAvatarPath!));
+    await _transport.setLocalAvatar(profileAvatarPath);
+    await _loadCachedPeerAvatars();
     trustedPeers = await _database.loadTrustedPeers();
     chats = await _database.loadChats();
     await _recoverInterruptedRequests();
@@ -230,6 +243,7 @@ class AppController extends ChangeNotifier {
       trustLookup: (id) => trustedPeers[id],
       onPeersChanged: _handlePeersChanged,
     );
+    _discovery!.updateAvatarHash(profileAvatarHash);
     if (lanDiscoveryEnabled) await _discovery!.start();
     errorMessage = null;
     dataDirectory = _database.directoryPath;
@@ -283,6 +297,9 @@ class AppController extends ChangeNotifier {
       _database.attachmentPaths.encode(target.path),
     );
     profileAvatarPath = target.path;
+    profileAvatarHash = hash;
+    await _transport.setLocalAvatar(target.path);
+    _discovery?.updateAvatarHash(hash);
     await _deletePreviousProfileAvatar(previous, except: target.path);
     notifyListeners();
   }
@@ -291,6 +308,9 @@ class AppController extends ChangeNotifier {
     final previous = profileAvatarPath;
     await _database.saveSetting(_profileAvatarSetting, '');
     profileAvatarPath = null;
+    profileAvatarHash = null;
+    await _transport.setLocalAvatar(null);
+    _discovery?.updateAvatarHash(null);
     await _deletePreviousProfileAvatar(previous);
     notifyListeners();
   }
@@ -306,6 +326,63 @@ class AppController extends ChangeNotifier {
     }
     final file = File(path);
     if (await file.exists()) await file.delete();
+  }
+
+  /// 启动时读取数据目录里已经同步过的对端头像，避免每次上线都重新下载。
+  Future<void> _loadCachedPeerAvatars() async {
+    final base = _database.directoryPath;
+    if (base == null) return;
+    final directory = Directory(p.join(base, 'avatars'));
+    if (!await directory.exists()) return;
+    await for (final entity in directory.list()) {
+      if (entity is! File) continue;
+      final name = p.basename(entity.path);
+      if (name.endsWith('.part')) continue;
+      final separator = name.indexOf('_');
+      if (separator <= 0) continue;
+      final deviceId = name.substring(0, separator);
+      var hash = name.substring(separator + 1);
+      final dot = hash.indexOf('.');
+      if (dot >= 0) hash = hash.substring(0, dot);
+      if (!isSha256Hex(hash)) continue;
+      peerAvatarPaths[deviceId] = entity.path;
+      _peerAvatarHashes[deviceId] = hash;
+    }
+  }
+
+  /// 对端头像本地路径；未同步成功时返回 null，由界面回退到首字母头像。
+  String? peerAvatarPath(String deviceId) => peerAvatarPaths[deviceId];
+
+  /// 发现对端头像哈希变化时按需下载，失败会在下一次公告时重试。
+  Future<void> _syncPeerAvatar(DiscoveredPeer peer) async {
+    final hash = peer.avatarHash;
+    if (hash == null) {
+      if (peerAvatarPaths.remove(peer.deviceId) != null) {
+        _peerAvatarHashes.remove(peer.deviceId);
+        notifyListeners();
+      }
+      return;
+    }
+    if (_peerAvatarHashes[peer.deviceId] == hash &&
+        peerAvatarPaths.containsKey(peer.deviceId)) {
+      return;
+    }
+    if (!_avatarDownloadsInFlight.add(peer.deviceId)) return;
+    try {
+      final path = await _transport.downloadAvatar(
+        ip: peer.ip,
+        port: peer.port,
+        deviceId: peer.deviceId,
+        expectedHash: hash,
+      );
+      peerAvatarPaths[peer.deviceId] = path;
+      _peerAvatarHashes[peer.deviceId] = hash;
+      notifyListeners();
+    } on Object catch (error, stack) {
+      _log.fine('同步 ${peer.deviceId} 的头像失败', error, stack);
+    } finally {
+      _avatarDownloadsInFlight.remove(peer.deviceId);
+    }
   }
 
   Future<void> setDisplayName(String value) async {
@@ -1177,14 +1254,23 @@ class AppController extends ChangeNotifier {
     return group;
   }
 
+  /// 邀请一个已验证且在线的设备加入群聊。
+  ///
+  /// Owner 与普通成员都可以邀请，因此邀请消息里同时携带真实的群 Owner 信息和
+  /// 实际发出邀请的人，接收方据此显示邀请来源并按 Owner 建立群组织关系。
   Future<void> inviteToGroup(ChatGroup group, DiscoveredPeer peer) async {
-    if (group.ownerDeviceId != identity!.deviceId || !peer.online) return;
+    if (!peer.online || peer.deviceId == identity!.deviceId) return;
+    final members = await _database.loadGroupMembers(group.groupId);
+    if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
+    if (members.any((member) => member.deviceId == peer.deviceId)) return;
     final inviteId = _uuid.v4();
     _outgoingGroupInvites[inviteId] = (
       groupId: group.groupId,
       peerDeviceId: peer.deviceId,
     );
-    final members = await _database.loadGroupMembers(group.groupId);
+    final owner = members
+        .where((member) => member.deviceId == group.ownerDeviceId)
+        .firstOrNull;
     await _transport.send(
       peer.ip,
       peer.port,
@@ -1194,8 +1280,10 @@ class AppController extends ChangeNotifier {
           'inviteId': inviteId,
           'groupId': group.groupId,
           'groupName': group.name,
-          'ownerDeviceId': identity!.deviceId,
-          'ownerDisplayName': identity!.displayName,
+          'ownerDeviceId': group.ownerDeviceId,
+          'ownerDisplayName': owner?.displayName ?? identity!.displayName,
+          'inviterDeviceId': identity!.deviceId,
+          'inviterDisplayName': identity!.displayName,
           'members': members
               .map(
                 (member) => {
@@ -1732,11 +1820,13 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  /// Owner 把最新成员名单广播给所有成员。
+  /// 把最新成员名单广播给所有成员。Owner 与受邀成员都可以触发，让其他成员
+  /// 知道新成员加入；接收方会校验发送者确实是群成员并保留 Owner。
   Future<void> _broadcastGroupMembers(String groupId) async {
     final group = groups.where((value) => value.groupId == groupId).firstOrNull;
-    if (group == null || group.ownerDeviceId != identity!.deviceId) return;
+    if (group == null) return;
     final members = await _database.loadGroupMembers(groupId);
+    if (!members.any((member) => member.deviceId == identity!.deviceId)) return;
     await _fanOutGroupControl(groupId, members, 'members', {
       'members': [
         for (final member in members)
@@ -2407,17 +2497,23 @@ class AppController extends ChangeNotifier {
     final groupName = payload['groupName'];
     final ownerDeviceId = payload['ownerDeviceId'];
     final ownerDisplayName = payload['ownerDisplayName'];
+    // 旧版本只发送 Owner 信息，此时邀请人视为 Owner。
+    final inviterDeviceId = payload['inviterDeviceId'] ?? ownerDeviceId;
+    final inviterDisplayName = payload['inviterDisplayName'] ?? ownerDisplayName;
     if (inviteId is! String ||
         groupId is! String ||
         groupName is! String ||
         ownerDeviceId is! String ||
         ownerDisplayName is! String ||
+        inviterDeviceId is! String ||
+        inviterDisplayName is! String ||
         !isValidGroupName(groupName) ||
-        !isValidDisplayName(ownerDisplayName)) {
+        !isValidDisplayName(ownerDisplayName) ||
+        !isValidDisplayName(inviterDisplayName)) {
       return;
     }
-    if (trustedPeers[ownerDeviceId] == null ||
-        trustedPeers[ownerDeviceId]!.blocked ||
+    if (trustedPeers[inviterDeviceId] == null ||
+        trustedPeers[inviterDeviceId]!.blocked ||
         groupInvitations.containsKey(inviteId)) {
       return;
     }
@@ -2427,6 +2523,8 @@ class AppController extends ChangeNotifier {
       groupName: groupName,
       ownerDeviceId: ownerDeviceId,
       ownerDisplayName: ownerDisplayName,
+      inviterDeviceId: inviterDeviceId,
+      inviterDisplayName: inviterDisplayName,
       ip: packet.remoteAddress,
     );
     _pendingGroupPayloads[inviteId] = payload;
@@ -2436,7 +2534,7 @@ class AppController extends ChangeNotifier {
         identifier: 'group-invite:$inviteId',
         title: '新的群聊邀请',
         body:
-            '${peerDisplayName(ownerDeviceId, ownerDisplayName)} '
+            '${peerDisplayName(inviterDeviceId, inviterDisplayName)} '
             '邀请你加入“${groupDisplayName(groupId, groupName)}”',
         onClick: () {},
       );
@@ -2712,7 +2810,8 @@ class AppController extends ChangeNotifier {
         if (target != senderDeviceId) return;
         await _database.removeGroupMember(groupId, senderDeviceId);
       case 'members':
-        if (senderDeviceId != group.ownerDeviceId) return;
+        // Owner 或任意成员都可以同步成员名单（成员邀请新人后需要让其他人知道），
+        // 但发送者必须已在名单里，且名单必须保留群 Owner。
         final rawMembers = payload['members'];
         if (rawMembers is! List) return;
         final incoming = <GroupMember>[];
@@ -2739,7 +2838,8 @@ class AppController extends ChangeNotifier {
           );
         }
         if (incoming.isEmpty ||
-            !incoming.any((member) => member.deviceId == group.ownerDeviceId)) {
+            !incoming.any((member) => member.deviceId == group.ownerDeviceId) ||
+            !incoming.any((member) => member.deviceId == senderDeviceId)) {
           return;
         }
         if (!incoming.any((member) => member.deviceId == identity!.deviceId)) {
@@ -2916,6 +3016,7 @@ class AppController extends ChangeNotifier {
         _historySyncedDevices.remove(peer.deviceId);
         continue;
       }
+      unawaited(_syncPeerAvatar(peer));
       if (previouslyOnline[peer.deviceId] == true) continue;
       if (_historySyncedDevices.add(peer.deviceId)) {
         unawaited(_syncGroupHistoryWith(peer));

@@ -5,7 +5,8 @@ NekoChat 是面向 Windows 机房的 Flutter 局域网聊天工具。它不依�
 ## 当前 MVP
 
 - 首次启动设置昵称、本地密码，并永久保存 UUID v4 `deviceId`
-- 左上角可更换本地自定义头像、重新设置昵称；昵称变更会立即重新广播
+- 左上角可更换本地自定义头像、重新设置昵称；昵称与头像变更会立即重新广播，其他设备按头像哈希按需拉取，离线设备上线后补同步
+- 独立会话窗口支持把系统文件直接拖入并发送（Windows runner 为每个视图单独注册 OLE 拖放目标）
 - PBKDF2-HMAC-SHA256 + AES-256-GCM 封装随机数据库密钥；密码错误不会覆盖原身份
 - UDP Multicast + Broadcast 自动发现，逐个 IPv4 网卡收发，3 秒公告、10 秒离线
 - 发现来源 IP 只取 `Datagram.address`，聊天来源 IP 只取 Socket 的 `remoteAddress`
@@ -23,7 +24,7 @@ NekoChat 是面向 Windows 机房的 Flutter 局域网聊天工具。它不依�
 - Windows 系统通知：聊天邀请、邀请接受、私聊消息和群聊消息；点击可回到对应会话，侧栏可发送测试通知
 - 会话关闭和黑名单
 - 群创建、邀请确认、在线成员 fan-out 消息
-- Owner 邀请/移除成员、改名、解散；Member 退出
+- Owner 邀请/移除成员、改名、解散；Member 也可邀请他人入群、退出；新成员由邀请者把最新名单同步给在线成员
 - 协议编解码、验证码、密码密钥封装和会话状态机测试
 
 ## 技术栈
@@ -117,6 +118,7 @@ requestId | requesterDeviceId | recipientDeviceId
 - `database-key.json`：PBKDF2-HMAC-SHA256 派生 KEK、AES-256-GCM 封装后的数据库密钥
 - `neko_chat.db`：身份、信任、会话、消息和群组
 - `received_files/`、`received_images/`：接收到的附件
+- `profile/`、`avatars/`：本机头像与其他设备同步过来的头像
 
 把这个文件夹连同程序一起拷到别的电脑即可带走全部数据。侧栏底部的“数据文件夹”会显示当前路径，点击可直接打开该目录。文件夹不能叫 `data`，那是 Flutter 存放 `flutter_assets` 的目录。
 

@@ -750,6 +750,194 @@ void main() {
     expect(await File(secondStored).exists(), isFalse);
   });
 
+  test('设置头像后广播哈希并按需同步对端头像', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-avatar-sync-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+
+    final avatar = File('${directory.path}${Platform.pathSeparator}me.png');
+    await avatar.writeAsBytes([1, 2, 3, 4]);
+    await setup.controller.setProfileAvatarFromPath(avatar.path);
+
+    expect(setup.controller.profileAvatarHash, isNotNull);
+    expect(setup.discovery.avatarHash, setup.controller.profileAvatarHash);
+    expect(setup.transport.localAvatarPath, setup.controller.profileAvatarPath);
+
+    final remote = File('${directory.path}${Platform.pathSeparator}peer.png');
+    await remote.writeAsBytes([9, 9, 9]);
+    setup.transport.avatarDownloader = (deviceId, hash) async => remote.path;
+    final peerHash = 'b' * 64;
+    final peer = DiscoveredPeer(
+      deviceId: 'peer-device',
+      displayName: '李四',
+      ip: '192.168.1.20',
+      port: 23333,
+      lastSeen: DateTime.now(),
+      trusted: true,
+      online: true,
+      avatarHash: peerHash,
+    );
+    setup.discovery.emit([peer]);
+
+    await _waitUntil(
+      () => setup.controller.peerAvatarPath('peer-device') == remote.path,
+    );
+    expect(setup.transport.avatarDownloads, hasLength(1));
+    expect(setup.transport.avatarDownloads.single.deviceId, 'peer-device');
+    expect(setup.transport.avatarDownloads.single.hash, peerHash);
+
+    // 哈希不变时不会重复下载。
+    setup.discovery.emit([peer]);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(setup.transport.avatarDownloads, hasLength(1));
+  });
+
+  test('群成员也能邀请新成员并同步真实 Owner 信息', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-member-invite-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final myDeviceId = setup.controller.identity!.deviceId;
+    final group = ChatGroup(
+      groupId: 'group-member',
+      name: '同学群',
+      ownerDeviceId: 'owner-device',
+      createdAt: DateTime.now(),
+    );
+    await setup.database.saveGroup(group, [
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: 'owner-device',
+        displayName: '群主',
+        role: GroupRole.owner,
+      ),
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: myDeviceId,
+        displayName: '本机',
+        role: GroupRole.member,
+      ),
+    ]);
+    setup.controller.groups = [group];
+    setPeerOnline(setup);
+
+    await setup.controller.inviteToGroup(
+      group,
+      setup.controller.peers.single,
+    );
+
+    final invite = setup.transport.sentEnvelopes.lastWhere(
+      (envelope) => envelope.type == MessageType.groupInvite,
+    );
+    expect(invite.payload['ownerDeviceId'], 'owner-device');
+    expect(invite.payload['ownerDisplayName'], '群主');
+    expect(invite.payload['inviterDeviceId'], myDeviceId);
+    expect(invite.payload['inviterDisplayName'], '本机');
+  });
+
+  test('成员同步成员名单时保留 Owner，且非成员发送的名单被忽略', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-member-sync-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final myDeviceId = setup.controller.identity!.deviceId;
+    final group = ChatGroup(
+      groupId: 'group-sync',
+      name: '同步群',
+      ownerDeviceId: 'owner-device',
+      createdAt: DateTime.now(),
+    );
+    await setup.database.saveGroup(group, [
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: 'owner-device',
+        displayName: '群主',
+        role: GroupRole.owner,
+      ),
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: myDeviceId,
+        displayName: '本机',
+        role: GroupRole.member,
+      ),
+    ]);
+    setup.controller.groups = [group];
+
+    setup.transport.emit(
+      IncomingPacket(
+        envelope: ProtocolEnvelope(
+          type: MessageType.groupUpdate,
+          payload: {
+            'groupId': 'group-sync',
+            'action': 'members',
+            'senderDeviceId': 'owner-device',
+            'members': [
+              {
+                'deviceId': 'owner-device',
+                'displayName': '群主',
+                'role': 'owner',
+              },
+              {
+                'deviceId': myDeviceId,
+                'displayName': '本机',
+                'role': 'member',
+              },
+              {
+                'deviceId': 'new-member',
+                'displayName': '新同学',
+                'role': 'member',
+              },
+            ],
+          },
+        ),
+        remoteAddress: '192.168.1.30',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    final members = await setup.database.loadGroupMembers('group-sync');
+    expect(members.any((member) => member.deviceId == 'new-member'), isTrue);
+    expect(
+      members
+          .firstWhere((member) => member.deviceId == 'owner-device')
+          .role,
+      GroupRole.owner,
+    );
+  });
+
   test('会话未打开时消息计为未读且不进入当前列表', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-unseen-',
@@ -1307,6 +1495,27 @@ class _FakeTransport implements ChatTransport {
     String? mimeType,
     String? contentHash,
   }) async => throw UnimplementedError();
+
+  String? localAvatarPath;
+  final List<({String deviceId, String hash})> avatarDownloads = [];
+  Future<String> Function(String deviceId, String hash)? avatarDownloader;
+
+  @override
+  Future<void> setLocalAvatar(String? filePath) async =>
+      localAvatarPath = filePath;
+
+  @override
+  Future<String> downloadAvatar({
+    required String ip,
+    required int port,
+    required String deviceId,
+    required String expectedHash,
+  }) async {
+    avatarDownloads.add((deviceId: deviceId, hash: expectedHash));
+    final downloader = avatarDownloader;
+    if (downloader == null) throw UnimplementedError();
+    return downloader(deviceId, expectedHash);
+  }
 
   @override
   Future<void> stop() async {}

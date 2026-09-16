@@ -91,5 +91,23 @@ void main() {
       ),
       isTrue,
     );
+
+    final avatarHash = 'a' * 64;
+    a.updateAvatarHash(avatarHash);
+    final avatarDeadline = DateTime.now().add(const Duration(seconds: 3));
+    while (!foundB.any(
+          (peer) =>
+              peer.deviceId == 'discovery-a' && peer.avatarHash == avatarHash,
+        ) &&
+        DateTime.now().isBefore(avatarDeadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(
+      foundB.any(
+        (peer) =>
+            peer.deviceId == 'discovery-a' && peer.avatarHash == avatarHash,
+      ),
+      isTrue,
+    );
   });
 }

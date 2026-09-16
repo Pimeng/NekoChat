@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:logging/logging.dart';
 
 import '../config/network_config.dart';
+import '../files/content_hash.dart';
 import '../models/models.dart';
 import '../protocol/protocol.dart';
 
@@ -32,6 +33,7 @@ class DiscoveryService {
     required this.onPeersChanged,
     NetworkInterfacesProvider? interfacesProvider,
     this.multicastLoopback = false,
+    this.avatarHash,
   }) : _interfacesProvider =
            interfacesProvider ??
            (() => NetworkInterface.list(
@@ -41,6 +43,9 @@ class DiscoveryService {
            ));
 
   LocalIdentity identity;
+
+  /// 本机当前头像的 SHA-256，随发现公告一起广播给局域网内的其他设备。
+  String? avatarHash;
   final TrustLookup trustLookup;
   final void Function(List<DiscoveredPeer> peers) onPeersChanged;
   final NetworkInterfacesProvider _interfacesProvider;
@@ -136,6 +141,8 @@ class DiscoveryService {
             'deviceId': identity.deviceId,
             'displayName': identity.displayName,
             'port': NetworkConfig.chatPort,
+            if (avatarHash != null && avatarHash!.isNotEmpty)
+              'avatarHash': avatarHash,
           },
         ),
       ),
@@ -184,6 +191,7 @@ class DiscoveryService {
         final deviceId = payload['deviceId'];
         final displayName = payload['displayName'];
         final port = payload['port'];
+        final rawAvatarHash = payload['avatarHash'];
         if (deviceId is! String ||
             deviceId.isEmpty ||
             displayName is! String ||
@@ -193,6 +201,9 @@ class DiscoveryService {
             port > 65535) {
           continue;
         }
+        final avatarHash = rawAvatarHash is String && isSha256Hex(rawAvatarHash)
+            ? rawAvatarHash
+            : null;
         if (deviceId == identity.deviceId) continue;
         final observedIp = datagram.address.address;
         final trusted = trustLookup(deviceId);
@@ -219,6 +230,7 @@ class DiscoveryService {
           locationChanged:
               duplicateIdentity ||
               (trusted != null && trusted.lastKnownIp != observedIp),
+          avatarHash: avatarHash,
         );
         _peers[deviceId] = peer;
         if (existing == null ||
@@ -261,6 +273,14 @@ class DiscoveryService {
   /// 昵称更新后立刻广播新身份，不必等待下一次定时公告。
   void updateIdentity(LocalIdentity value) {
     identity = value;
+    _announce();
+  }
+
+  /// 头像更新后立刻广播新的头像哈希，便于其他设备按需拉取头像。
+  void updateAvatarHash(String? value) {
+    final normalized = value != null && value.isNotEmpty ? value : null;
+    if (avatarHash == normalized) return;
+    avatarHash = normalized;
     _announce();
   }
 

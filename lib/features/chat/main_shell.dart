@@ -12,6 +12,7 @@ import '../../core/protocol/protocol.dart';
 import '../settings/settings_page.dart';
 import 'message_composer.dart';
 import 'mention_autocomplete.dart';
+import 'view_drop_service.dart';
 
 final Map<String, int> _detachedConversationWindowIds = {};
 
@@ -37,9 +38,10 @@ Future<void> openConversationInWindow(
   final title = controller.peerDisplayName(chat.peerDeviceId, chat.displayName);
   try {
     final viewId = await openWindow(
-      (_, _) => _DetachedConversationWindow(
+      (_, publicId) => _DetachedConversationWindow(
         controller: controller,
         conversationId: conversationId,
+        viewId: publicId,
       ),
       options: WindowOptions(
         title: '$title - NekoChat',
@@ -599,12 +601,11 @@ class _MainShellState extends State<MainShell> {
             ];
           },
           actions: [
-            if (group.ownerDeviceId == controller.identity!.deviceId)
-              IconButton(
-                tooltip: '邀请在线成员',
-                onPressed: () => _showInviteMembers(controller, group),
-                icon: const Icon(Icons.person_add_alt_1),
-              ),
+            IconButton(
+              tooltip: '邀请在线成员',
+              onPressed: () => _showInviteMembers(controller, group),
+              icon: const Icon(Icons.person_add_alt_1),
+            ),
             PopupMenuButton<String>(
               tooltip: '群聊操作',
               onSelected: (value) async {
@@ -758,7 +759,7 @@ class _MainShellState extends State<MainShell> {
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    '头像保存在本机数据目录；昵称会同步给局域网内的其他设备。',
+                    '头像与昵称会同步给局域网内的其他设备；对端离线时会在其上线后补同步。',
                     style: TextStyle(fontSize: 12, color: Colors.black54),
                   ),
                 ),
@@ -989,14 +990,11 @@ class _MainShellState extends State<MainShell> {
               children: [
                 for (final member in members)
                   ListTile(
-                    leading: CircleAvatar(
-                      child: Text(
-                        _avatarText(
-                          controller.peerDisplayName(
-                            member.deviceId,
-                            member.displayName,
-                          ),
-                        ),
+                    leading: _NamedAvatar(
+                      imagePath: controller.peerAvatarPath(member.deviceId),
+                      name: controller.peerDisplayName(
+                        member.deviceId,
+                        member.displayName,
                       ),
                     ),
                     title: Text(
@@ -1414,6 +1412,34 @@ class _ProfileAvatar extends StatelessWidget {
   }
 }
 
+/// 对端头像：同步到本地就显示图片，否则回退到昵称首字母。
+class _NamedAvatar extends StatelessWidget {
+  const _NamedAvatar({required this.imagePath, required this.name});
+
+  final String? imagePath;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    const radius = 20.0;
+    final path = imagePath;
+    final fallback = CircleAvatar(
+      radius: radius,
+      child: Text(_avatarText(name)),
+    );
+    if (path == null || !File(path).existsSync()) return fallback;
+    return ClipOval(
+      child: Image.file(
+        File(path),
+        width: radius * 2,
+        height: radius * 2,
+        fit: BoxFit.cover,
+        errorBuilder: (_, _, _) => fallback,
+      ),
+    );
+  }
+}
+
 /// 未读消息徽标，样式参考聊天软件的红色圆角计数。
 class _UnreadBadge extends StatelessWidget {
   const _UnreadBadge({required this.count});
@@ -1510,6 +1536,7 @@ class _UnifiedPeerEntry {
     required this.peer,
     required this.chat,
     required this.trustedPeer,
+    this.avatarPath,
   });
 
   final String deviceId;
@@ -1518,6 +1545,7 @@ class _UnifiedPeerEntry {
   final DiscoveredPeer? peer;
   final ChatSummary? chat;
   final TrustedPeer? trustedPeer;
+  final String? avatarPath;
 }
 
 class _UnifiedPeerTile extends StatelessWidget {
@@ -1549,7 +1577,10 @@ class _UnifiedPeerTile extends StatelessWidget {
         enabled: !blocked && (online || chat != null),
         leading: Stack(
           children: [
-            CircleAvatar(child: Text(_avatarText(entry.displayName))),
+            _NamedAvatar(
+              imagePath: entry.avatarPath,
+              name: entry.displayName,
+            ),
             Positioned(
               right: 0,
               bottom: 0,
@@ -1685,7 +1716,7 @@ class _GroupInviteCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            '${controller.peerDisplayName(invitation.ownerDeviceId, invitation.ownerDisplayName)} '
+            '${controller.peerDisplayName(invitation.inviterDeviceId, invitation.inviterDisplayName)} '
             '邀请你加入',
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
@@ -1730,10 +1761,14 @@ class _DetachedConversationWindow extends StatefulWidget {
   const _DetachedConversationWindow({
     required this.controller,
     required this.conversationId,
+    required this.viewId,
   });
 
   final AppController controller;
   final String conversationId;
+
+  /// 该独立窗口的公开 viewId，用于给原生层登记拖放目标。
+  final int viewId;
 
   @override
   State<_DetachedConversationWindow> createState() =>
@@ -1812,25 +1847,13 @@ class _DetachedConversationWindowState
       chat.peerDeviceId,
       chat.displayName,
     );
+    final enabled =
+        peer?.online == true && chat.state == ChatSessionState.active;
     return Scaffold(
       body: SafeArea(
-        child: _ConversationPane(
-          conversationId: widget.conversationId,
-          title: title,
-          subtitle: [
-            if (title != chat.displayName) '原名：${chat.displayName}',
-            peer?.online == true ? '${peer!.ip} · 在线' : '离线',
-          ].join(' · '),
-          messages: _messages,
-          localDeviceId: controller.identity!.deviceId,
-          peerName: (deviceId) =>
-              deviceId == controller.identity!.deviceId ? '我' : title,
-          composer: _composer,
-          pendingAttachments: _pendingAttachments,
-          enabled:
-              peer?.online == true && chat.state == ChatSessionState.active,
-          onSend: _send,
-          onPickAttachments: controller.pickAttachments,
+        child: _ViewDropArea(
+          viewId: widget.viewId,
+          enabled: enabled,
           onDropFiles: (paths) async {
             await controller.sendDroppedFiles(
               conversationId: widget.conversationId,
@@ -1838,30 +1861,137 @@ class _DetachedConversationWindowState
             );
             await _refreshMessages();
           },
-          onReadClipboardAttachments: controller.readClipboardAttachments,
-          onOpenAttachment: controller.openAttachment,
-          onOpenAttachmentFolder: controller.openAttachmentFolder,
-          onAcceptFile: controller.acceptIncomingFile,
-          onRejectFile: controller.rejectIncomingFile,
-          onRetryFile: controller.retryFileDownload,
-          onRelocateFile: controller.relocateAttachment,
-          missingHintFor: controller.attachmentMissingHint,
-          replyingTo: _replyingTo,
-          onCancelReply: () => setState(() => _replyingTo = null),
-          onCopyMessage: controller.copyMessage,
-          onReplyMessage: (message) => setState(
-            () =>
-                _replyingTo = identical(_replyingTo, message) ? null : message,
+          child: _ConversationPane(
+            conversationId: widget.conversationId,
+            title: title,
+            subtitle: [
+              if (title != chat.displayName) '原名：${chat.displayName}',
+              peer?.online == true ? '${peer!.ip} · 在线' : '离线',
+            ].join(' · '),
+            messages: _messages,
+            localDeviceId: controller.identity!.deviceId,
+            peerName: (deviceId) =>
+                deviceId == controller.identity!.deviceId ? '我' : title,
+            composer: _composer,
+            pendingAttachments: _pendingAttachments,
+            enabled: enabled,
+            useDesktopDrop: false,
+            onSend: _send,
+            onPickAttachments: controller.pickAttachments,
+            onDropFiles: (paths) async {
+              await controller.sendDroppedFiles(
+                conversationId: widget.conversationId,
+                filePaths: paths,
+              );
+              await _refreshMessages();
+            },
+            onReadClipboardAttachments: controller.readClipboardAttachments,
+            onOpenAttachment: controller.openAttachment,
+            onOpenAttachmentFolder: controller.openAttachmentFolder,
+            onAcceptFile: controller.acceptIncomingFile,
+            onRejectFile: controller.rejectIncomingFile,
+            onRetryFile: controller.retryFileDownload,
+            onRelocateFile: controller.relocateAttachment,
+            missingHintFor: controller.attachmentMissingHint,
+            replyingTo: _replyingTo,
+            onCancelReply: () => setState(() => _replyingTo = null),
+            onCopyMessage: controller.copyMessage,
+            onReplyMessage: (message) => setState(
+              () =>
+                  _replyingTo = identical(_replyingTo, message) ? null : message,
+            ),
+            canRecallMessage: controller.canRecallMessage,
+            onRecallMessage: controller.recallMessage,
+            recallNoticeFor: controller.recallNotice,
+            actions: const [],
+            headerLeftPadding: 22,
           ),
-          canRecallMessage: controller.canRecallMessage,
-          onRecallMessage: controller.recallMessage,
-          recallNoticeFor: controller.recallNotice,
-          actions: const [],
-          headerLeftPadding: 22,
         ),
       ),
     );
   }
+}
+
+/// 独立窗口的文件拖放层：监听原生 per-view 拖放事件并显示提示。
+class _ViewDropArea extends StatefulWidget {
+  const _ViewDropArea({
+    required this.viewId,
+    required this.enabled,
+    required this.onDropFiles,
+    required this.child,
+  });
+
+  final int viewId;
+  final bool enabled;
+  final Future<void> Function(List<String> paths) onDropFiles;
+  final Widget child;
+
+  @override
+  State<_ViewDropArea> createState() => _ViewDropAreaState();
+}
+
+class _ViewDropAreaState extends State<_ViewDropArea> {
+  final _service = ViewDropService.instance;
+  bool _dragging = false;
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _service.addListener(widget.viewId, _handleEvent);
+    unawaited(_registerDropTarget());
+  }
+
+  /// 原生窗口可能比 Dart 视图稍晚就绪，失败时重试几次。
+  Future<void> _registerDropTarget() async {
+    for (var attempt = 0; attempt < 5; attempt++) {
+      if (await _service.register(widget.viewId)) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (!mounted) return;
+    }
+  }
+
+  @override
+  void dispose() {
+    _service.removeListener(widget.viewId, _handleEvent);
+    unawaited(_service.unregister(widget.viewId));
+    super.dispose();
+  }
+
+  void _handleEvent(ViewDropEvent event) {
+    if (!mounted) return;
+    switch (event.type) {
+      case ViewDropEventType.entered:
+        if (!widget.enabled || _sending || _dragging) return;
+        setState(() => _dragging = true);
+      case ViewDropEventType.exited:
+        if (!_dragging) return;
+        setState(() => _dragging = false);
+      case ViewDropEventType.dropped:
+        if (_dragging) setState(() => _dragging = false);
+        if (!widget.enabled || _sending) return;
+        unawaited(_send(event.paths));
+    }
+  }
+
+  Future<void> _send(List<String> paths) async {
+    if (!widget.enabled || _sending) return;
+    setState(() => _sending = true);
+    try {
+      await widget.onDropFiles(paths);
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      widget.child,
+      if (_dragging || _sending) _FileDropOverlay(sending: _sending),
+    ],
+  );
 }
 
 class _ConversationPane extends StatefulWidget {
@@ -1898,6 +2028,7 @@ class _ConversationPane extends StatefulWidget {
     this.onMention,
     this.loadMentionCandidates,
     this.headerLeftPadding = 64,
+    this.useDesktopDrop = true,
   });
   final String conversationId;
   final String title;
@@ -1908,6 +2039,9 @@ class _ConversationPane extends StatefulWidget {
   final TextEditingController composer;
   final List<PendingAttachment> pendingAttachments;
   final bool enabled;
+
+  /// 主窗口使用 desktop_drop；独立窗口改用原生 per-view 拖放，避免重复注册。
+  final bool useDesktopDrop;
 
   /// 发送输入框里的文字与待发送附件。
   final Future<void> Function(String text, List<PendingAttachment> attachments)
@@ -2366,6 +2500,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
         ),
       ],
     );
+    if (!widget.useDesktopDrop) return content;
     return DropTarget(
       enable: widget.enabled,
       onDragEntered: (_) => _setDraggingFiles(true),
@@ -2376,59 +2511,63 @@ class _ConversationPaneState extends State<_ConversationPane> {
         children: [
           content,
           if (_draggingFiles || _sendingDroppedFiles)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: Container(
-                  key: const ValueKey('file-drop-overlay'),
-                  color: Theme.of(context).colorScheme.surface
-                      .withValues(alpha: 0.88),
-                  alignment: Alignment.center,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 28,
-                      vertical: 22,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.primary,
-                        width: 2,
-                      ),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _sendingDroppedFiles
-                              ? Icons.upload_file
-                              : Icons.file_download_outlined,
-                          size: 44,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          _sendingDroppedFiles ? '正在发送文件…' : '松开发送文件',
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        if (!_sendingDroppedFiles) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            '支持同时拖入多个文件，将立即发送',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
+            _FileDropOverlay(sending: _sendingDroppedFiles),
         ],
       ),
     );
   }
+}
+
+/// 拖放文件到会话时的全屏提示层。
+class _FileDropOverlay extends StatelessWidget {
+  const _FileDropOverlay({required this.sending});
+  final bool sending;
+
+  @override
+  Widget build(BuildContext context) => Positioned.fill(
+    child: IgnorePointer(
+      child: Container(
+        key: const ValueKey('file-drop-overlay'),
+        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.88),
+        alignment: Alignment.center,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 22),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: Theme.of(context).colorScheme.primary,
+              width: 2,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                sending ? Icons.upload_file : Icons.file_download_outlined,
+                size: 44,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                sending ? '正在发送文件…' : '松开发送文件',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              if (!sending) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '支持同时拖入多个文件，将立即发送',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 /// 输入框上方的待发送附件区域：图片显示缩略图，其他文件显示文件名。
@@ -3374,6 +3513,7 @@ List<_UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
         peer: peersById[deviceId],
         chat: chatsByPeer[deviceId],
         trustedPeer: controller.trustedPeers[deviceId],
+        avatarPath: controller.peerAvatarPath(deviceId),
       ),
   ];
   entries.sort((a, b) {

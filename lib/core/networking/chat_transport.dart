@@ -38,6 +38,18 @@ abstract interface class ChatTransport {
     String? mimeType,
     String? contentHash,
   });
+
+  /// 设置本机对外提供的头像文件，其他设备可通过 GET /avatar 拉取。
+  Future<void> setLocalAvatar(String? filePath);
+
+  /// 从对端拉取头像并保存到数据目录，返回本地文件路径。
+  Future<String> downloadAvatar({
+    required String ip,
+    required int port,
+    required String deviceId,
+    required String expectedHash,
+  });
+
   Future<void> stop();
 }
 
@@ -66,6 +78,7 @@ class WebSocketChatTransport implements ChatTransport {
   HttpServer? _server;
   Timer? _offerCleanupTimer;
   void Function(IncomingPacket packet)? _onPacket;
+  File? _localAvatarFile;
 
   int get listeningPort => _server?.port ?? port;
 
@@ -96,6 +109,10 @@ class WebSocketChatTransport implements ChatTransport {
     if (request.uri.pathSegments.length == 2 &&
         request.uri.pathSegments.first == 'files') {
       await _handleFileRequest(request, request.uri.pathSegments.last);
+      return;
+    }
+    if (request.uri.path == '/avatar') {
+      await _handleAvatarRequest(request);
       return;
     }
     if (request.uri.path != '/ws' ||
@@ -202,6 +219,133 @@ class WebSocketChatTransport implements ChatTransport {
       _log.fine('已发送 ${envelope.type.wireName} 到 $ip:$port');
     } finally {
       if (socket.readyState == WebSocket.open) await socket.close();
+    }
+  }
+
+  Future<void> _handleAvatarRequest(HttpRequest request) async {
+    final avatar = _localAvatarFile;
+    if (request.method != 'GET' ||
+        avatar == null ||
+        !await avatar.exists()) {
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+    try {
+      request.response.contentLength = await avatar.length();
+      final mimeType = lookupMimeType(avatar.path);
+      if (mimeType != null) {
+        request.response.headers.contentType = ContentType.parse(mimeType);
+      }
+      await request.response.addStream(avatar.openRead());
+      await request.response.close();
+    } on Object catch (error, stack) {
+      _log.warning('发送头像失败', error, stack);
+      try {
+        request.response.statusCode = HttpStatus.internalServerError;
+      } on Object {
+        // 响应头可能已经开始发送。
+      }
+      try {
+        await request.response.close();
+      } on Object {
+        // 对端可能已经断开连接。
+      }
+    }
+  }
+
+  @override
+  Future<void> setLocalAvatar(String? filePath) async {
+    if (filePath == null || filePath.isEmpty) {
+      _localAvatarFile = null;
+      return;
+    }
+    final file = File(filePath);
+    _localAvatarFile = await file.exists() ? file : null;
+  }
+
+  @override
+  Future<String> downloadAvatar({
+    required String ip,
+    required int port,
+    required String deviceId,
+    required String expectedHash,
+  }) async {
+    if (!isSha256Hex(expectedHash)) {
+      throw StateError('头像哈希无效');
+    }
+    final baseDirectory = await _downloadsDirectory();
+    final directory = Directory(p.join(baseDirectory.path, 'avatars'));
+    await directory.create(recursive: true);
+    final client = HttpClient();
+    File? partial;
+    try {
+      final request = await client.getUrl(
+        Uri(scheme: 'http', host: ip, port: port, path: '/avatar'),
+      );
+      final response = await request.close().timeout(
+        NetworkConfig.requestTimeout,
+      );
+      if (response.statusCode != HttpStatus.ok) {
+        await response.drain<void>();
+        throw HttpException('头像下载失败：HTTP ${response.statusCode}');
+      }
+      if (response.contentLength > NetworkConfig.maxProfileAvatarBytes) {
+        await response.drain<void>();
+        throw const HttpException('头像文件过大');
+      }
+      final extension = extensionFromMime(
+        response.headers.contentType?.mimeType ?? '',
+      );
+      final destination = File(
+        p.join(
+          directory.path,
+          '${deviceId}_$expectedHash${extension == null ? '' : '.$extension'}',
+        ),
+      );
+      partial = File('${destination.path}.part');
+      final sink = partial.openWrite();
+      var received = 0;
+      try {
+        await for (final chunk in response) {
+          received += chunk.length;
+          if (received > NetworkConfig.maxProfileAvatarBytes) {
+            throw const HttpException('头像文件超过大小限制');
+          }
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+      }
+      if (await sha256File(partial) != expectedHash) {
+        throw const HttpException('头像 SHA-256 与声明不一致');
+      }
+      await _removeExistingAvatars(directory, deviceId);
+      await partial.rename(destination.path);
+      partial = null;
+      _log.info('已获取 ${deviceId.substring(0, 8)} 的头像');
+      return destination.path;
+    } finally {
+      client.close(force: true);
+      if (partial != null && await partial.exists()) await partial.delete();
+    }
+  }
+
+  /// 删除同一设备旧扩展名的头像文件，避免历史文件残留。
+  Future<void> _removeExistingAvatars(
+    Directory directory,
+    String deviceId,
+  ) async {
+    if (!await directory.exists()) return;
+    await for (final entity in directory.list()) {
+      if (entity is! File) continue;
+      final name = p.basename(entity.path);
+      if (name != deviceId &&
+          !name.startsWith('${deviceId}_') &&
+          !name.startsWith('$deviceId.')) {
+        continue;
+      }
+      await entity.delete();
     }
   }
 

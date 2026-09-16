@@ -66,6 +66,7 @@ class DiscoveredPeer {
     required this.trusted,
     required this.online,
     this.locationChanged = false,
+    this.avatarHash,
   });
   final String deviceId;
   final String displayName;
@@ -76,6 +77,9 @@ class DiscoveredPeer {
   final bool online;
   final bool locationChanged;
 
+  /// 对端当前头像的 SHA-256；为空表示对端没有设置头像。
+  final String? avatarHash;
+
   DiscoveredPeer copyWith({bool? online, bool? trusted}) => DiscoveredPeer(
     deviceId: deviceId,
     displayName: displayName,
@@ -85,6 +89,7 @@ class DiscoveredPeer {
     trusted: trusted ?? this.trusted,
     online: online ?? this.online,
     locationChanged: locationChanged,
+    avatarHash: avatarHash,
   );
 }
 
@@ -309,6 +314,8 @@ class GroupInvitation {
     required this.groupName,
     required this.ownerDeviceId,
     required this.ownerDisplayName,
+    required this.inviterDeviceId,
+    required this.inviterDisplayName,
     required this.ip,
   });
   final String inviteId;
@@ -316,6 +323,10 @@ class GroupInvitation {
   final String groupName;
   final String ownerDeviceId;
   final String ownerDisplayName;
+
+  /// 实际发出邀请的人。成员也可以邀请他人，因此不一定等于群 Owner。
+  final String inviterDeviceId;
+  final String inviterDisplayName;
   final String ip;
 }
 
