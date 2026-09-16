@@ -56,6 +56,16 @@ class SettingsPage extends StatelessWidget {
                         ),
                       ),
                     ),
+                    const Divider(height: 1, indent: 56),
+                    SwitchListTile(
+                      secondary: const Icon(
+                        Icons.notifications_active_outlined,
+                      ),
+                      title: const Text('隐藏后仍然弹出通知'),
+                      subtitle: const Text('老板键隐藏窗口后，新消息仍显示 Windows 通知'),
+                      value: controller.bossKeyNotifyWhenHidden,
+                      onChanged: controller.setBossKeyNotifyWhenHidden,
+                    ),
                     if (controller.bossKeyError != null) ...[
                       const Divider(height: 1, indent: 56),
                       ListTile(

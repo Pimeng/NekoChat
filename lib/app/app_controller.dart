@@ -54,6 +54,7 @@ class AppController extends ChangeNotifier {
   static const _lanDiscoverySetting = 'lan_discovery_enabled';
   static const _bossKeySetting = 'boss_key_enabled';
   static const _bossKeyShortcutSetting = 'boss_key_shortcut';
+  static const _bossKeyNotifyWhenHiddenSetting = 'boss_key_notify_when_hidden';
   final LocalDatabaseKeyProvider _keyProvider;
   final AppDatabase _database;
   final ChatTransport _transport;
@@ -96,6 +97,12 @@ class AppController extends ChangeNotifier {
   List<DiscoveredPeer> peers = [];
   List<ChatSummary> chats = [];
   List<ChatGroup> groups = [];
+
+  /// 本机在每个群里的角色缓存，用于同步判断管理员权限（如撤回）。
+  final Map<String, GroupRole> _myGroupRoles = {};
+
+  /// 每个群的成员角色缓存，加载过成员名单后可用于同步渲染角色标签。
+  final Map<String, Map<String, GroupRole>> _groupMemberRoles = {};
   Map<String, String> peerRemarks = {};
   Map<String, String> groupRemarks = {};
   final Map<String, ChatRequest> chatRequests = {};
@@ -125,6 +132,9 @@ class AppController extends ChangeNotifier {
   /// 老板键默认关闭；开启后由 Windows 全局注册 Alt+F。
   bool bossKeyEnabled = false;
   BossKeyShortcut bossKeyShortcut = BossKeyShortcut.altF;
+
+  /// 老板键隐藏窗口后是否仍弹出系统通知，默认关闭以免泄露应用仍在运行。
+  bool bossKeyNotifyWhenHidden = false;
 
   /// 老板键隐藏期间暂停系统通知，避免通知泄露应用仍在运行。
   bool bossKeyHidden = false;
@@ -207,6 +217,10 @@ class AppController extends ChangeNotifier {
     bossKeyShortcut = BossKeyShortcut.decode(
       await _database.loadSetting(_bossKeyShortcutSetting),
     );
+    bossKeyNotifyWhenHidden = _settingBool(
+      await _database.loadSetting(_bossKeyNotifyWhenHiddenSetting),
+      fallback: false,
+    );
     peerRemarks = await _database.loadPeerRemarks();
     groupRemarks = await _database.loadGroupRemarks();
     final storedAvatarPath = await _database.loadSetting(_profileAvatarSetting);
@@ -223,6 +237,9 @@ class AppController extends ChangeNotifier {
     chats = await _database.loadChats();
     await _recoverInterruptedRequests();
     groups = await _database.loadGroups();
+    for (final group in groups) {
+      _rememberMyRole(group.groupId, await _database.loadGroupMembers(group.groupId));
+    }
     final localIdentity = identity!;
     await _notifications.initialize();
     await _bossKey.initialize(_handleBossKeyVisibilityChanged);
@@ -509,6 +526,16 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> setBossKeyNotifyWhenHidden(bool value) async {
+    if (bossKeyNotifyWhenHidden == value) return;
+    await _database.saveSetting(
+      _bossKeyNotifyWhenHiddenSetting,
+      value.toString(),
+    );
+    bossKeyNotifyWhenHidden = value;
+    notifyListeners();
+  }
+
   Future<bool> setBossKeyShortcut(BossKeyShortcut value) async {
     if (bossKeyShortcut == value) return true;
     try {
@@ -536,7 +563,8 @@ class AppController extends ChangeNotifier {
   }
 
   bool get _systemNotificationsAllowed =>
-      windowsNotificationsEnabled && !bossKeyHidden;
+      windowsNotificationsEnabled &&
+      (!bossKeyHidden || bossKeyNotifyWhenHidden);
 
   void _handleBossKeyVisibilityChanged(bool hidden) {
     bossKeyHidden = hidden;
@@ -671,6 +699,32 @@ class AppController extends ChangeNotifier {
         ),
       );
     }
+  }
+
+  /// 撤回正在等待对方确认的聊天邀请，并通知对方撤销待确认提示。
+  Future<void> cancelChatRequest(ChatRequest request) async {
+    if (request.incoming ||
+        !identical(chatRequests[request.requestId], request)) {
+      return;
+    }
+    _removeChatRequest(request.requestId);
+    await _upsertChat(
+      request.peerDeviceId,
+      request.displayName,
+      ChatSessionState.none,
+    );
+    notifyListeners();
+    await _sendToAddress(
+      request.ip,
+      ProtocolEnvelope(
+        type: MessageType.chatReject,
+        payload: {
+          'requestId': request.requestId,
+          'deviceId': identity!.deviceId,
+          'cancelled': true,
+        },
+      ),
+    );
   }
 
   Future<void> selectChat(String chatId) async {
@@ -1245,6 +1299,7 @@ class AppController extends ChangeNotifier {
     ];
     await _database.saveGroup(group, members);
     groups = [group, ...groups];
+    _rememberMyRole(group.groupId, members);
     notifyListeners();
     for (final peer in invitees.where(
       (value) => value.online && value.trusted,
@@ -1344,6 +1399,7 @@ class AppController extends ChangeNotifier {
         group,
         ...groups.where((value) => value.groupId != group.groupId),
       ];
+      _rememberMyRole(group.groupId, members);
     }
     notifyListeners();
     await _sendToAddress(
@@ -1407,21 +1463,26 @@ class AppController extends ChangeNotifier {
   }
 
   /// 当前用户是否有权撤回这条消息。私聊和普通群成员限 2 分钟；
-  /// 群主可在 1 小时内撤回群内任意消息（包括自己发送的消息）。
+  /// 群主可在 1 小时内撤回群内任意消息；管理员可撤回群内非群主消息。
   bool canRecallMessage(ChatMessage message, {DateTime? now}) {
     final me = identity?.deviceId;
     if (me == null || message.isRecalled) return false;
     ChatGroup? group;
+    var isAdmin = false;
     if (message.groupId != null) {
       group = groups
           .where((value) => value.groupId == message.groupId)
           .firstOrNull;
       if (group == null) return false;
+      isAdmin =
+          _myGroupRoles[group.groupId] == GroupRole.admin &&
+          me != group.ownerDeviceId;
     }
     return _canActorRecall(
       message,
       actorDeviceId: me,
       group: group,
+      isAdmin: isAdmin,
       now: now ?? DateTime.now(),
     );
   }
@@ -1430,6 +1491,7 @@ class AppController extends ChangeNotifier {
     ChatMessage message, {
     required String actorDeviceId,
     required ChatGroup? group,
+    required bool isAdmin,
     required DateTime now,
   }) {
     if (message.isRecalled) return false;
@@ -1438,8 +1500,26 @@ class AppController extends ChangeNotifier {
     if (group?.ownerDeviceId == actorDeviceId) {
       return age <= NetworkConfig.groupOwnerRecallWindow;
     }
+    if (group != null &&
+        isAdmin &&
+        message.senderDeviceId != group.ownerDeviceId) {
+      return age <= NetworkConfig.groupOwnerRecallWindow;
+    }
     return message.senderDeviceId == actorDeviceId &&
         age <= NetworkConfig.selfRecallWindow;
+  }
+
+  static bool _isGroupAdmin(
+    List<GroupMember> members,
+    String deviceId,
+    ChatGroup group,
+  ) {
+    if (deviceId == group.ownerDeviceId) return false;
+    return members
+            .where((member) => member.deviceId == deviceId)
+            .firstOrNull
+            ?.role ==
+        GroupRole.admin;
   }
 
   /// 撤回消息并把撤回事件发给对端。私聊没有离线补发，因此对方离线时不
@@ -1599,8 +1679,38 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<List<GroupMember>> groupMembers(String groupId) =>
-      _database.loadGroupMembers(groupId);
+  Future<List<GroupMember>> groupMembers(String groupId) async {
+    final members = await _database.loadGroupMembers(groupId);
+    _rememberMyRole(groupId, members);
+    return members;
+  }
+
+  /// 记录群成员角色；成员列表变化后都要刷新，供同步的权限判断与界面渲染使用。
+  void _rememberMyRole(String groupId, List<GroupMember> members) {
+    final roles = <String, GroupRole>{
+      for (final member in members) member.deviceId: member.role,
+    };
+    _groupMemberRoles[groupId] = roles;
+    final me = identity?.deviceId;
+    final role = me == null ? null : roles[me];
+    if (role == null) {
+      _myGroupRoles.remove(groupId);
+    } else {
+      _myGroupRoles[groupId] = role;
+    }
+  }
+
+  void _forgetGroup(String groupId) {
+    _myGroupRoles.remove(groupId);
+    _groupMemberRoles.remove(groupId);
+  }
+
+  /// 本机在指定群里的角色；不在群里返回 null。
+  GroupRole? groupRole(String groupId) => _myGroupRoles[groupId];
+
+  /// 指定成员在群里的角色；用于渲染发送者的角色标签。
+  GroupRole? groupMemberRole(String groupId, String deviceId) =>
+      _groupMemberRoles[groupId]?[deviceId];
 
   Future<void> renameGroup(ChatGroup group, String name) async {
     final normalized = name.trim();
@@ -1622,12 +1732,45 @@ class AppController extends ChangeNotifier {
     });
   }
 
-  Future<void> removeGroupMember(ChatGroup group, GroupMember member) async {
-    if (group.ownerDeviceId != identity!.deviceId ||
-        member.deviceId == identity!.deviceId) {
+  /// 群主设置或取消管理员。只有群主能调整，且不能改动群主本人。
+  Future<void> setGroupMemberRole(
+    ChatGroup group,
+    GroupMember member,
+    GroupRole role,
+  ) async {
+    if (role == GroupRole.owner || member.deviceId == group.ownerDeviceId) {
       return;
     }
     final members = await _database.loadGroupMembers(group.groupId);
+    final me = members
+        .where((value) => value.deviceId == identity!.deviceId)
+        .firstOrNull;
+    if (me?.role != GroupRole.owner) return;
+    await _database.saveGroupMember(
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: member.deviceId,
+        displayName: member.displayName,
+        role: role,
+      ),
+    );
+    await _broadcastGroupMembers(group.groupId);
+    notifyListeners();
+  }
+
+  /// 移除群成员。群主可移除除自己以外的任何人；管理员只能移除普通成员，
+  /// 不能移除群主或其他管理员。
+  Future<void> removeGroupMember(ChatGroup group, GroupMember member) async {
+    if (member.deviceId == identity!.deviceId) return;
+    final members = await _database.loadGroupMembers(group.groupId);
+    final me = members
+        .where((value) => value.deviceId == identity!.deviceId)
+        .firstOrNull;
+    if (me == null || member.deviceId == group.ownerDeviceId) return;
+    final allowed =
+        me.role == GroupRole.owner ||
+        (me.role == GroupRole.admin && member.role == GroupRole.member);
+    if (!allowed) return;
     await _database.removeGroupMember(group.groupId, member.deviceId);
     await _fanOutGroupControl(group.groupId, members, 'remove', {
       'targetDeviceId': member.deviceId,
@@ -1646,6 +1789,7 @@ class AppController extends ChangeNotifier {
     );
     await _database.deleteGroup(group.groupId);
     groups = groups.where((value) => value.groupId != group.groupId).toList();
+    _forgetGroup(group.groupId);
     if (selectedGroupId == group.groupId) {
       selectedGroupId = null;
       messages = [];
@@ -2155,6 +2299,7 @@ class AppController extends ChangeNotifier {
           message,
           actorDeviceId: actorDeviceId,
           group: null,
+          isAdmin: false,
           now: now,
         )) {
       return;
@@ -2688,6 +2833,7 @@ class AppController extends ChangeNotifier {
           message,
           actorDeviceId: actorDeviceId,
           group: group,
+          isAdmin: _isGroupAdmin(members, actorDeviceId, group),
           now: now,
         )) {
       return;
@@ -2782,14 +2928,24 @@ class AppController extends ChangeNotifier {
             if (value.groupId == groupId) updated else value,
         ];
       case 'remove':
-        if (senderDeviceId != group.ownerDeviceId ||
-            payload['targetDeviceId'] is! String) {
-          return;
-        }
-        final target = payload['targetDeviceId'] as String;
+        final target = payload['targetDeviceId'];
+        if (target is! String) return;
+        final sender = members
+            .where((member) => member.deviceId == senderDeviceId)
+            .first;
+        final targetMember = members
+            .where((member) => member.deviceId == target)
+            .firstOrNull;
+        if (targetMember == null || target == group.ownerDeviceId) return;
+        final allowed =
+            senderDeviceId == group.ownerDeviceId ||
+            (sender.role == GroupRole.admin &&
+                targetMember.role == GroupRole.member);
+        if (!allowed) return;
         if (target == identity!.deviceId) {
           await _database.deleteGroup(groupId);
           groups = groups.where((value) => value.groupId != groupId).toList();
+          _forgetGroup(groupId);
           if (selectedGroupId == groupId) {
             selectedGroupId = null;
             messages = [];
@@ -2809,6 +2965,7 @@ class AppController extends ChangeNotifier {
         final target = payload['targetDeviceId'];
         if (target != senderDeviceId) return;
         await _database.removeGroupMember(groupId, senderDeviceId);
+        if (senderDeviceId == identity!.deviceId) _forgetGroup(groupId);
       case 'members':
         // Owner 或任意成员都可以同步成员名单（成员邀请新人后需要让其他人知道），
         // 但发送者必须已在名单里，且名单必须保留群 Owner。
@@ -2845,6 +3002,7 @@ class AppController extends ChangeNotifier {
         if (!incoming.any((member) => member.deviceId == identity!.deviceId)) {
           await _database.deleteGroup(groupId);
           groups = groups.where((value) => value.groupId != groupId).toList();
+          _forgetGroup(groupId);
           if (selectedGroupId == groupId) {
             selectedGroupId = null;
             messages = [];
@@ -2852,6 +3010,7 @@ class AppController extends ChangeNotifier {
           break;
         }
         await _database.saveGroup(group, incoming);
+        _rememberMyRole(groupId, incoming);
       default:
         return;
     }
@@ -3233,6 +3392,7 @@ class AppController extends ChangeNotifier {
               original,
               actorDeviceId: actor,
               group: group,
+              isAdmin: _isGroupAdmin(members, actor, group),
               now: recalledAt,
             )) {
           continue;

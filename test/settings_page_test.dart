@@ -33,6 +33,8 @@ void main() {
 
     expect(find.text('自动接收大小上限'), findsOneWidget);
     expect(find.text('10 MB'), findsOneWidget);
+    await tester.ensureVisible(find.text('自动接收大小上限'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('自动接收大小上限'));
     await tester.pumpAndSettle();
     final helper = tester.widget<Text>(find.text('可设置 1～512 MB，仅影响是否自动接收'));

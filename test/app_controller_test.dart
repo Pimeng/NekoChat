@@ -455,6 +455,288 @@ void main() {
     expect(notifications.shown, contains('message:msg-after-restore'));
   });
 
+  test('开启“隐藏后仍然通知”后老板键隐藏期间仍会提醒', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-boss-key-notify-',
+    );
+    final notifications = _FakeNotifications(focused: false);
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+      notifications: notifications,
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final sessionId = await activateChat(setup);
+    await setup.controller.setBossKeyEnabled(true);
+    await setup.controller.setBossKeyNotifyWhenHidden(true);
+    expect(setup.controller.bossKeyNotifyWhenHidden, isTrue);
+    expect(
+      await setup.database.loadSetting('boss_key_notify_when_hidden'),
+      'true',
+    );
+
+    notifications.shown.clear();
+    setup.bossKey.emitVisibility(hidden: true);
+    await _waitUntil(() => notifications.clearCount == 1);
+    setup.transport.emit(
+      textMessagePacket(sessionId, '隐藏期间到达', messageId: 'msg-hidden'),
+    );
+    await _waitUntil(
+      () => notifications.shown.contains('message:msg-hidden'),
+    );
+  });
+
+  test('取消发送中的聊天请求会清空待确认并通知对端', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-cancel-request-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 30),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    setPeerOnline(setup);
+    await setup.controller.requestChat(setup.controller.peers.single);
+    await _waitUntil(() => setup.controller.chatRequests.isNotEmpty);
+    final request = setup.controller.chatRequests.values.single;
+    expect(request.incoming, isFalse);
+    expect(setup.controller.chats.single.state, ChatSessionState.pendingOutgoing);
+
+    await setup.controller.cancelChatRequest(request);
+
+    expect(setup.controller.chatRequests, isEmpty);
+    expect(setup.controller.chats.single.state, ChatSessionState.none);
+    final reject = setup.transport.sentEnvelopes.lastWhere(
+      (envelope) => envelope.type == MessageType.chatReject,
+    );
+    expect(reject.payload['requestId'], request.requestId);
+    expect(reject.payload['cancelled'], isTrue);
+  });
+
+  ChatGroup adminGroup(String ownerDeviceId, String myDeviceId) => ChatGroup(
+    groupId: 'group-admin',
+    name: '管理群',
+    ownerDeviceId: ownerDeviceId,
+    createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+  );
+
+  test('群管理员可撤回他人消息但不能撤回群主消息', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-admin-recall-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final me = setup.controller.identity!.deviceId;
+    final group = adminGroup('owner-device', me);
+    await setup.database.saveGroup(group, [
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: 'owner-device',
+        displayName: '群主',
+        role: GroupRole.owner,
+      ),
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: me,
+        displayName: '我',
+        role: GroupRole.admin,
+      ),
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: 'member-device',
+        displayName: '成员',
+        role: GroupRole.member,
+      ),
+    ]);
+    setup.controller.groups = [group];
+    await setup.controller.groupMembers(group.groupId);
+    expect(setup.controller.groupRole(group.groupId), GroupRole.admin);
+
+    final timestamp = DateTime.now();
+    final memberMessage = ChatMessage(
+      messageId: 'member-message',
+      chatId: 'group:${group.groupId}',
+      groupId: group.groupId,
+      senderDeviceId: 'member-device',
+      content: '普通成员消息',
+      timestamp: timestamp,
+      status: MessageStatus.sent,
+    );
+    final ownerMessage = ChatMessage(
+      messageId: 'owner-message',
+      chatId: 'group:${group.groupId}',
+      groupId: group.groupId,
+      senderDeviceId: 'owner-device',
+      content: '群主消息',
+      timestamp: timestamp,
+      status: MessageStatus.sent,
+    );
+
+    expect(setup.controller.canRecallMessage(memberMessage), isTrue);
+    expect(setup.controller.canRecallMessage(ownerMessage), isFalse);
+  });
+
+  test('管理员只能移除普通成员，群主与管理员不受影响', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-admin-remove-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final me = setup.controller.identity!.deviceId;
+    final group = adminGroup('owner-device', me);
+    final ownerMember = GroupMember(
+      groupId: group.groupId,
+      deviceId: 'owner-device',
+      displayName: '群主',
+      role: GroupRole.owner,
+    );
+    final member = GroupMember(
+      groupId: group.groupId,
+      deviceId: 'member-device',
+      displayName: '成员',
+      role: GroupRole.member,
+    );
+    final otherAdmin = GroupMember(
+      groupId: group.groupId,
+      deviceId: 'admin-device',
+      displayName: '另一个管理员',
+      role: GroupRole.admin,
+    );
+    await setup.database.saveGroup(group, [
+      ownerMember,
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: me,
+        displayName: '我',
+        role: GroupRole.admin,
+      ),
+      member,
+      otherAdmin,
+    ]);
+    setup.controller.groups = [group];
+    await setup.controller.groupMembers(group.groupId);
+
+    await setup.controller.removeGroupMember(group, member);
+    var members = await setup.database.loadGroupMembers(group.groupId);
+    expect(members.any((value) => value.deviceId == 'member-device'), isFalse);
+
+    await setup.controller.removeGroupMember(group, ownerMember);
+    await setup.controller.removeGroupMember(group, otherAdmin);
+    members = await setup.database.loadGroupMembers(group.groupId);
+    expect(members.any((value) => value.deviceId == 'owner-device'), isTrue);
+    expect(members.any((value) => value.deviceId == 'admin-device'), isTrue);
+  });
+
+  test('群主可设置或取消管理员并同步成员名单', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-set-admin-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    final me = setup.controller.identity!.deviceId;
+    final group = adminGroup(me, me);
+    final member = GroupMember(
+      groupId: group.groupId,
+      deviceId: 'member-device',
+      displayName: '成员',
+      role: GroupRole.member,
+    );
+    await setup.database.saveGroup(group, [
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: me,
+        displayName: '我',
+        role: GroupRole.owner,
+      ),
+      member,
+    ]);
+    setup.controller.groups = [group];
+    await setup.controller.groupMembers(group.groupId);
+    setup.discovery.emit([
+      DiscoveredPeer(
+        deviceId: 'member-device',
+        displayName: '成员',
+        ip: '192.168.1.30',
+        port: 23333,
+        lastSeen: DateTime.now(),
+        trusted: true,
+        online: true,
+      ),
+    ]);
+
+    await setup.controller.setGroupMemberRole(
+      group,
+      member,
+      GroupRole.admin,
+    );
+
+    final updated = (await setup.database.loadGroupMembers(group.groupId))
+        .firstWhere((value) => value.deviceId == 'member-device');
+    expect(updated.role, GroupRole.admin);
+    final broadcast = setup.transport.sentEnvelopes.lastWhere(
+      (envelope) =>
+          envelope.type == MessageType.groupUpdate &&
+          envelope.payload['action'] == 'members',
+    );
+    expect(broadcast.payload['members'], isA<List>());
+
+    await setup.controller.setGroupMemberRole(
+      group,
+      member,
+      GroupRole.member,
+    );
+    expect(
+      (await setup.database.loadGroupMembers(group.groupId))
+          .firstWhere((value) => value.deviceId == 'member-device')
+          .role,
+      GroupRole.member,
+    );
+  });
+
   test('关闭自动接收后小文件也等待手动确认', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-file-setting-',

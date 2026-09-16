@@ -18,7 +18,7 @@ enum ChatSessionState {
   blocked,
 }
 
-enum GroupRole { owner, member }
+enum GroupRole { owner, admin, member }
 
 class LocalIdentity {
   const LocalIdentity({

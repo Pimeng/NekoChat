@@ -384,6 +384,85 @@ void main() {
     expect(find.text('原始名称：李四'), findsOneWidget);
   });
 
+  testWidgets('侧边栏会话右键菜单可查看人员资料', (tester) async {
+    final controller = _sidebarActionsController();
+    addTearDown(controller.dispose);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await _openSidebarContextMenu(tester, controller);
+
+    expect(find.text('查看资料'), findsOneWidget);
+    await tester.tap(find.text('查看资料'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('人员资料'), findsOneWidget);
+    expect(find.text('peer-1'), findsOneWidget);
+  });
+
+  testWidgets('侧边栏群聊右键菜单复用群操作', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _baseController();
+    addTearDown(controller.dispose);
+    controller.groups = [
+      ChatGroup(
+        groupId: 'group-1',
+        name: '项目群',
+        ownerDeviceId: 'local-device',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+
+    await tester.tap(find.text('项目群'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('群成员'), findsOneWidget);
+    expect(find.text('邀请在线成员'), findsOneWidget);
+    expect(find.text('修改群名'), findsOneWidget);
+    expect(find.text('解散群聊'), findsOneWidget);
+
+    await tester.tap(find.text('添加群聊备注'));
+    await tester.pumpAndSettle();
+    expect(find.text('群聊备注'), findsOneWidget);
+  });
+
+  testWidgets('侧边栏群聊右键菜单可在独立窗口打开', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _baseController();
+    addTearDown(controller.dispose);
+    controller.groups = [
+      ChatGroup(
+        groupId: 'group-1',
+        name: '项目群',
+        ownerDeviceId: 'local-device',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      ),
+    ];
+    String? openedConversationId;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MainShell(
+          controller: controller,
+          openConversationWindow: (_, _, conversationId) async {
+            openedConversationId = conversationId;
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('项目群'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('在独立窗口打开'));
+    await tester.pumpAndSettle();
+
+    expect(openedConversationId, 'group:group-1');
+  });
+
   testWidgets('群聊优先显示本地备注，并可从群操作修改', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 720));
     addTearDown(() => tester.binding.setSurfaceSize(null));

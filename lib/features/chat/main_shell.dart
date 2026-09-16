@@ -31,11 +31,8 @@ Future<void> openConversationInWindow(
   }
   _detachedConversationWindowIds.remove(conversationId);
 
-  final chat = controller.chats
-      .where((value) => value.chatId == conversationId)
-      .firstOrNull;
-  if (chat == null) return;
-  final title = controller.peerDisplayName(chat.peerDeviceId, chat.displayName);
+  final title = _conversationWindowTitle(controller, conversationId);
+  if (title == null) return;
   try {
     final viewId = await openWindow(
       (_, publicId) => _DetachedConversationWindow(
@@ -56,6 +53,28 @@ Future<void> openConversationInWindow(
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text('无法打开独立会话窗口：$error')));
   }
+}
+
+/// 独立窗口的标题；会话不存在时返回 null。
+String? _conversationWindowTitle(
+  AppController controller,
+  String conversationId,
+) {
+  final groupId = conversationId.startsWith('group:')
+      ? conversationId.substring('group:'.length)
+      : null;
+  if (groupId != null) {
+    final group = controller.groups
+        .where((value) => value.groupId == groupId)
+        .firstOrNull;
+    if (group == null) return null;
+    return controller.groupDisplayName(group.groupId, group.name);
+  }
+  final chat = controller.chats
+      .where((value) => value.chatId == conversationId)
+      .firstOrNull;
+  if (chat == null) return null;
+  return controller.peerDisplayName(chat.peerDeviceId, chat.displayName);
 }
 
 typedef ConversationWindowOpener = Future<void> Function(
@@ -371,29 +390,34 @@ class _MainShellState extends State<MainShell> {
                   const _EmptyHint(icon: Icons.groups_outlined, text: '还没有群聊')
                 else
                   for (final group in groups)
-                    ListTile(
-                      selected: controller.selectedGroupId == group.groupId,
-                      leading: const CircleAvatar(
-                        child: Icon(Icons.groups, size: 20),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onSecondaryTapDown: (details) =>
+                          _showGroupContextMenu(controller, group, details),
+                      child: ListTile(
+                        selected: controller.selectedGroupId == group.groupId,
+                        leading: const CircleAvatar(
+                          child: Icon(Icons.groups, size: 20),
+                        ),
+                        title: Text(
+                          controller.groupDisplayName(group.groupId, group.name),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          _groupListSubtitle(controller, group),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing:
+                            group.unreadCount > 0 || group.lastMessageAt != null
+                            ? _ConversationMeta(
+                                time: group.lastMessageAt,
+                                unreadCount: group.unreadCount,
+                              )
+                            : null,
+                        onTap: () => controller.selectGroup(group.groupId),
                       ),
-                      title: Text(
-                        controller.groupDisplayName(group.groupId, group.name),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        _groupListSubtitle(controller, group),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      trailing:
-                          group.unreadCount > 0 || group.lastMessageAt != null
-                          ? _ConversationMeta(
-                              time: group.lastMessageAt,
-                              unreadCount: group.unreadCount,
-                            )
-                          : null,
-                      onTap: () => controller.selectGroup(group.groupId),
                     ),
               ],
             ),
@@ -447,6 +471,14 @@ class _MainShellState extends State<MainShell> {
           composer: _composerFor(conversationId),
           pendingAttachments: _pendingFor(conversationId),
           enabled: online && chat.state == ChatSessionState.active,
+          isGroup: false,
+          senderHeaderFor: (deviceId) =>
+              deviceId == controller.identity!.deviceId
+              ? controller.identity!.displayName
+              : displayName,
+          avatarPathFor: (deviceId) => deviceId == controller.identity!.deviceId
+              ? controller.profileAvatarPath
+              : controller.peerAvatarPath(deviceId),
           onSend: (text, attachments) => controller.sendMessageWithAttachments(
             conversationId: conversationId,
             content: text,
@@ -476,12 +508,22 @@ class _MainShellState extends State<MainShell> {
             PopupMenuButton<String>(
               tooltip: '会话操作',
               onSelected: (value) async {
+                if (value == 'info') {
+                  await _showPeerInfo(
+                    controller,
+                    chat.peerDeviceId,
+                    fallbackName: chat.displayName,
+                  );
+                  if (!mounted) return;
+                }
                 if (value == 'remark') {
                   await _showPeerRemark(
+                    context,
                     controller,
                     chat.peerDeviceId,
                     chat.displayName,
                   );
+                  if (!mounted) return;
                 }
                 if (value == 'close') await controller.closeChat(chat);
                 if (value == 'block') {
@@ -489,6 +531,13 @@ class _MainShellState extends State<MainShell> {
                 }
               },
               itemBuilder: (_) => [
+                const PopupMenuItem(
+                  value: 'info',
+                  child: ListTile(
+                    leading: Icon(Icons.badge_outlined),
+                    title: Text('查看资料'),
+                  ),
+                ),
                 PopupMenuItem(
                   value: 'remark',
                   child: ListTile(
@@ -555,6 +604,25 @@ class _MainShellState extends State<MainShell> {
           composer: composer,
           pendingAttachments: _pendingFor(conversationId),
           enabled: true,
+          isGroup: true,
+          avatarPathFor: (deviceId) => deviceId == controller.identity!.deviceId
+              ? controller.profileAvatarPath
+              : controller.peerAvatarPath(deviceId),
+          senderRoleFor: (deviceId) =>
+              controller.groupMemberRole(group.groupId, deviceId),
+          senderHeaderFor: (deviceId) {
+            if (deviceId == controller.identity!.deviceId) {
+              return controller.identity!.displayName;
+            }
+            final originalName =
+                controller.peers
+                    .where((peer) => peer.deviceId == deviceId)
+                    .firstOrNull
+                    ?.displayName ??
+                controller.trustedPeers[deviceId]?.displayName ??
+                '群成员';
+            return controller.peerDisplayName(deviceId, originalName);
+          },
           onSend: (text, attachments) => controller.sendMessageWithAttachments(
             conversationId: conversationId,
             content: text,
@@ -603,26 +671,44 @@ class _MainShellState extends State<MainShell> {
           actions: [
             IconButton(
               tooltip: '邀请在线成员',
-              onPressed: () => _showInviteMembers(controller, group),
+              onPressed: () => _showInviteMembers(context, controller, group),
               icon: const Icon(Icons.person_add_alt_1),
             ),
             PopupMenuButton<String>(
               tooltip: '群聊操作',
               onSelected: (value) async {
+                if (value == 'openWindow') {
+                  await widget.openConversationWindow(
+                    context,
+                    controller,
+                    'group:${group.groupId}',
+                  );
+                  if (!mounted) return;
+                }
                 if (value == 'remark') {
-                  await _showGroupRemark(controller, group);
+                  await _showGroupRemark(context, controller, group);
+                  if (!mounted) return;
                 }
                 if (value == 'members') {
-                  await _showGroupMembers(controller, group);
+                  await _showGroupMembers(context, controller, group);
+                  if (!mounted) return;
                 }
                 if (value == 'rename') {
-                  await _showRenameGroup(controller, group);
+                  await _showRenameGroup(context, controller, group);
+                  if (!mounted) return;
                 }
                 if (value == 'leave') {
-                  await _confirmLeaveGroup(controller, group);
+                  await _confirmLeaveGroup(context, controller, group);
                 }
               },
               itemBuilder: (_) => [
+                const PopupMenuItem(
+                  value: 'openWindow',
+                  child: ListTile(
+                    leading: Icon(Icons.open_in_new),
+                    title: Text('在独立窗口打开'),
+                  ),
+                ),
                 PopupMenuItem(
                   value: 'remark',
                   child: ListTile(
@@ -826,7 +912,7 @@ class _MainShellState extends State<MainShell> {
       : '保存失败：$error';
 
   /// 把“@昵称 ”插到输入框光标处。
-  void _insertMention(TextEditingController composer, String name) {
+  static void _insertMention(TextEditingController composer, String name) {
     final value = composer.value;
     final selection = value.selection.isValid
         ? value.selection
@@ -927,7 +1013,8 @@ class _MainShellState extends State<MainShell> {
     }
   }
 
-  Future<void> _showInviteMembers(
+  static Future<void> _showInviteMembers(
+    BuildContext context,
     AppController controller,
     ChatGroup group,
   ) async {
@@ -970,12 +1057,19 @@ class _MainShellState extends State<MainShell> {
     if (peer != null) await controller.inviteToGroup(group, peer);
   }
 
-  Future<void> _showGroupMembers(
+  static Future<void> _showGroupMembers(
+    BuildContext context,
     AppController controller,
     ChatGroup group,
   ) async {
     final members = await controller.groupMembers(group.groupId);
-    if (!mounted) return;
+    if (!context.mounted) return;
+    final myRole = members
+        .where((member) => member.deviceId == controller.identity!.deviceId)
+        .firstOrNull
+        ?.role;
+    final isOwner = myRole == GroupRole.owner;
+    final isAdmin = myRole == GroupRole.admin;
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
@@ -984,7 +1078,7 @@ class _MainShellState extends State<MainShell> {
             '${controller.groupDisplayName(group.groupId, group.name)} · 群成员',
           ),
           content: SizedBox(
-            width: 420,
+            width: 440,
             child: ListView(
               shrinkWrap: true,
               children: [
@@ -1007,7 +1101,7 @@ class _MainShellState extends State<MainShell> {
                       [
                         if (controller.peerRemarks.containsKey(member.deviceId))
                           '原名：${member.displayName}',
-                        member.role == GroupRole.owner ? 'Owner' : 'Member',
+                        _groupRoleLabel(member.role),
                       ].join(' · '),
                     ),
                     trailing: member.deviceId == controller.identity!.deviceId
@@ -1019,6 +1113,7 @@ class _MainShellState extends State<MainShell> {
                                 tooltip: '修改人员备注',
                                 onPressed: () async {
                                   await _showPeerRemark(
+                                    context,
                                     controller,
                                     member.deviceId,
                                     member.displayName,
@@ -1029,8 +1124,34 @@ class _MainShellState extends State<MainShell> {
                                 },
                                 icon: const Icon(Icons.edit_note_outlined),
                               ),
-                              if (group.ownerDeviceId ==
-                                  controller.identity!.deviceId)
+                              if (isOwner && member.role != GroupRole.owner)
+                                IconButton(
+                                  tooltip:
+                                      member.role == GroupRole.admin
+                                      ? '取消管理员'
+                                      : '设为管理员',
+                                  onPressed: () async {
+                                    await controller.setGroupMemberRole(
+                                      group,
+                                      member,
+                                      member.role == GroupRole.admin
+                                          ? GroupRole.member
+                                          : GroupRole.admin,
+                                    );
+                                    if (dialogContext.mounted) {
+                                      Navigator.pop(dialogContext);
+                                    }
+                                  },
+                                  icon: Icon(
+                                    member.role == GroupRole.admin
+                                        ? Icons.remove_moderator_outlined
+                                        : Icons.add_moderator_outlined,
+                                  ),
+                                ),
+                              if ((isOwner ||
+                                      (isAdmin &&
+                                          member.role == GroupRole.member)) &&
+                                  member.role != GroupRole.owner)
                                 IconButton(
                                   tooltip: '移除成员',
                                   onPressed: () async {
@@ -1063,7 +1184,8 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
-  Future<void> _showRenameGroup(
+  static Future<void> _showRenameGroup(
+    BuildContext context,
     AppController controller,
     ChatGroup group,
   ) async {
@@ -1094,16 +1216,115 @@ class _MainShellState extends State<MainShell> {
     if (accepted == true) await controller.renameGroup(group, name);
   }
 
-  Future<void> _showPeerRemark(
+  static Future<void> _showPeerRemark(
+    BuildContext context,
     AppController controller,
     String deviceId,
     String originalName,
   ) => _showRemarkEditor(
+    context: context,
     title: '人员备注',
     originalName: originalName,
     currentRemark: controller.peerRemarks[deviceId],
     onSave: (value) => controller.setPeerRemark(deviceId, value),
   );
+
+  /// 对端资料卡：头像、昵称/备注、设备与网络状态。入口在右键菜单和会话右上角。
+  Future<void> _showPeerInfo(
+    AppController controller,
+    String deviceId, {
+    String? fallbackName,
+  }) async {
+    final peer = controller.peers
+        .where((value) => value.deviceId == deviceId)
+        .firstOrNull;
+    final trusted = controller.trustedPeers[deviceId];
+    final originalName =
+        peer?.displayName ?? trusted?.displayName ?? fallbackName ?? '未知设备';
+    final displayName = controller.peerDisplayName(deviceId, originalName);
+    final remark = controller.peerRemarks[deviceId];
+    final rows = <(IconData, String, String)>[
+      (Icons.badge_outlined, '昵称', originalName),
+      if (remark != null) (Icons.edit_note_outlined, '备注', remark),
+      (Icons.fingerprint, '设备 ID', deviceId),
+      (Icons.lan_outlined, '网络', peer?.ip ?? '离线'),
+      (
+        Icons.wifi_tethering,
+        '在线状态',
+        peer?.online == true ? '在线' : '离线',
+      ),
+      (
+        Icons.verified_user_outlined,
+        '验证状态',
+        trusted == null ? '未验证' : (trusted.blocked ? '已拉黑' : '已验证'),
+      ),
+      if (peer != null) (Icons.settings_ethernet, '端口', '${peer.port}'),
+    ];
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('人员资料'),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: _NamedAvatar(
+                  imagePath: controller.peerAvatarPath(deviceId),
+                  name: displayName,
+                  radius: 36,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Center(
+                child: Text(
+                  displayName,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              for (final row in rows)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(row.$1, size: 18, color: Colors.grey),
+                      const SizedBox(width: 10),
+                      SizedBox(
+                        width: 72,
+                        child: Text(
+                          row.$2,
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      ),
+                      Expanded(
+                        child: SelectableText(
+                          row.$3,
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _showPeerContextMenu(
     AppController controller,
@@ -1126,6 +1347,13 @@ class _MainShellState extends State<MainShell> {
           child: const ListTile(
             leading: Icon(Icons.open_in_new),
             title: Text('在独立窗口打开'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _PeerContextAction.info,
+          child: ListTile(
+            leading: Icon(Icons.badge_outlined),
+            title: Text('查看资料'),
           ),
         ),
         const PopupMenuItem(
@@ -1161,8 +1389,15 @@ class _MainShellState extends State<MainShell> {
         if (chat != null) {
           await widget.openConversationWindow(context, controller, chat.chatId);
         }
+      case _PeerContextAction.info:
+        await _showPeerInfo(
+          controller,
+          entry.deviceId,
+          fallbackName: entry.originalDisplayName,
+        );
       case _PeerContextAction.remark:
         await _showPeerRemark(
+          context,
           controller,
           entry.deviceId,
           entry.originalDisplayName,
@@ -1222,15 +1457,107 @@ class _MainShellState extends State<MainShell> {
       ) ??
       false;
 
-  Future<void> _showGroupRemark(AppController controller, ChatGroup group) =>
-      _showRemarkEditor(
-        title: '群聊备注',
-        originalName: group.name,
-        currentRemark: controller.groupRemarks[group.groupId],
-        onSave: (value) => controller.setGroupRemark(group.groupId, value),
-      );
+  static Future<void> _showGroupRemark(
+    BuildContext context,
+    AppController controller,
+    ChatGroup group,
+  ) => _showRemarkEditor(
+    context: context,
+    title: '群聊备注',
+    originalName: group.name,
+    currentRemark: controller.groupRemarks[group.groupId],
+    onSave: (value) => controller.setGroupRemark(group.groupId, value),
+  );
 
-  Future<void> _showRemarkEditor({
+  /// 侧边栏群聊右键菜单，复用会话内已有的群操作。
+  Future<void> _showGroupContextMenu(
+    AppController controller,
+    ChatGroup group,
+    TapDownDetails details,
+  ) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final position = details.globalPosition;
+    final isOwner = group.ownerDeviceId == controller.identity!.deviceId;
+    final action = await showMenu<_GroupContextAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(position.dx, position.dy, 0, 0),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        const PopupMenuItem(
+          value: _GroupContextAction.openInWindow,
+          child: ListTile(
+            leading: Icon(Icons.open_in_new),
+            title: Text('在独立窗口打开'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _GroupContextAction.members,
+          child: ListTile(
+            leading: Icon(Icons.people_outline),
+            title: Text('群成员'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _GroupContextAction.remark,
+          child: ListTile(
+            leading: const Icon(Icons.drive_file_rename_outline),
+            title: Text(
+              controller.groupRemarks.containsKey(group.groupId)
+                  ? '修改群聊备注'
+                  : '添加群聊备注',
+            ),
+          ),
+        ),
+        const PopupMenuItem(
+          value: _GroupContextAction.invite,
+          child: ListTile(
+            leading: Icon(Icons.person_add_alt_1),
+            title: Text('邀请在线成员'),
+          ),
+        ),
+        if (isOwner)
+          const PopupMenuItem(
+            value: _GroupContextAction.rename,
+            child: ListTile(
+              leading: Icon(Icons.edit_outlined),
+              title: Text('修改群名'),
+            ),
+          ),
+        PopupMenuItem(
+          value: _GroupContextAction.leave,
+          child: ListTile(
+            leading: Icon(isOwner ? Icons.delete_outline : Icons.logout),
+            title: Text(isOwner ? '解散群聊' : '退出群聊'),
+          ),
+        ),
+      ],
+    );
+    if (action == null || !mounted) return;
+    switch (action) {
+      case _GroupContextAction.openInWindow:
+        await widget.openConversationWindow(
+          context,
+          controller,
+          'group:${group.groupId}',
+        );
+      case _GroupContextAction.members:
+        await _showGroupMembers(context, controller, group);
+      case _GroupContextAction.remark:
+        await _showGroupRemark(context, controller, group);
+      case _GroupContextAction.invite:
+        await _showInviteMembers(context, controller, group);
+      case _GroupContextAction.rename:
+        await _showRenameGroup(context, controller, group);
+      case _GroupContextAction.leave:
+        await _confirmLeaveGroup(context, controller, group);
+    }
+  }
+
+  static Future<void> _showRemarkEditor({
+    required BuildContext context,
     required String title,
     required String originalName,
     required String? currentRemark,
@@ -1282,7 +1609,8 @@ class _MainShellState extends State<MainShell> {
     if (accepted == true) await onSave(remark);
   }
 
-  Future<void> _confirmLeaveGroup(
+  static Future<void> _confirmLeaveGroup(
+    BuildContext context,
     AppController controller,
     ChatGroup group,
   ) async {
@@ -1292,7 +1620,7 @@ class _MainShellState extends State<MainShell> {
       builder: (dialogContext) => AlertDialog(
         title: Text(isOwner ? '解散群聊？' : '退出群聊？'),
         content: Text(
-          isOwner ? '群聊将从在线成员的设备上移除，此操作无法撤销。' : '退出后需要 Owner 再次邀请才能加入。',
+          isOwner ? '群聊将从在线成员的设备上移除，此操作无法撤销。' : '退出后需要群主再次邀请才能加入。',
         ),
         actions: [
           TextButton(
@@ -1414,14 +1742,14 @@ class _ProfileAvatar extends StatelessWidget {
 
 /// 对端头像：同步到本地就显示图片，否则回退到昵称首字母。
 class _NamedAvatar extends StatelessWidget {
-  const _NamedAvatar({required this.imagePath, required this.name});
+  const _NamedAvatar({required this.imagePath, required this.name, this.radius = 20});
 
   final String? imagePath;
   final String name;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
-    const radius = 20.0;
     final path = imagePath;
     final fallback = CircleAvatar(
       radius: radius,
@@ -1435,6 +1763,45 @@ class _NamedAvatar extends StatelessWidget {
         height: radius * 2,
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => fallback,
+      ),
+    );
+  }
+}
+
+/// 群成员角色标签（群主/管理员），用于消息昵称前的小徽标。
+class _RoleTag extends StatelessWidget {
+  const _RoleTag({required this.role});
+  final GroupRole role;
+
+  @override
+  Widget build(BuildContext context) {
+    final (Color background, Color foreground) = switch (role) {
+      GroupRole.owner => (
+        const Color(0xFFFFE9B8),
+        const Color(0xFF8A5A00),
+      ),
+      GroupRole.admin => (
+        Theme.of(context).colorScheme.tertiaryContainer,
+        Theme.of(context).colorScheme.onTertiaryContainer,
+      ),
+      GroupRole.member => (
+        Theme.of(context).colorScheme.surfaceContainerHighest,
+        Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        _groupRoleLabel(role),
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: foreground,
+        ),
       ),
     );
   }
@@ -1637,7 +2004,9 @@ class _UnifiedPeerTile extends StatelessWidget {
   }
 }
 
-enum _PeerContextAction { openInWindow, remark, delete, block }
+enum _PeerContextAction { openInWindow, info, remark, delete, block }
+
+enum _GroupContextAction { openInWindow, members, remark, invite, rename, leave }
 
 class _ChatRequestCard extends StatelessWidget {
   const _ChatRequestCard({required this.controller, required this.request});
@@ -1695,6 +2064,13 @@ class _ChatRequestCard extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ] else ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () => controller.cancelChatRequest(request),
+              icon: const Icon(Icons.cancel_outlined, size: 18),
+              label: const Text('取消发送'),
             ),
           ],
         ],
@@ -1834,57 +2210,98 @@ class _DetachedConversationWindowState
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final chat = controller.chats
-        .where((value) => value.chatId == widget.conversationId)
-        .firstOrNull;
-    if (chat == null || controller.identity == null) {
-      return const Scaffold(body: Center(child: Text('这个会话已不存在')));
-    }
-    final peer = controller.peers
-        .where((value) => value.deviceId == chat.peerDeviceId)
-        .firstOrNull;
-    final title = controller.peerDisplayName(
-      chat.peerDeviceId,
-      chat.displayName,
-    );
+    final identity = controller.identity;
+    if (identity == null) return _missingConversation();
+    final localDeviceId = identity.deviceId;
+
+    final groupId = widget.conversationId.startsWith('group:')
+        ? widget.conversationId.substring('group:'.length)
+        : null;
+    final group = groupId == null
+        ? null
+        : controller.groups
+              .where((value) => value.groupId == groupId)
+              .firstOrNull;
+    final chat = groupId != null
+        ? null
+        : controller.chats
+              .where((value) => value.chatId == widget.conversationId)
+              .firstOrNull;
+    if (group == null && chat == null) return _missingConversation();
+    final isGroup = group != null;
+
+    final title = isGroup
+        ? controller.groupDisplayName(group.groupId, group.name)
+        : controller.peerDisplayName(chat!.peerDeviceId, chat.displayName);
+    final peer = isGroup
+        ? null
+        : controller.peers
+              .where((value) => value.deviceId == chat!.peerDeviceId)
+              .firstOrNull;
     final enabled =
-        peer?.online == true && chat.state == ChatSessionState.active;
+        isGroup ||
+        (peer?.online == true && chat!.state == ChatSessionState.active);
+
+    String headerName(String deviceId) {
+      if (deviceId == localDeviceId) return identity.displayName;
+      if (!isGroup) return title;
+      final originalName =
+          controller.peers
+              .where((value) => value.deviceId == deviceId)
+              .firstOrNull
+              ?.displayName ??
+          controller.trustedPeers[deviceId]?.displayName ??
+          '群成员';
+      return controller.peerDisplayName(deviceId, originalName);
+    }
+
+    Future<void> dropFiles(List<String> paths) async {
+      await controller.sendDroppedFiles(
+        conversationId: widget.conversationId,
+        filePaths: paths,
+      );
+      await _refreshMessages();
+    }
+
     return Scaffold(
       body: SafeArea(
         child: _ViewDropArea(
           viewId: widget.viewId,
           enabled: enabled,
-          onDropFiles: (paths) async {
-            await controller.sendDroppedFiles(
-              conversationId: widget.conversationId,
-              filePaths: paths,
-            );
-            await _refreshMessages();
-          },
+          onDropFiles: dropFiles,
           child: _ConversationPane(
             conversationId: widget.conversationId,
             title: title,
-            subtitle: [
-              if (title != chat.displayName) '原名：${chat.displayName}',
-              peer?.online == true ? '${peer!.ip} · 在线' : '离线',
-            ].join(' · '),
+            subtitle: isGroup
+                ? [
+                    if (title != group.name) '原群名：${group.name}',
+                    '局域网实时群聊 · 离线成员不会收到消息',
+                  ].join(' · ')
+                : [
+                    if (title != chat!.displayName) '原名：${chat.displayName}',
+                    peer?.online == true ? '${peer!.ip} · 在线' : '离线',
+                  ].join(' · '),
             messages: _messages,
-            localDeviceId: controller.identity!.deviceId,
+            localDeviceId: localDeviceId,
             peerName: (deviceId) =>
-                deviceId == controller.identity!.deviceId ? '我' : title,
+                deviceId == localDeviceId ? '我' : headerName(deviceId),
             composer: _composer,
             pendingAttachments: _pendingAttachments,
             enabled: enabled,
             useDesktopDrop: false,
+            isGroup: isGroup,
+            senderHeaderFor: headerName,
+            senderRoleFor: isGroup
+                ? (deviceId) =>
+                      controller.groupMemberRole(group.groupId, deviceId)
+                : null,
+            avatarPathFor: (deviceId) =>
+                deviceId == localDeviceId
+                ? controller.profileAvatarPath
+                : controller.peerAvatarPath(deviceId),
             onSend: _send,
             onPickAttachments: controller.pickAttachments,
-            onDropFiles: (paths) async {
-              await controller.sendDroppedFiles(
-                conversationId: widget.conversationId,
-                filePaths: paths,
-              );
-              await _refreshMessages();
-            },
+            onDropFiles: dropFiles,
             onReadClipboardAttachments: controller.readClipboardAttachments,
             onOpenAttachment: controller.openAttachment,
             onOpenAttachmentFolder: controller.openAttachmentFolder,
@@ -1903,13 +2320,145 @@ class _DetachedConversationWindowState
             canRecallMessage: controller.canRecallMessage,
             onRecallMessage: controller.recallMessage,
             recallNoticeFor: controller.recallNotice,
-            actions: const [],
+            onMention: isGroup
+                ? (name) => _MainShellState._insertMention(_composer, name)
+                : null,
+            loadMentionCandidates: isGroup
+                  ? () async {
+                    final members = await controller.groupMembers(
+                      group.groupId,
+                    );
+                    return [
+                      for (final member in members)
+                        if (member.deviceId != localDeviceId)
+                          MentionCandidate(
+                            deviceId: member.deviceId,
+                            displayName: controller.peerDisplayName(
+                              member.deviceId,
+                              member.displayName,
+                            ),
+                            insertionName: member.displayName,
+                            originalName:
+                                controller.peerRemarks.containsKey(
+                                  member.deviceId,
+                                )
+                                ? member.displayName
+                                : null,
+                          ),
+                    ];
+                  }
+                : null,
+            actions: isGroup
+                ? [
+                    IconButton(
+                      tooltip: '邀请在线成员',
+                      onPressed: () => _MainShellState._showInviteMembers(
+                        context,
+                        controller,
+                        group,
+                      ),
+                      icon: const Icon(Icons.person_add_alt_1),
+                    ),
+                    PopupMenuButton<String>(
+                      tooltip: '群聊操作',
+                      onSelected: (value) async {
+                        if (value == 'remark') {
+                          await _MainShellState._showGroupRemark(
+                            context,
+                            controller,
+                            group,
+                          );
+                          if (!context.mounted) return;
+                        }
+                        if (value == 'members') {
+                          await _MainShellState._showGroupMembers(
+                            context,
+                            controller,
+                            group,
+                          );
+                          if (!context.mounted) return;
+                        }
+                        if (value == 'rename') {
+                          await _MainShellState._showRenameGroup(
+                            context,
+                            controller,
+                            group,
+                          );
+                          if (!context.mounted) return;
+                        }
+                        if (value == 'leave') {
+                          await _MainShellState._confirmLeaveGroup(
+                            context,
+                            controller,
+                            group,
+                          );
+                          if (!context.mounted) return;
+                          if (!controller.groups.any(
+                            (item) => item.groupId == group.groupId,
+                          )) {
+                            await MultiViewDesktop.of(context).closeWindow();
+                          }
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        PopupMenuItem(
+                          value: 'remark',
+                          child: ListTile(
+                            leading: const Icon(
+                              Icons.drive_file_rename_outline,
+                            ),
+                            title: Text(
+                              controller.groupRemarks.containsKey(
+                                    group.groupId,
+                                  )
+                                  ? '修改群聊备注'
+                                  : '添加群聊备注',
+                            ),
+                          ),
+                        ),
+                        const PopupMenuItem(
+                          value: 'members',
+                          child: ListTile(
+                            leading: Icon(Icons.people_outline),
+                            title: Text('群成员'),
+                          ),
+                        ),
+                        if (group.ownerDeviceId == localDeviceId)
+                          const PopupMenuItem(
+                            value: 'rename',
+                            child: ListTile(
+                              leading: Icon(Icons.edit_outlined),
+                              title: Text('修改群名'),
+                            ),
+                          ),
+                        PopupMenuItem(
+                          value: 'leave',
+                          child: ListTile(
+                            leading: Icon(
+                              group.ownerDeviceId == localDeviceId
+                                  ? Icons.delete_outline
+                                  : Icons.logout,
+                            ),
+                            title: Text(
+                              group.ownerDeviceId == localDeviceId
+                                  ? '解散群聊'
+                                  : '退出群聊',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ]
+                : const [],
             headerLeftPadding: 22,
           ),
         ),
       ),
     );
   }
+
+  Widget _missingConversation() =>
+      const Scaffold(body: Center(child: Text('这个会话已不存在')));
 }
 
 /// 独立窗口的文件拖放层：监听原生 per-view 拖放事件并显示提示。
@@ -2029,6 +2578,10 @@ class _ConversationPane extends StatefulWidget {
     this.loadMentionCandidates,
     this.headerLeftPadding = 64,
     this.useDesktopDrop = true,
+    this.isGroup = false,
+    this.senderHeaderFor,
+    this.senderRoleFor,
+    this.avatarPathFor,
   });
   final String conversationId;
   final String title;
@@ -2075,6 +2628,12 @@ class _ConversationPane extends StatefulWidget {
   /// 群聊输入 @ 时加载候选成员；私聊为空，不启用候选菜单。
   final Future<List<MentionCandidate>> Function()? loadMentionCandidates;
   final double headerLeftPadding;
+
+  /// 群聊会为每条消息显示发送者昵称与角色标签（群主/管理员）。
+  final bool isGroup;
+  final String Function(String deviceId)? senderHeaderFor;
+  final GroupRole? Function(String deviceId)? senderRoleFor;
+  final String? Function(String deviceId)? avatarPathFor;
 
   @override
   State<_ConversationPane> createState() => _ConversationPaneState();
@@ -2385,8 +2944,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
                   controller: _scroll,
                   reverse: true,
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 18,
+                    horizontal: 12,
+                    vertical: 10,
                   ),
                   itemCount: messages.length,
                   itemBuilder: (context, reverseIndex) {
@@ -2409,6 +2968,16 @@ class _ConversationPaneState extends State<_ConversationPane> {
                       message: message,
                       mine: mine,
                       senderName: widget.peerName(message.senderDeviceId),
+                      headerName:
+                          widget.senderHeaderFor?.call(message.senderDeviceId) ??
+                          widget.peerName(message.senderDeviceId),
+                      senderRole: widget.isGroup
+                          ? widget.senderRoleFor?.call(message.senderDeviceId)
+                          : null,
+                      avatarPath: widget.avatarPathFor?.call(
+                        message.senderDeviceId,
+                      ),
+                      showHeader: widget.isGroup || !mine,
                       mentioned: mentioned,
                       highlighted: _highlightedMessageId == message.messageId,
                       replySenderName: message.replyToSenderId == null
@@ -2830,6 +3399,10 @@ class _MessageBubble extends StatelessWidget {
     required this.onReject,
     required this.onRetry,
     required this.onRelocate,
+    this.headerName,
+    this.senderRole,
+    this.avatarPath,
+    this.showHeader = true,
     this.mentioned = false,
     this.highlighted = false,
     this.replySenderName,
@@ -2844,6 +3417,18 @@ class _MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final bool mine;
   final String senderName;
+
+  /// 消息头像上方显示的昵称；缺省时回退到 [senderName]。
+  final String? headerName;
+
+  /// 群聊里的角色标签（群主/管理员），私聊为 null。
+  final GroupRole? senderRole;
+
+  /// 发送者头像本地路径，为空时回退到首字母。
+  final String? avatarPath;
+
+  /// 是否显示昵称/角色这一行。私聊里自己的消息不显示。
+  final bool showHeader;
   final String missingHint;
   final Future<void> Function(ChatMessage) onOpen;
   final Future<void> Function(ChatMessage) onOpenFolder;
@@ -2895,92 +3480,121 @@ class _MessageBubble extends StatelessWidget {
     // 整行高亮：从引用跳转过来时给这一行铺底色，比只描气泡边框更容易定位。
     duration: const Duration(milliseconds: 220),
     width: double.infinity,
-    margin: const EdgeInsets.only(bottom: 12),
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
     decoration: BoxDecoration(
       color: highlighted
           ? Theme.of(context).colorScheme.primary.withValues(alpha: .12)
           : Colors.transparent,
       borderRadius: BorderRadius.circular(12),
     ),
-    child: Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: _hasSelectableContent
-          // 有可选文字时整块气泡放进选择区域，右键弹出「我们的菜单 + 全选」合并菜单。
-          ? SelectionArea(
-              contextMenuBuilder: _buildContextMenu,
-              child: _buildBubble(context),
-            )
-          // 纯图片气泡没有可选文字，框架不会弹工具栏，改用自绘的同一套菜单。
-          : GestureDetector(
-              onSecondaryTapDown: (details) =>
-                  _showOwnMenu(context, details.globalPosition),
-              child: _buildBubble(context),
-            ),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: mine
+          ? MainAxisAlignment.end
+          : MainAxisAlignment.start,
+      children: [
+        if (!mine) ...[
+          _headerAvatar(context),
+          const SizedBox(width: 8),
+        ],
+        Flexible(
+          child: Column(
+            crossAxisAlignment: mine
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              if (showHeader) _header(context),
+              _hasSelectableContent
+                  // 有可选文字时整块气泡放进选择区域，右键弹出「我们的菜单 + 全选」合并菜单。
+                  ? SelectionArea(
+                      contextMenuBuilder: _buildContextMenu,
+                      child: _buildBubble(context),
+                    )
+                  // 纯图片气泡没有可选文字，框架不会弹工具栏，改用自绘的同一套菜单。
+                  : GestureDetector(
+                      onSecondaryTapDown: (details) =>
+                          _showOwnMenu(context, details.globalPosition),
+                      child: _buildBubble(context),
+                    ),
+            ],
+          ),
+        ),
+        if (mine) ...[
+          const SizedBox(width: 8),
+          _headerAvatar(context),
+        ],
+      ],
     ),
   );
 
-  /// 气泡本体。
+  /// 头像列。使用 [avatarPath] 渲染同步到的头像，缺失时回退到昵称首字母。
+  Widget _headerAvatar(BuildContext context) => _NamedAvatar(
+    imagePath: avatarPath,
+    name: headerName ?? senderName,
+    radius: 16,
+  );
+
+  /// 气泡上方的昵称与角色标签。
+  Widget _header(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(left: 2, right: 2, bottom: 2),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (senderRole != null) ...[
+          _RoleTag(role: senderRole!),
+          const SizedBox(width: 6),
+        ],
+        Text(
+          headerName ?? senderName,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: mine
+                ? Theme.of(context).colorScheme.onSurfaceVariant
+                : Theme.of(context).colorScheme.primary,
+          ),
+        ),
+        if (mentioned) ...[
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.errorContainer,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              '@我',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Theme.of(context).colorScheme.onErrorContainer,
+              ),
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+
+  /// 气泡本体。昵称与角色已经渲染在气泡上方，这里只放内容与时间。
   Widget _buildBubble(BuildContext context) => Container(
     constraints: const BoxConstraints(maxWidth: 560),
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
     decoration: BoxDecoration(
       color: mine
           ? Theme.of(context).colorScheme.primaryContainer
-          : Theme.of(context).colorScheme.surface,
+          : Theme.of(context).colorScheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(14),
-      border: Border.all(
-        color: mentioned
-            ? Theme.of(context).colorScheme.error
-            : mine
-            ? Colors.transparent
-            : Theme.of(context).dividerColor,
-        width: mentioned ? 1.6 : 1,
-      ),
+      border: mentioned
+          ? Border.all(color: Theme.of(context).colorScheme.error, width: 1.6)
+          : null,
     ),
     child: Column(
       crossAxisAlignment: mine
           ? CrossAxisAlignment.end
           : CrossAxisAlignment.start,
       children: [
-        if (!mine)
-          // 昵称、@ 标记属于元信息，不参与选择与全选。
-          _unselectable(
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  senderName,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
-                if (mentioned) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 1,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.errorContainer,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      '@我',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: Theme.of(context).colorScheme.onErrorContainer,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
         if (message.isReply) _unselectable(_buildQuoted(context)),
         if (message.kind == MessageKind.text)
           Text(
@@ -3031,10 +3645,7 @@ class _MessageBubble extends StatelessWidget {
         !mine && message.status == MessageStatus.awaitingAcceptance;
     final canRetry = !mine && message.status == MessageStatus.failed;
     return ConstrainedBox(
-      constraints: BoxConstraints(
-        minWidth: message.kind == MessageKind.image && hasLocalFile ? 0 : 250,
-        maxWidth: 360,
-      ),
+      constraints: const BoxConstraints(maxWidth: 360),
       child: Column(
         crossAxisAlignment: mine
             ? CrossAxisAlignment.end
@@ -3057,6 +3668,7 @@ class _MessageBubble extends StatelessWidget {
             ),
           if (message.kind != MessageKind.image || !hasLocalFile)
             Row(
+              mainAxisSize: MainAxisSize.min,
               textDirection: mine ? TextDirection.rtl : TextDirection.ltr,
               children: [
                 Icon(
@@ -3066,7 +3678,7 @@ class _MessageBubble extends StatelessWidget {
                   size: 34,
                 ),
                 const SizedBox(width: 10),
-                Expanded(
+                Flexible(
                   child: Column(
                     crossAxisAlignment: mine
                         ? CrossAxisAlignment.end
@@ -3187,7 +3799,6 @@ class _MessageBubble extends StatelessWidget {
         child: Container(
           margin: const EdgeInsets.only(bottom: 6),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          constraints: const BoxConstraints(minWidth: 160),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surfaceContainerHighest
                 .withValues(alpha: .7),
@@ -3533,6 +4144,12 @@ String _peerListSubtitle(_UnifiedPeerEntry entry) {
   if (entry.displayName == entry.originalDisplayName) return status;
   return '${entry.originalDisplayName} · $status';
 }
+
+String _groupRoleLabel(GroupRole role) => switch (role) {
+  GroupRole.owner => '群主',
+  GroupRole.admin => '管理员',
+  GroupRole.member => '群成员',
+};
 
 String _groupListSubtitle(AppController controller, ChatGroup group) {
   final status =
