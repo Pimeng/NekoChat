@@ -82,6 +82,18 @@ flutter:
     - family: LXGWWenKai
       fonts:
         - asset: assets/font/LXGWWenKai.ttf
+    - family: MiSans
+      fonts:
+        - asset: assets/font/MiSans-Regular.ttf
+    - family: vivoSans
+      fonts:
+        - asset: assets/font/vivoSans-Regular.ttf
+    - family: GoogleSans
+      fonts:
+        - asset: assets/font/GoogleSans-Regular.ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/font/JetBrainsMono-Regular.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -10,107 +10,92 @@ import '../features/chat/main_shell.dart';
 import '../features/onboarding/auth_page.dart';
 import 'app_controller.dart';
 
-ThemeData buildNekoChatTheme() {
+/// 构建应用主题。
+///
+/// [fontFamily] 为 null 时使用系统默认字体；[bold] 为 true 时各字号字重上调一档
+/// （内置单字重字体由 Flutter 合成伪粗体）。
+ThemeData buildNekoChatTheme({
+  String? fontFamily = AppController.defaultFontFamily,
+  List<String>? fontFamilyFallback,
+  bool bold = false,
+}) {
   final colorScheme = ColorScheme.fromSeed(
     seedColor: const Color(0xff4666e5),
     brightness: Brightness.light,
   );
-  const fontFamily = 'LXGWWenKai';
+
+  // 加粗时把字重按 FontWeight 档位上调一级（封顶 w900）。
+  FontWeight weight(FontWeight base) {
+    if (!bold) return base;
+    final index = FontWeight.values.indexOf(base);
+    return FontWeight.values[(index + 1).clamp(0, FontWeight.values.length - 1)];
+  }
+
+  TextStyle styled({
+    required double fontSize,
+    required FontWeight fontWeight,
+    Color? color,
+  }) => TextStyle(
+    fontFamily: fontFamily,
+    fontFamilyFallback: fontFamilyFallback,
+    fontSize: fontSize,
+    fontWeight: weight(fontWeight),
+    color: color,
+  );
+
   return ThemeData(
     useMaterial3: true,
     fontFamily: fontFamily,
+    fontFamilyFallback: fontFamilyFallback,
     colorScheme: colorScheme,
     scaffoldBackgroundColor: const Color(0xfff7f8fc),
     textTheme: TextTheme(
-      headlineMedium: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 22,
-        fontWeight: FontWeight.w600,
-      ),
-      headlineSmall: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 20,
-        fontWeight: FontWeight.w600,
-      ),
-      titleLarge: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 18,
-        fontWeight: FontWeight.w600,
-      ),
-      titleMedium: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 15,
-        fontWeight: FontWeight.w600,
-      ),
-      titleSmall: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 13,
-        fontWeight: FontWeight.w600,
-      ),
-      bodyLarge: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 14,
-        fontWeight: FontWeight.w400,
-      ),
-      bodyMedium: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 14,
-        fontWeight: FontWeight.w400,
-      ),
-      bodySmall: TextStyle(
-        fontFamily: fontFamily,
+      headlineMedium: styled(fontSize: 22, fontWeight: FontWeight.w600),
+      headlineSmall: styled(fontSize: 20, fontWeight: FontWeight.w600),
+      titleLarge: styled(fontSize: 18, fontWeight: FontWeight.w600),
+      titleMedium: styled(fontSize: 15, fontWeight: FontWeight.w600),
+      titleSmall: styled(fontSize: 13, fontWeight: FontWeight.w600),
+      bodyLarge: styled(fontSize: 14, fontWeight: FontWeight.w400),
+      bodyMedium: styled(fontSize: 14, fontWeight: FontWeight.w400),
+      bodySmall: styled(
         fontSize: 12,
         fontWeight: FontWeight.w400,
         color: colorScheme.onSurfaceVariant,
       ),
-      labelLarge: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 13,
-        fontWeight: FontWeight.w600,
-      ),
-      labelMedium: const TextStyle(
-        fontFamily: fontFamily,
-        fontSize: 12,
-        fontWeight: FontWeight.w500,
-      ),
-      labelSmall: TextStyle(
-        fontFamily: fontFamily,
+      labelLarge: styled(fontSize: 13, fontWeight: FontWeight.w600),
+      labelMedium: styled(fontSize: 12, fontWeight: FontWeight.w500),
+      labelSmall: styled(
         fontSize: 11,
         fontWeight: FontWeight.w400,
         color: colorScheme.onSurfaceVariant,
       ),
     ),
     appBarTheme: AppBarTheme(
-      titleTextStyle: TextStyle(
-        fontFamily: fontFamily,
+      titleTextStyle: styled(
         fontSize: 17,
         fontWeight: FontWeight.w600,
         color: colorScheme.onSurface,
       ),
     ),
     dialogTheme: DialogThemeData(
-      titleTextStyle: TextStyle(
-        fontFamily: fontFamily,
+      titleTextStyle: styled(
         fontSize: 17,
         fontWeight: FontWeight.w600,
         color: colorScheme.onSurface,
       ),
     ),
     listTileTheme: ListTileThemeData(
-      titleTextStyle: TextStyle(
-        fontFamily: fontFamily,
+      titleTextStyle: styled(
         fontSize: 14,
         fontWeight: FontWeight.w500,
         color: colorScheme.onSurface,
       ),
-      subtitleTextStyle: TextStyle(
-        fontFamily: fontFamily,
+      subtitleTextStyle: styled(
         fontSize: 12,
         fontWeight: FontWeight.w400,
         color: colorScheme.onSurfaceVariant,
       ),
-      leadingAndTrailingTextStyle: TextStyle(
-        fontFamily: fontFamily,
+      leadingAndTrailingTextStyle: styled(
         fontSize: 12,
         fontWeight: FontWeight.w400,
         color: colorScheme.onSurfaceVariant,
@@ -118,14 +103,12 @@ ThemeData buildNekoChatTheme() {
     ),
     inputDecorationTheme: InputDecorationTheme(
       border: const OutlineInputBorder(),
-      hintStyle: TextStyle(
-        fontFamily: fontFamily,
+      hintStyle: styled(
         fontSize: 13,
         fontWeight: FontWeight.w400,
         color: colorScheme.onSurfaceVariant,
       ),
-      labelStyle: TextStyle(
-        fontFamily: fontFamily,
+      labelStyle: styled(
         fontSize: 13,
         fontWeight: FontWeight.w400,
         color: colorScheme.onSurfaceVariant,
@@ -147,16 +130,9 @@ class NekoChatApp extends StatefulWidget {
 
 class _NekoChatAppState extends State<NekoChatApp> {
   final _log = Logger('NekoChatApp');
-  late ThemeData _theme = buildNekoChatTheme();
   late final AppController controller;
   late final SingleInstanceService _singleInstance;
   StreamSubscription<void>? _singleInstanceSubscription;
-
-  @override
-  void reassemble() {
-    super.reassemble();
-    _theme = buildNekoChatTheme();
-  }
 
   @override
   void initState() {
@@ -211,21 +187,41 @@ class _NekoChatAppState extends State<NekoChatApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'NekoChat 局域网聊天',
-      theme: _theme,
-      home: AnimatedBuilder(
-        animation: controller,
-        builder: (context, _) => switch (controller.stage) {
-          AppStage.booting => const BootPage(),
-          AppStage.setup || AppStage.locked => AuthPage(controller: controller),
-          AppStage.ready => MainShell(controller: controller),
-          AppStage.error => FatalPage(
-            message: controller.errorMessage ?? '未知错误',
+    return ValueListenableBuilder<int>(
+      valueListenable: controller.appearanceRevision,
+      builder: (context, _, _) {
+        final fontStack = controller.resolveFontStack();
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'NekoChat 局域网聊天',
+          theme: buildNekoChatTheme(
+            fontFamily: fontStack.family,
+            fontFamilyFallback: fontStack.fallback,
+            bold: controller.boldText,
           ),
-        },
-      ),
+          builder: (context, child) {
+            final mediaQuery = MediaQuery.of(context);
+            return MediaQuery(
+              data: mediaQuery.copyWith(
+                textScaler: TextScaler.linear(controller.fontScale),
+              ),
+              child: child!,
+            );
+          },
+          home: AnimatedBuilder(
+            animation: controller,
+            builder: (context, _) => switch (controller.stage) {
+              AppStage.booting => const BootPage(),
+              AppStage.setup ||
+              AppStage.locked => AuthPage(controller: controller),
+              AppStage.ready => MainShell(controller: controller),
+              AppStage.error => FatalPage(
+                message: controller.errorMessage ?? '未知错误',
+              ),
+            },
+          ),
+        );
+      },
     );
   }
 }

@@ -464,9 +464,27 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
         ? _buildOverviewGallery(context, catalog)
         : _buildSingleEntryStage(context, selectedEntry);
 
-    final scaled = _textScale == 1.0
-        ? child
-        : _TextScaleScope(textScale: _textScale, child: child);
+    // 预览画布跟随“外观”设置（字体族 / 字重 / 字号），与真实应用保持一致；
+    // 工具栏缩放 _textScale 与设置里的字号相乘叠加。
+    final scaled = AnimatedBuilder(
+      animation: _controller,
+      child: child,
+      builder: (context, inner) {
+        final effectiveScale = _textScale * _controller.fontScale;
+        final fontStack = _controller.resolveFontStack();
+        final themed = Theme(
+          data: buildNekoChatTheme(
+            fontFamily: fontStack.family,
+            fontFamilyFallback: fontStack.fallback,
+            bold: _controller.boldText,
+          ),
+          child: inner!,
+        );
+        return effectiveScale == 1.0
+            ? themed
+            : _TextScaleScope(textScale: effectiveScale, child: themed);
+      },
+    );
 
     final bgWidget = _CanvasSurface(background: _background, child: scaled);
     final presetSize = _viewport.size;

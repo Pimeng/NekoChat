@@ -8,6 +8,7 @@ import '../common/smooth_dialog.dart';
 
 enum SettingsSection {
   lan('局域网', '局域网设备相互发现', Icons.wifi_find_outlined),
+  appearance('外观', '字体大小、字体与字重', Icons.text_fields_outlined),
   privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
   files('文件接收', '自动接收与大小上限', Icons.download_outlined),
   notifications('通知', 'Windows 系统通知与测试', Icons.notifications_outlined),
@@ -214,6 +215,9 @@ class SettingsPage extends StatelessWidget {
                   style: TextStyle(color: Colors.black54, fontSize: 12),
                 ),
               ),
+              const SizedBox(height: 24),
+              const SettingsSectionTitle('外观'),
+              AppearanceSettingsCards(controller: controller),
               const SizedBox(height: 32),
               const SettingsVersionFooter(),
             ],
@@ -308,6 +312,206 @@ class SettingsSectionTitle extends StatelessWidget {
 }
 
 int _formatMegabytes(int bytes) => bytes ~/ (1024 * 1024);
+
+/// 外观设置卡片组：实时预览 + 字体大小、字体、加粗，供嵌入式面板与独立设置页共用。
+class AppearanceSettingsCards extends StatelessWidget {
+  const AppearanceSettingsCards({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final colorScheme = Theme.of(context).colorScheme;
+    final scaleEntries = AppController.fontScaleOptions.entries.toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '预览',
+                  style: textTheme.labelMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'NekoChat 局域网聊天 · 字体预览 Abc 123',
+                  style: textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '在这里可以直观看到字号、字体与字重的效果。',
+                  style: textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.format_size_outlined),
+                    const SizedBox(width: 12),
+                    Text('字体大小', style: textTheme.titleSmall),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: SegmentedButton<double>(
+                    showSelectedIcon: false,
+                    segments: [
+                      for (final entry in scaleEntries)
+                        ButtonSegment<double>(
+                          value: entry.value,
+                          label: Text(entry.key),
+                        ),
+                    ],
+                    selected: {controller.fontScale},
+                    onSelectionChanged: (selection) =>
+                        controller.setFontScale(selection.first),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.font_download_outlined),
+                    const SizedBox(width: 12),
+                    Text('字体', style: textTheme.titleSmall),
+                  ],
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('中英文分开设置'),
+                  subtitle: const Text('关闭时中英文用同一字体；开启后分别选择'),
+                  value: controller.separateFonts,
+                  onChanged: controller.setSeparateFonts,
+                ),
+                const SizedBox(height: 8),
+                if (!controller.separateFonts)
+                  _fontDropdown(
+                    context,
+                    value: controller.appFontFamily,
+                    options: AppController.fontOptions.where(
+                      (option) => option.cjk,
+                    ),
+                    onChanged: controller.setAppFontFamily,
+                  )
+                else ...[
+                  _fontDropdown(
+                    context,
+                    label: '中文字体',
+                    value: controller.appFontFamily,
+                    options: AppController.fontOptions.where(
+                      (option) => option.cjk,
+                    ),
+                    onChanged: controller.setAppFontFamily,
+                  ),
+                  const SizedBox(height: 12),
+                  _fontDropdown(
+                    context,
+                    label: '英文字体',
+                    value: controller.latinFontFamily,
+                    options: AppController.fontOptions.where(
+                      (option) => option.latin,
+                    ),
+                    onChanged: controller.setLatinFontFamily,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: SwitchListTile(
+            secondary: const Icon(Icons.format_bold),
+            title: const Text('字体加粗'),
+            subtitle: const Text('整体文字字重上调一档，看起来更醒目'),
+            value: controller.boldText,
+            onChanged: controller.setBoldText,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 带边框的字体下拉；每个选项用它自己的字体渲染，便于直观对比。
+  Widget _fontDropdown(
+    BuildContext context, {
+    String? label,
+    required String? value,
+    required Iterable<AppFontOption> options,
+    required ValueChanged<String?> onChanged,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (label != null) ...[
+          Text(
+            label,
+            style: textTheme.labelMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 6),
+        ],
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            border: Border.all(color: colorScheme.outlineVariant),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String?>(
+              isExpanded: true,
+              value: value,
+              borderRadius: BorderRadius.circular(8),
+              // 选中后按钮仍持有焦点，默认 focusColor 会铺一层灰底，置空消除。
+              focusColor: Colors.transparent,
+              items: [
+                for (final option in options)
+                  DropdownMenuItem<String?>(
+                    value: option.family,
+                    child: Text(
+                      option.label,
+                      style: TextStyle(fontFamily: option.family),
+                    ),
+                  ),
+              ],
+              onChanged: onChanged,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
 
 class SettingsVersionFooter extends StatelessWidget {
   const SettingsVersionFooter({super.key});
@@ -783,6 +987,9 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
             onChanged: controller.setLanDiscoveryEnabled,
           ),
         ),
+      ],
+      SettingsSection.appearance => [
+        AppearanceSettingsCards(controller: controller),
       ],
       SettingsSection.privacy => [
         Card(

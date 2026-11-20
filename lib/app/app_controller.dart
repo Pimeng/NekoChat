@@ -29,6 +29,22 @@ import '../features/chat/chat_state_machine.dart';
 
 enum AppStage { booting, setup, locked, ready, error }
 
+/// 外观设置里的一个可选字体。[family] 为 null 表示系统默认字体；
+/// [cjk]/[latin] 标记它适合用作中文/英文字体。
+class AppFontOption {
+  const AppFontOption({
+    required this.family,
+    required this.label,
+    required this.cjk,
+    required this.latin,
+  });
+
+  final String? family;
+  final String label;
+  final bool cjk;
+  final bool latin;
+}
+
 class AppController extends ChangeNotifier {
   AppController({
     LocalDatabaseKeyProvider? keyProvider,
@@ -55,6 +71,41 @@ class AppController extends ChangeNotifier {
   static const _bossKeySetting = 'boss_key_enabled';
   static const _bossKeyShortcutSetting = 'boss_key_shortcut';
   static const _bossKeyNotifyWhenHiddenSetting = 'boss_key_notify_when_hidden';
+  static const _fontScaleSetting = 'font_scale';
+  static const _fontFamilySetting = 'font_family';
+  static const _boldTextSetting = 'bold_text';
+  static const _fontSeparateSetting = 'font_separate';
+  static const _fontFamilyLatinSetting = 'font_family_latin';
+
+  /// 字体大小档位：展示名 → 文字缩放系数，供外观设置与 clamp 共用。
+  static const fontScaleOptions = <String, double>{
+    '小': 0.9,
+    '标准': 1.0,
+    '大': 1.15,
+    '特大': 1.3,
+  };
+
+  /// 内置字体族名；选「系统默认」时存空串、运行时用 null。
+  static const bundledFontFamily = 'LXGWWenKai';
+
+  /// 未设置过字体时的默认统一/中文字体。
+  static const defaultFontFamily = 'MiSans';
+
+  /// 可选字体注册表：预置新字体时在此加一行、并在 pubspec 登记资源即可。
+  /// [cjk]/[latin] 标记该字体适合中文/英文,决定它出现在哪个下拉里。
+  static const fontOptions = <AppFontOption>[
+    AppFontOption(family: null, label: '系统默认', cjk: true, latin: true),
+    AppFontOption(family: bundledFontFamily, label: '霞鹜文楷', cjk: true, latin: true),
+    AppFontOption(family: 'MiSans', label: 'MiSans 小米', cjk: true, latin: true),
+    AppFontOption(family: 'vivoSans', label: 'vivo Sans', cjk: true, latin: true),
+    AppFontOption(family: 'GoogleSans', label: 'Google Sans', cjk: false, latin: true),
+    AppFontOption(
+      family: 'JetBrainsMono',
+      label: 'JetBrains Mono',
+      cjk: false,
+      latin: true,
+    ),
+  ];
   final LocalDatabaseKeyProvider _keyProvider;
   final AppDatabase _database;
   final ChatTransport _transport;
@@ -135,6 +186,27 @@ class AppController extends ChangeNotifier {
 
   /// 老板键隐藏窗口后是否仍弹出系统通知，默认关闭以免泄露应用仍在运行。
   bool bossKeyNotifyWhenHidden = false;
+
+  /// 全局文字缩放系数，对应 [fontScaleOptions] 的某一档，默认标准 1.0。
+  double fontScale = 1.0;
+
+  /// 当前字体族；null 表示使用系统默认字体。默认 MiSans。
+  /// 「中英文分开」关闭时作统一字体，开启时作中文字体。
+  String? appFontFamily = defaultFontFamily;
+
+  /// 是否中英文分开设置字体。开启后 [latinFontFamily] 作英文字体、
+  /// [appFontFamily] 作中文字体（回退）。
+  bool separateFonts = false;
+
+  /// 分开设置时的英文字体；null 表示系统默认。
+  String? latinFontFamily = 'GoogleSans';
+
+  /// 是否整体加粗（主题各字号字重上调一档）。
+  bool boldText = false;
+
+  /// 仅当外观（字体）设置变化时自增，供根部重建主题/缩放；
+  /// 避免高频 [notifyListeners] 都触发 MaterialApp 重建。
+  final ValueNotifier<int> appearanceRevision = ValueNotifier<int>(0);
 
   /// 老板键隐藏期间暂停系统通知，避免通知泄露应用仍在运行。
   bool bossKeyHidden = false;
@@ -221,6 +293,31 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_bossKeyNotifyWhenHiddenSetting),
       fallback: false,
     );
+    fontScale = _normalizeFontScale(
+      _settingDouble(
+        await _database.loadSetting(_fontScaleSetting),
+        fallback: 1.0,
+      ),
+    );
+    final storedFontFamily = await _database.loadSetting(_fontFamilySetting);
+    appFontFamily = storedFontFamily == null
+        ? defaultFontFamily
+        : (storedFontFamily.isEmpty ? null : storedFontFamily);
+    separateFonts = _settingBool(
+      await _database.loadSetting(_fontSeparateSetting),
+      fallback: false,
+    );
+    final storedLatinFamily = await _database.loadSetting(
+      _fontFamilyLatinSetting,
+    );
+    latinFontFamily = storedLatinFamily == null
+        ? 'GoogleSans'
+        : (storedLatinFamily.isEmpty ? null : storedLatinFamily);
+    boldText = _settingBool(
+      await _database.loadSetting(_boldTextSetting),
+      fallback: false,
+    );
+    appearanceRevision.value++;
     peerRemarks = await _database.loadPeerRemarks();
     groupRemarks = await _database.loadGroupRemarks();
     final storedAvatarPath = await _database.loadSetting(_profileAvatarSetting);
@@ -533,6 +630,63 @@ class AppController extends ChangeNotifier {
       value.toString(),
     );
     bossKeyNotifyWhenHidden = value;
+    notifyListeners();
+  }
+
+  /// 设置全局文字缩放；取最接近的合法档位，持久化并通知根部重建。
+  Future<void> setFontScale(double value) async {
+    final normalized = _normalizeFontScale(value);
+    if (fontScale == normalized) return;
+    await _database.saveSetting(_fontScaleSetting, normalized.toString());
+    fontScale = normalized;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  /// 设置字体族；null 表示系统默认字体（存空串）。
+  Future<void> setAppFontFamily(String? value) async {
+    if (appFontFamily == value) return;
+    await _database.saveSetting(_fontFamilySetting, value ?? '');
+    appFontFamily = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  /// 设置是否中英文分开设置字体。
+  Future<void> setSeparateFonts(bool value) async {
+    if (separateFonts == value) return;
+    await _database.saveSetting(_fontSeparateSetting, value.toString());
+    separateFonts = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  /// 设置分开模式下的英文字体；null 表示系统默认字体（存空串）。
+  Future<void> setLatinFontFamily(String? value) async {
+    if (latinFontFamily == value) return;
+    await _database.saveSetting(_fontFamilyLatinSetting, value ?? '');
+    latinFontFamily = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  /// 解析出主题要用的主字体与回退字体。分开模式下英文字体作主、
+  /// 中文字体作回退（拉丁字形走英文字体，中文字形回退到中文字体）。
+  ({String? family, List<String>? fallback}) resolveFontStack() {
+    if (!separateFonts) return (family: appFontFamily, fallback: null);
+    final cjk = appFontFamily;
+    return (
+      family: latinFontFamily,
+      fallback: cjk == null ? null : <String>[cjk],
+    );
+  }
+
+  /// 设置整体加粗开关。
+  Future<void> setBoldText(bool value) async {
+    if (boldText == value) return;
+    await _database.saveSetting(_boldTextSetting, value.toString());
+    boldText = value;
+    appearanceRevision.value++;
     notifyListeners();
   }
 
@@ -3541,6 +3695,24 @@ class AppController extends ChangeNotifier {
   static int _settingInt(String? value, {required int fallback}) =>
       int.tryParse(value ?? '') ?? fallback;
 
+  static double _settingDouble(String? value, {required double fallback}) =>
+      double.tryParse(value ?? '') ?? fallback;
+
+  /// 把任意缩放值吸附到 [fontScaleOptions] 中最接近的合法档位。
+  static double _normalizeFontScale(double value) {
+    final options = fontScaleOptions.values;
+    var best = 1.0;
+    var bestDelta = double.infinity;
+    for (final option in options) {
+      final delta = (option - value).abs();
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = option;
+      }
+    }
+    return best;
+  }
+
   static String? _normalizeRemark(String value) {
     final normalized = value.trim();
     if (normalized.isEmpty) return null;
@@ -3573,6 +3745,7 @@ class AppController extends ChangeNotifier {
     unawaited(_database.close());
     unawaited(_notifications.dispose());
     unawaited(_bossKey.dispose());
+    appearanceRevision.dispose();
     super.dispose();
   }
 }

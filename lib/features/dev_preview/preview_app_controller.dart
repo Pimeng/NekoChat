@@ -654,6 +654,41 @@ class PreviewAppController extends AppController {
   }
 
   @override
+  Future<void> setFontScale(double value) async {
+    fontScale = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setAppFontFamily(String? value) async {
+    appFontFamily = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setBoldText(bool value) async {
+    boldText = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setSeparateFonts(bool value) async {
+    separateFonts = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setLatinFontFamily(String? value) async {
+    latinFontFamily = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  @override
   Future<void> showTestNotification() async {
     showPreviewToast(
       '预览模式：已模拟发送 Windows 测试通知',
