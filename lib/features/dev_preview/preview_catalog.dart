@@ -7,6 +7,7 @@ import '../chat/group_info_drawer.dart';
 import '../chat/main_shell.dart';
 import '../chat/mention_autocomplete.dart';
 import '../chat/message_composer.dart';
+import '../chat/peer_info_drawer.dart';
 import '../onboarding/auth_page.dart';
 import '../settings/settings_page.dart';
 import 'preview_app_controller.dart';
@@ -388,6 +389,35 @@ List<PreviewEntry> buildPreviewCatalog(
                 onClose: () => onAction('关闭群聊悬浮面板'),
                 onOpenInWindow: () async => onAction('独立窗口打开：${group.name}'),
                 onMentionMember: (name) => onAction('@ 提及 $name'),
+              ),
+            ),
+          );
+        },
+      ),
+    ),
+    PreviewEntry(
+      id: 'peer-info-drawer',
+      name: '单聊右侧悬浮面板',
+      widgetType: 'PeerInfoDrawer',
+      description: '单聊右侧悬浮信息面板，集成联系人资料、原地备注编辑、独立窗口、关闭对话、取消验证与拉黑管理。',
+      category: PreviewCategory.sidebar,
+      builder: (_) => AnimatedBuilder(
+        animation: controller,
+        builder: (_, _) {
+          final chat = controller.chats.firstOrNull;
+          if (chat == null) {
+            return const Text('示例单聊已关闭，点击右上角「重置数据」恢复');
+          }
+          return SizedBox(
+            height: 600,
+            child: Align(
+              alignment: Alignment.topRight,
+              child: PeerInfoDrawer(
+                controller: controller,
+                chat: chat,
+                onClose: () => onAction('关闭单聊悬浮面板'),
+                onOpenInWindow: () async =>
+                    onAction('独立窗口打开：${chat.displayName}'),
               ),
             ),
           );

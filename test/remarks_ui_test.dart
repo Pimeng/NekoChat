@@ -519,10 +519,15 @@ void main() {
     expect(find.textContaining('原名：李四'), findsOneWidget);
     await tester.tap(find.byTooltip('会话操作'));
     await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('peer-info-drawer')), findsOneWidget);
+    expect(find.text('人员备注'), findsOneWidget);
+    expect(find.text('设备与网络资料'), findsOneWidget);
     await tester.tap(find.text('修改人员备注'));
     await tester.pumpAndSettle();
-    expect(find.text('人员备注'), findsOneWidget);
-    expect(find.text('原始名称：李四'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('peer-drawer-remark-field')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('侧边栏会话右键菜单可查看人员资料', (tester) async {

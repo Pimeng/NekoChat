@@ -13,6 +13,7 @@ import '../settings/settings_page.dart';
 import 'group_info_drawer.dart';
 import 'message_composer.dart';
 import 'mention_autocomplete.dart';
+import 'peer_info_drawer.dart';
 import 'view_drop_service.dart';
 
 final Map<String, int> _detachedConversationWindowIds = {};
@@ -131,6 +132,8 @@ class _MainShellState extends State<MainShell> {
   bool _blockedExpanded = false;
   bool _groupDrawerOpen = false;
   String? _groupDrawerGroupId;
+  bool _peerDrawerOpen = false;
+  String? _peerDrawerChatId;
 
   TextEditingController _composerFor(String conversationId) =>
       _composers.putIfAbsent(conversationId, TextEditingController.new);
@@ -1043,7 +1046,8 @@ class _MainShellState extends State<MainShell> {
           chat.peerDeviceId,
           originalDisplayName,
         );
-        return _ConversationPane(
+        final drawerOpen = _peerDrawerOpen && _peerDrawerChatId == chat.chatId;
+        final pane = _ConversationPane(
           key: ValueKey(chat.chatId),
           conversationId: conversationId,
           title: displayName,
@@ -1092,92 +1096,50 @@ class _MainShellState extends State<MainShell> {
           onRecallMessage: controller.recallMessage,
           recallNoticeFor: controller.recallNotice,
           actions: [
-            PopupMenuButton<String>(
+            IconButton(
               tooltip: '会话操作',
-              onSelected: (value) async {
-                if (value == 'info') {
-                  await _showPeerInfo(
-                    controller,
-                    chat.peerDeviceId,
-                    fallbackName: chat.displayName,
-                  );
-                  if (!mounted) return;
+              onPressed: () => setState(() {
+                if (drawerOpen) {
+                  _peerDrawerOpen = false;
+                } else {
+                  _peerDrawerChatId = chat.chatId;
+                  _peerDrawerOpen = true;
                 }
-                if (value == 'remark') {
-                  await _showPeerRemark(
-                    context,
-                    controller,
-                    chat.peerDeviceId,
-                    chat.displayName,
-                  );
-                  if (!mounted) return;
-                }
-                if (value == 'close') await controller.closeChat(chat);
-                if (value == 'block') {
-                  if (await _confirmBlockPeer(displayName)) {
-                    await controller.setBlocked(chat.peerDeviceId, true);
-                  }
-                }
-                if (value == 'unblock') {
-                  if (await _confirmUnblockPeer(displayName)) {
-                    await controller.setBlocked(chat.peerDeviceId, false);
-                  }
-                }
-                if (value == 'revokeVerification') {
-                  if (await _confirmRevokeVerification(displayName)) {
-                    await controller.revokePeerVerification(chat.peerDeviceId);
-                  }
-                }
-              },
-              itemBuilder: (_) {
-                final trusted = controller.trustedPeers[chat.peerDeviceId];
-                final isBlocked = trusted?.blocked == true;
-                return [
-                  const PopupMenuItem(
-                    value: 'info',
-                    child: ListTile(
-                      leading: Icon(Icons.badge_outlined),
-                      title: Text('查看资料'),
-                    ),
-                  ),
-                  PopupMenuItem(
-                    value: 'remark',
-                    child: ListTile(
-                      leading: const Icon(Icons.drive_file_rename_outline),
-                      title: Text(
-                        controller.peerRemarks.containsKey(chat.peerDeviceId)
-                            ? '修改人员备注'
-                            : '添加人员备注',
-                      ),
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'close',
-                    child: ListTile(
-                      leading: Icon(Icons.close),
-                      title: Text('关闭对话'),
-                    ),
-                  ),
-                  if (trusted != null)
-                    const PopupMenuItem(
-                      value: 'revokeVerification',
-                      child: ListTile(
-                        leading: Icon(Icons.gpp_bad_outlined),
-                        title: Text('取消验证'),
-                      ),
-                    ),
-                  PopupMenuItem(
-                    value: isBlocked ? 'unblock' : 'block',
-                    child: ListTile(
-                      leading: Icon(
-                        isBlocked ? Icons.check_circle_outline : Icons.block,
-                      ),
-                      title: Text(isBlocked ? '解除拉黑' : '加入黑名单'),
-                    ),
-                  ),
-                ];
-              },
+              }),
+              icon: Icon(
+                Icons.more_horiz,
+                color: drawerOpen
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+              ),
             ),
+          ],
+        );
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            pane,
+            if (drawerOpen) ...[
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _peerDrawerOpen = false),
+                  child: const ColoredBox(color: Colors.black12),
+                ),
+              ),
+              Positioned(
+                top: 10,
+                right: 12,
+                bottom: 12,
+                child: PeerInfoDrawer(
+                  controller: controller,
+                  chat: chat,
+                  onClose: () => setState(() => _peerDrawerOpen = false),
+                  onOpenInWindow: () =>
+                      openConversationInWindow(context, controller, chat.chatId),
+                ),
+              ),
+            ],
           ],
         );
       }
@@ -2856,7 +2818,7 @@ class _DetachedConversationWindowState
   List<ChatMessage> _messages = const [];
   ChatMessage? _replyingTo;
   int _refreshGeneration = 0;
-  bool _groupDrawerOpen = false;
+  bool _infoDrawerOpen = false;
 
   @override
   void initState() {
@@ -3050,29 +3012,27 @@ class _DetachedConversationWindowState
                     ];
                   }
                 : null,
-            actions: isGroup
-                ? [
-                    IconButton(
-                      tooltip: '群聊操作',
-                      onPressed: () =>
-                          setState(() => _groupDrawerOpen = !_groupDrawerOpen),
-                      icon: Icon(
-                        Icons.more_horiz,
-                        color: _groupDrawerOpen
-                            ? Theme.of(context).colorScheme.primary
-                            : null,
-                      ),
-                    ),
-                  ]
-                : const [],
+            actions: [
+              IconButton(
+                tooltip: isGroup ? '群聊操作' : '会话操作',
+                onPressed: () =>
+                    setState(() => _infoDrawerOpen = !_infoDrawerOpen),
+                icon: Icon(
+                  Icons.more_horiz,
+                  color: _infoDrawerOpen
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
+              ),
+            ],
             headerLeftPadding: 22,
           ),
         ),
-            if (isGroup && _groupDrawerOpen) ...[
+            if (_infoDrawerOpen && (isGroup || chat != null)) ...[
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _groupDrawerOpen = false),
+                  onTap: () => setState(() => _infoDrawerOpen = false),
                   child: const ColoredBox(color: Colors.black12),
                 ),
               ),
@@ -3080,21 +3040,31 @@ class _DetachedConversationWindowState
                 top: 10,
                 right: 12,
                 bottom: 12,
-                child: GroupInfoDrawer(
-                  controller: controller,
-                  group: group,
-                  onClose: () => setState(() => _groupDrawerOpen = false),
-                  onAfterLeaveOrDisband: () async {
-                    if (!context.mounted) return;
-                    if (!controller.groups.any(
-                      (item) => item.groupId == group.groupId,
-                    )) {
-                      await MultiViewDesktop.of(context).closeWindow();
-                    }
-                  },
-                  onMentionMember: (name) =>
-                      _MainShellState._insertMention(_composer, name),
-                ),
+                child: isGroup
+                    ? GroupInfoDrawer(
+                        controller: controller,
+                        group: group,
+                        onClose: () => setState(() => _infoDrawerOpen = false),
+                        onAfterLeaveOrDisband: () async {
+                          if (!context.mounted) return;
+                          if (!controller.groups.any(
+                            (item) => item.groupId == group.groupId,
+                          )) {
+                            await MultiViewDesktop.of(context).closeWindow();
+                          }
+                        },
+                        onMentionMember: (name) =>
+                            _MainShellState._insertMention(_composer, name),
+                      )
+                    : PeerInfoDrawer(
+                        controller: controller,
+                        chat: chat!,
+                        onClose: () => setState(() => _infoDrawerOpen = false),
+                        onAfterClose: () async {
+                          if (!context.mounted) return;
+                          await MultiViewDesktop.of(context).closeWindow();
+                        },
+                      ),
               ),
             ],
           ],
