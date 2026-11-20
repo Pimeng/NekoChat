@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:multiview_desktop/multiview_desktop.dart';
 
 import '../../app/app_controller.dart';
@@ -3349,8 +3351,11 @@ class _ConversationPaneState extends State<_ConversationPane> {
   bool _draggingFiles = false;
   bool _sendingDroppedFiles = false;
 
-  /// 图片气泡的自绘右键菜单。
+  /// 消息右键菜单（文字/图片/文件统一自绘）。
   OverlayEntry? _fallbackMenu;
+
+  /// 各气泡当前的文本选区，右键「复制选中」时读取。
+  final Map<String, String?> _selectedTexts = {};
 
   /// 记录已展示过的消息 ID，仅对新发出或新收到的消息播放轻快入场动画。
   final Set<String> _knownMessageIds = {};
@@ -3395,37 +3400,27 @@ class _ConversationPaneState extends State<_ConversationPane> {
     _fallbackMenu = null;
   }
 
-  /// 纯图片气泡里没有可选中的文字，框架的选择工具栏不会弹出，
-  /// 这里把它渲染成同一个组件（位置、外观都与文字气泡一致）。
+  /// 消息右键菜单：文字、图片、文件气泡统一使用这一套精致自绘菜单。
+  ///
+  /// 遮罩覆盖全屏，点击任意空白处或在其它地方右键均立即关闭；
+  /// 样式对齐现代桌面聊天应用（深色圆角浮层 + 紧凑图标文字项 + 悬浮动效）。
   void _showFallbackMenu(
     BuildContext context,
     Offset position,
-    List<ContextMenuButtonItem> Function(VoidCallback dismiss) buildItems,
+    List<ChatContextMenuItem> Function(VoidCallback dismiss) buildItems,
   ) {
     _removeFallbackMenu();
     final overlay = Overlay.of(context);
+    void dismiss() => _removeFallbackMenu();
+    final items = buildItems(dismiss);
+    if (items.isEmpty) return;
+
     final entry = OverlayEntry(
-      builder: (context) {
-        void dismiss() => _removeFallbackMenu();
-        return Stack(
-          children: [
-            // 点击空白或其他地方关闭菜单。
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: dismiss,
-                onSecondaryTapDown: (_) => dismiss(),
-              ),
-            ),
-            Positioned.fill(
-              child: AdaptiveTextSelectionToolbar.buttonItems(
-                anchors: TextSelectionToolbarAnchors(primaryAnchor: position),
-                buttonItems: buildItems(dismiss),
-              ),
-            ),
-          ],
-        );
-      },
+      builder: (context) => _ChatMessageMenuOverlay(
+        position: position,
+        items: items,
+        onDismiss: dismiss,
+      ),
     );
     _fallbackMenu = entry;
     overlay.insert(entry);
@@ -3740,6 +3735,9 @@ class _ConversationPaneState extends State<_ConversationPane> {
                           ? () => widget.onRecallMessage!(message)
                           : null,
                       onShowFallbackMenu: _showFallbackMenu,
+                      onSelectionChanged: (text) =>
+                          _selectedTexts[message.messageId] = text,
+                      selectedText: () => _selectedTexts[message.messageId],
                     );
                     if (_enteringMessageIds.contains(message.messageId)) {
                       return _AnimatedMessageEntrance(
@@ -4183,7 +4181,15 @@ class MessageBubble extends StatelessWidget {
     this.resolveMessage,
     this.onJumpToReply,
     this.onShowFallbackMenu,
+    this.onSelectionChanged,
+    this.selectedText,
   });
+
+  /// 气泡内文本选区变化时回调，便于右键菜单「复制」只复制选中的片段。
+  final ValueChanged<String?>? onSelectionChanged;
+
+  /// 读取当前气泡内选中的文本，没有选区时返回 null。
+  final String? Function()? selectedText;
   final ChatMessage message;
   final bool mine;
   final String senderName;
@@ -4231,7 +4237,7 @@ class MessageBubble extends StatelessWidget {
   final void Function(
     BuildContext context,
     Offset position,
-    List<ContextMenuButtonItem> Function(VoidCallback dismiss) buildItems,
+    List<ChatContextMenuItem> Function(VoidCallback dismiss) buildItems,
   )?
   onShowFallbackMenu;
 
@@ -4246,7 +4252,22 @@ class MessageBubble extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedContainer(
+  Widget build(BuildContext context) => Listener(
+    behavior: HitTestBehavior.translucent,
+    onPointerDown: (event) {
+      if ((event.buttons & kSecondaryMouseButton) != 0) {
+        _showOwnMenu(context, event.position);
+      }
+    },
+    child: GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onSecondaryTapDown: (details) =>
+          _showOwnMenu(context, details.globalPosition),
+      child: _buildRow(context),
+    ),
+  );
+
+  Widget _buildRow(BuildContext context) => AnimatedContainer(
     // 整行高亮：从引用跳转过来时给这一行铺底色，比只描气泡边框更容易定位。
     duration: const Duration(milliseconds: 220),
     width: double.infinity,
@@ -4276,17 +4297,15 @@ class MessageBubble extends StatelessWidget {
             children: [
               if (showHeader) _header(context),
               _hasSelectableContent
-                  // 有可选文字时整块气泡放进选择区域，右键弹出「我们的菜单 + 全选」合并菜单。
+                  // 文字气泡保留拖选文本的能力；框架自带的选择工具栏不再弹出，
+                  // 右键统一由整行的监听弹出同一套自绘菜单。
                   ? SelectionArea(
-                      contextMenuBuilder: _buildContextMenu,
+                      contextMenuBuilder: (_, _) => const SizedBox.shrink(),
+                      onSelectionChanged: (content) =>
+                          onSelectionChanged?.call(content?.plainText),
                       child: _buildBubble(context),
                     )
-                  // 纯图片气泡没有可选文字，框架不会弹工具栏，改用自绘的同一套菜单。
-                  : GestureDetector(
-                      onSecondaryTapDown: (details) =>
-                          _showOwnMenu(context, details.globalPosition),
-                      child: _buildBubble(context),
-                    ),
+                  : _buildBubble(context),
             ],
           ),
         ),
@@ -4613,112 +4632,268 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
-  /// 图片气泡的右键入口：把菜单项交给面板渲染成与文字气泡一致的工具栏。
+  /// 图片/文字气泡的右键入口：把菜单项交给面板渲染。
   void _showOwnMenu(BuildContext context, Offset position) {
     final handler = onShowFallbackMenu;
     if (handler == null) return;
     handler(context, position, _fallbackMenuItems);
   }
 
-  /// 没有选中文本可用时的菜单项：复制整条消息内容（图片会复制文件路径）。
-  List<ContextMenuButtonItem> _fallbackMenuItems(VoidCallback dismiss) => [
-    ContextMenuButtonItem(
-      type: ContextMenuButtonType.copy,
-      label: '复制',
-      onPressed: () {
-        dismiss();
-        unawaited(onCopy?.call() ?? Future<void>.value());
-      },
-    ),
-    ..._messageActionItems(dismiss),
-  ];
-
-  /// 消息操作菜单项。文字气泡交给框架的选择工具栏渲染，图片气泡由面板自绘，
-  /// 两处共用这一份定义，保证菜单内容和顺序一致。
-  List<ContextMenuButtonItem> _messageActionItems(VoidCallback dismiss) => [
-    ContextMenuButtonItem(
-      label: '引用回复',
-      onPressed: onReply == null
-          ? null
-          : () {
-              dismiss();
-              onReply!();
-            },
-    ),
-    if (onMention != null)
-      ContextMenuButtonItem(
-        label: '@$senderName',
-        onPressed: () {
+  /// 右键菜单项：对齐现代桌面聊天应用（图 2 样式），包含图标、悬浮和分割线。
+  List<ChatContextMenuItem> _fallbackMenuItems(VoidCallback dismiss) {
+    final selection = selectedText?.call();
+    final hasSelection = selection != null && selection.trim().isNotEmpty;
+    return [
+      ChatContextMenuItem(
+        icon: Icons.copy_rounded,
+        label: hasSelection ? '复制选中' : '复制',
+        onTap: () {
           dismiss();
-          onMention!();
+          if (hasSelection) {
+            unawaited(Clipboard.setData(ClipboardData(text: selection)));
+          } else {
+            unawaited(onCopy?.call() ?? Future<void>.value());
+          }
         },
       ),
-    if (onRecall != null)
-      ContextMenuButtonItem(
-        label: '撤回',
-        onPressed: () {
-          dismiss();
-          unawaited(onRecall!());
-        },
-      ),
-    if (_hasLocalAttachment)
-      ContextMenuButtonItem(
-        label: message.kind == MessageKind.image ? '打开图片' : '打开文件',
-        onPressed: () {
-          dismiss();
-          unawaited(onOpen(message));
-        },
-      ),
-    if (_hasLocalAttachment)
-      ContextMenuButtonItem(
-        label: '打开所在文件夹',
-        onPressed: () {
-          dismiss();
-          unawaited(onOpenFolder(message));
-        },
-      ),
-  ];
+      if (onReply != null)
+        ChatContextMenuItem(
+          icon: Icons.format_quote_rounded,
+          label: '引用回复',
+          onTap: () {
+            dismiss();
+            onReply!();
+          },
+        ),
+      if (onMention != null)
+        ChatContextMenuItem(
+          icon: Icons.alternate_email_rounded,
+          label: '@$senderName',
+          onTap: () {
+            dismiss();
+            onMention!();
+          },
+        ),
+      if (_hasLocalAttachment) ...[
+        ChatContextMenuItem(
+          hasDividerBefore: true,
+          icon: message.kind == MessageKind.image
+              ? Icons.image_outlined
+              : Icons.insert_drive_file_outlined,
+          label: message.kind == MessageKind.image ? '打开图片' : '打开文件',
+          onTap: () {
+            dismiss();
+            unawaited(onOpen(message));
+          },
+        ),
+        ChatContextMenuItem(
+          icon: Icons.folder_open_outlined,
+          label: '打开所在文件夹',
+          onTap: () {
+            dismiss();
+            unawaited(onOpenFolder(message));
+          },
+        ),
+      ],
+      if (onRecall != null)
+        ChatContextMenuItem(
+          hasDividerBefore: true,
+          icon: Icons.undo_rounded,
+          label: '撤回',
+          onTap: () {
+            dismiss();
+            unawaited(onRecall!());
+          },
+        ),
+    ];
+  }
 
   bool get _hasLocalAttachment {
     final path = message.filePath;
     return path != null && File(path).existsSync();
   }
+}
 
-  /// 合并后的右键菜单：文字选择（复制/全选）+ 消息操作（引用/@/附件）。
-  ///
-  /// 由 [SelectionArea] 负责弹出与定位，因此只会出现一个菜单位置，
-  /// 不再和原生的选择菜单各弹一个。
-  Widget _buildContextMenu(BuildContext context, SelectableRegionState state) {
-    // 复用框架准备好的复制/全选回调，它们已经处理了复制选中内容、收起工具栏等细节。
-    final defaultItems = state.contextMenuButtonItems;
-    ContextMenuButtonItem? defaultItem(ContextMenuButtonType type) =>
-        defaultItems.where((item) => item.type == type).firstOrNull;
-    final copyItem = defaultItem(ContextMenuButtonType.copy);
-    final selectAllItem = defaultItem(ContextMenuButtonType.selectAll);
-    return AdaptiveTextSelectionToolbar.buttonItems(
-      anchors: state.contextMenuAnchors,
-      buttonItems: [
-        ContextMenuButtonItem(
-          type: ContextMenuButtonType.copy,
-          label: '复制',
-          // 有选中文本时复制选中的片段，否则一键复制整条消息。
-          onPressed: () {
-            if (copyItem != null) {
-              copyItem.onPressed?.call();
-              return;
-            }
-            state.hideToolbar();
-            unawaited(onCopy?.call() ?? Future<void>.value());
-          },
+class ChatContextMenuItem {
+  const ChatContextMenuItem({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    this.hasDividerBefore = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool hasDividerBefore;
+}
+
+/// 现代桌面风格右键菜单浮层（深色卡片 + 细描边 + 优雅投影 + 紧凑图标文字）。
+class _ChatMessageMenuOverlay extends StatelessWidget {
+  const _ChatMessageMenuOverlay({
+    required this.position,
+    required this.items,
+    required this.onDismiss,
+  });
+
+  final Offset position;
+  final List<ChatContextMenuItem> items;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    const menuWidth = 146.0;
+    final dividerCount = items.where((e) => e.hasDividerBefore).length;
+    final menuHeight = items.length * 34.0 + dividerCount * 9.0 + 10.0;
+
+    double left = position.dx;
+    double top = position.dy;
+
+    if (left + menuWidth > screenSize.width - 12) {
+      left = (screenSize.width - menuWidth - 12).clamp(12.0, double.infinity);
+    }
+    if (top + menuHeight > screenSize.height - 12) {
+      top = (position.dy - menuHeight).clamp(12.0, double.infinity);
+    }
+
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): onDismiss,
+      },
+      child: Focus(
+        autofocus: true,
+        child: Stack(
+          children: [
+            // 全屏透明遮罩：点击空白处、其它控件或在别处右键均即刻关闭菜单
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (_) => onDismiss(),
+                onSecondaryTapDown: (_) => onDismiss(),
+                child: const ColoredBox(color: Colors.transparent),
+              ),
+            ),
+            // QQ/微信 现代暗色浮动菜单
+            Positioned(
+              left: left,
+              top: top,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0.0, end: 1.0),
+                duration: const Duration(milliseconds: 140),
+                curve: Curves.easeOutCubic,
+                builder: (context, value, child) => Opacity(
+                  opacity: value,
+                  child: Transform.scale(
+                    scale: 0.94 + 0.06 * value,
+                    alignment: Alignment.topLeft,
+                    child: child,
+                  ),
+                ),
+                child: Material(
+                  elevation: 12,
+                  shadowColor: Colors.black45,
+                  color: const Color(0xFF2C2C2C),
+                  borderRadius: BorderRadius.circular(8),
+                  clipBehavior: Clip.antiAlias,
+                  child: Container(
+                    width: menuWidth,
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.14),
+                        width: 0.8,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final item in items) ...[
+                          if (item.hasDividerBefore)
+                            Divider(
+                              height: 9,
+                              thickness: 0.8,
+                              indent: 8,
+                              endIndent: 8,
+                              color: Colors.white.withValues(alpha: 0.12),
+                            ),
+                          _ContextMenuItemTile(item: item),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
-        if (selectAllItem != null)
-          ContextMenuButtonItem(
-            type: ContextMenuButtonType.selectAll,
-            label: '全选',
-            onPressed: selectAllItem.onPressed,
+      ),
+    );
+  }
+}
+
+class _ContextMenuItemTile extends StatefulWidget {
+  const _ContextMenuItemTile({required this.item});
+
+  final ChatContextMenuItem item;
+
+  @override
+  State<_ContextMenuItemTile> createState() => _ContextMenuItemTileState();
+}
+
+class _ContextMenuItemTileState extends State<_ContextMenuItemTile> {
+  bool _isHovering = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _isHovering = true),
+        onExit: (_) => setState(() => _isHovering = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: item.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 100),
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: _isHovering
+                  ? Colors.white.withValues(alpha: 0.12)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  item.icon,
+                  size: 16,
+                  color: Colors.white.withValues(alpha: 0.88),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    item.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: 'LXGWWenKai',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w400,
+                      color: Colors.white.withValues(alpha: 0.94),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ..._messageActionItems(state.hideToolbar),
-      ],
+        ),
+      ),
     );
   }
 }

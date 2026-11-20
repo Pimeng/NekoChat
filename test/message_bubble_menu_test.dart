@@ -72,17 +72,13 @@ void main() {
     );
     await tester.pump();
 
-    // 图片气泡里没有可选中的文字，必须靠自绘菜单，否则右键毫无反应。
+    // 图片气泡里没有可选中的文字，同样由整行监听弹出自绘菜单。
     expect(find.text('引用回复'), findsNothing);
-    final imageMenuTarget = find.ancestor(
-      of: find.byType(Image),
-      matching: find.byWidgetPredicate(
-        (widget) =>
-            widget is GestureDetector && widget.onSecondaryTapDown != null,
-      ),
+    await tester.tap(
+      find.byType(Image),
+      buttons: kSecondaryMouseButton,
+      warnIfMissed: false,
     );
-    expect(imageMenuTarget, findsOneWidget);
-    await tester.tap(imageMenuTarget, buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
 
     expect(find.text('复制'), findsOneWidget);
@@ -95,7 +91,7 @@ void main() {
     expect(find.text('引用回复'), findsNothing);
   });
 
-  testWidgets('文字气泡仍由框架的选择工具栏弹出合并菜单', (tester) async {
+  testWidgets('文字气泡右键弹出统一菜单，点击任意空白处即可关闭', (tester) async {
     final controller = renderOnlyController(
       messages: [
         ChatMessage(
@@ -118,8 +114,42 @@ void main() {
     await tester.tap(find.text('你好'), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
 
-    // 复制/全选来自框架，引用回复来自我们的菜单项。
     expect(find.text('复制'), findsOneWidget);
+    expect(find.text('引用回复'), findsOneWidget);
+
+    // 点击窗口其他空白区域关闭菜单。
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    expect(find.text('引用回复'), findsNothing);
+  });
+
+  testWidgets('在消息所在行的空白处右键也能弹出菜单', (tester) async {
+    final controller = renderOnlyController(
+      messages: [
+        ChatMessage(
+          messageId: 'm-1',
+          chatId: 'chat-1',
+          senderDeviceId: 'peer-device',
+          content: '你好',
+          timestamp: DateTime.fromMillisecondsSinceEpoch(1000),
+          status: MessageStatus.sent,
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+    await tester.pump();
+
+    final row = tester.getRect(find.byType(MessageBubble));
+    // 对方消息靠左，行的右侧大片是空白。
+    await tester.tapAt(
+      Offset(row.right - 20, row.center.dy),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('引用回复'), findsOneWidget);
   });
 
