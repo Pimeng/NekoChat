@@ -7,7 +7,6 @@ import '../../app/app_controller.dart';
 const _brandIndigo = Color(0xFF4666E5);
 const _brandIndigoDeep = Color(0xFF2B338A);
 const _catOrange = Color(0xFFF7A94A);
-const _catOrangeDeep = Color(0xFFE8822C);
 
 class AuthPage extends StatefulWidget {
   const AuthPage({
@@ -298,28 +297,21 @@ class _AuthHero extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
-                  width: 52,
-                  height: 52,
+                  width: 56,
+                  height: 56,
+                  padding: const EdgeInsets.all(9),
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [_catOrange, _catOrangeDeep],
-                    ),
+                    color: Colors.white,
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: [
                       BoxShadow(
-                        color: _catOrangeDeep.withValues(alpha: 0.45),
+                        color: _brandIndigoDeep.withValues(alpha: 0.35),
                         blurRadius: 16,
                         offset: const Offset(0, 6),
                       ),
                     ],
                   ),
-                  child: const Icon(
-                    Icons.forum_rounded,
-                    color: Colors.white,
-                    size: 28,
-                  ),
+                  child: Image.asset('assets/app.png', fit: BoxFit.contain),
                 ),
                 const SizedBox(height: 20),
                 const Text(
