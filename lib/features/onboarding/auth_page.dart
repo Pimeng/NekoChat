@@ -73,8 +73,7 @@ class _AuthPageState extends State<AuthPage> {
                       Text(
                         setup ? '创建本机身份' : '解锁 NekoChat',
                         textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                        style: Theme.of(context).textTheme.headlineSmall,
                       ),
                       const SizedBox(height: 8),
                       Text(

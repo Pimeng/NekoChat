@@ -336,6 +336,7 @@ class PreviewAppController extends AppController {
 
   final Map<String, List<ChatMessage>> _messagesByConversation = {};
   final Map<String, Map<String, GroupRole>> _rolesByGroup = {};
+  final Map<String, List<GroupMember>> _membersByGroup = {};
   int _nextMessageSeq = 100;
 
   void reset({AppStage initialStage = AppStage.ready}) {
@@ -406,6 +407,25 @@ class PreviewAppController extends AppController {
         PreviewFixtures.aliceDeviceId: GroupRole.owner,
         PreviewFixtures.localDeviceId: GroupRole.member,
       };
+    _membersByGroup
+      ..clear()
+      ..[PreviewFixtures.primaryGroupId] = List<GroupMember>.from(
+        PreviewFixtures.groupMembers(PreviewFixtures.primaryGroupId),
+      )
+      ..[PreviewFixtures.secondaryGroupId] = [
+        GroupMember(
+          groupId: PreviewFixtures.secondaryGroupId,
+          deviceId: PreviewFixtures.aliceDeviceId,
+          displayName: '林晓猫',
+          role: GroupRole.owner,
+        ),
+        GroupMember(
+          groupId: PreviewFixtures.secondaryGroupId,
+          deviceId: PreviewFixtures.localDeviceId,
+          displayName: '橘猫工程师',
+          role: GroupRole.member,
+        ),
+      ];
     selectedChatId = PreviewFixtures.activeChatId;
     selectedGroupId = null;
     messages = List<ChatMessage>.from(
@@ -733,12 +753,87 @@ class PreviewAppController extends AppController {
   }
 
   @override
+  Future<void> revokePeerVerification(String deviceId) async {
+    final removed = trustedPeers.remove(deviceId);
+    if (removed == null) return;
+    peers = [
+      for (final peer in peers)
+        peer.deviceId == deviceId ? peer.copyWith(trusted: false) : peer,
+    ];
+    chats = [
+      for (final chat in chats)
+        chat.peerDeviceId == deviceId
+            ? chat.copyWith(state: ChatSessionState.none)
+            : chat,
+    ];
+    final name = peerDisplayName(deviceId, removed.displayName);
+    showPreviewToast(
+      '预览模式：已取消对 $name 的验证，下次聊天需重新核对验证码',
+      icon: Icons.gpp_bad_outlined,
+    );
+  }
+
+  @override
   Future<List<GroupMember>> groupMembers(String groupId) async =>
-      PreviewFixtures.groupMembers(groupId);
+      List<GroupMember>.from(
+        _membersByGroup[groupId] ?? PreviewFixtures.groupMembers(groupId),
+      );
 
   @override
   GroupRole? groupMemberRole(String groupId, String deviceId) =>
       _rolesByGroup[groupId]?[deviceId];
+
+  @override
+  Future<void> inviteToGroup(ChatGroup group, DiscoveredPeer peer) async {
+    final list = _membersByGroup.putIfAbsent(
+      group.groupId,
+      () => List<GroupMember>.from(PreviewFixtures.groupMembers(group.groupId)),
+    );
+    if (list.any((m) => m.deviceId == peer.deviceId)) return;
+    list.add(
+      GroupMember(
+        groupId: group.groupId,
+        deviceId: peer.deviceId,
+        displayName: peer.displayName,
+        role: GroupRole.member,
+      ),
+    );
+    (_rolesByGroup[group.groupId] ??= {})[peer.deviceId] = GroupRole.member;
+    showPreviewToast('预览模式：已邀请 ${peer.displayName} 加入群聊');
+  }
+
+  @override
+  Future<void> setGroupMemberRole(
+    ChatGroup group,
+    GroupMember member,
+    GroupRole role,
+  ) async {
+    final list = _membersByGroup[group.groupId];
+    if (list == null) return;
+    final idx = list.indexWhere((m) => m.deviceId == member.deviceId);
+    if (idx < 0) return;
+    list[idx] = GroupMember(
+      groupId: member.groupId,
+      deviceId: member.deviceId,
+      displayName: member.displayName,
+      role: role,
+    );
+    (_rolesByGroup[group.groupId] ??= {})[member.deviceId] = role;
+    showPreviewToast(
+      role == GroupRole.admin
+          ? '预览模式：已将 ${member.displayName} 设为管理员'
+          : '预览模式：已取消 ${member.displayName} 的管理员身份',
+    );
+  }
+
+  @override
+  Future<void> removeGroupMember(ChatGroup group, GroupMember member) async {
+    final list = _membersByGroup[group.groupId];
+    if (list == null) return;
+    list.removeWhere((m) => m.deviceId == member.deviceId);
+    _rolesByGroup[group.groupId]?.remove(member.deviceId);
+    showPreviewToast('预览模式：已将 ${member.displayName} 移出群聊');
+  }
 
   @override
   Future<ChatGroup> createGroup(

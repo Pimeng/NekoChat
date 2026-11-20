@@ -204,7 +204,9 @@ void main() {
     expect(controller.blockedDeviceId, 'peer-1');
   });
 
-  testWidgets('侧边栏已拉黑联系人右键菜单确认后可解除拉黑', (tester) async {
+  testWidgets('已拉黑联系人不出现在消息栏，可在联系人黑名单右键解除拉黑', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = _sidebarActionsController();
     controller.trustedPeers['peer-1'] = TrustedPeer(
       deviceId: 'peer-1',
@@ -214,8 +216,27 @@ void main() {
       blocked: true,
     );
     addTearDown(controller.dispose);
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    await _openSidebarContextMenu(tester, controller);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
+    );
+
+    // 消息栏不显示已拉黑联系人
+    expect(find.text('李四'), findsNothing);
+
+    // 切换到联系人 -> 展开黑名单 -> 右键解除拉黑
+    await tester.tap(find.byKey(const ValueKey('nav-rail-contacts')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('黑名单'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('李四'), findsOneWidget);
+    await tester.tap(find.text('李四'), buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
 
     expect(find.text('解除拉黑'), findsOneWidget);
     await tester.tap(find.text('解除拉黑'));
@@ -228,7 +249,94 @@ void main() {
     expect(controller.trustedPeers['peer-1']?.blocked, isFalse);
   });
 
-  testWidgets('侧边栏可从内容区标题栏收起并重新展开', (tester) async {
+  testWidgets('主界面联系人页展示已验证联系人，并在新朋友与群通知中审批', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final now = DateTime.fromMillisecondsSinceEpoch(1000);
+    final controller = _sidebarActionsController();
+    addTearDown(controller.dispose);
+    controller.peers = [
+      DiscoveredPeer(
+        deviceId: 'peer-1',
+        displayName: '李四',
+        ip: '192.168.1.20',
+        port: 23333,
+        lastSeen: now,
+        trusted: true,
+        online: true,
+      ),
+      DiscoveredPeer(
+        deviceId: 'peer-unverified',
+        displayName: '未验证设备',
+        ip: '192.168.1.30',
+        port: 23333,
+        lastSeen: now,
+        trusted: false,
+        online: true,
+      ),
+    ];
+    controller.chatRequests['req-1'] = const ChatRequest(
+      requestId: 'req-1',
+      peerDeviceId: 'peer-new',
+      displayName: '王五',
+      ip: '192.168.1.40',
+      verificationCode: '123 456',
+      incoming: true,
+    );
+    controller.groupInvitations['inv-1'] = const GroupInvitation(
+      inviteId: 'inv-1',
+      groupId: 'g-1',
+      groupName: '研发群',
+      ownerDeviceId: 'peer-1',
+      ownerDisplayName: '李四',
+      inviterDeviceId: 'peer-1',
+      inviterDisplayName: '李四',
+      ip: '192.168.1.20',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
+    );
+
+    // 切换到联系人页
+    await tester.tap(find.byKey(const ValueKey('nav-rail-contacts')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('新朋友'), findsOneWidget);
+    expect(find.text('群通知'), findsOneWidget);
+    expect(find.text('已验证联系人'), findsOneWidget);
+    expect(find.text('1/1'), findsOneWidget);
+
+    // 点击新朋友进入审批面板
+    await tester.tap(find.byKey(const ValueKey('contacts-nav-friend-requests')));
+    await tester.pumpAndSettle();
+    expect(find.text('待我审批'), findsOneWidget);
+    expect(find.text('123 456'), findsOneWidget);
+    expect(find.text('确认并接受'), findsOneWidget);
+
+    // 点击群通知进入审批面板
+    await tester.tap(
+      find.byKey(const ValueKey('contacts-nav-group-notifications')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('待处理群邀请'), findsOneWidget);
+    expect(find.text('研发群'), findsOneWidget);
+    expect(find.text('接受'), findsOneWidget);
+
+    // 点击已验证联系人查看详情并可发起消息
+    await tester.tap(find.text('李四').first);
+    await tester.pumpAndSettle();
+    expect(find.text('联系人资料'), findsOneWidget);
+    expect(find.text('已确认验证码'), findsOneWidget);
+    expect(find.text('发消息'), findsOneWidget);
+  });
+
+  testWidgets('拖动分隔线可收起和展开侧边栏，左侧搜索按钮可打开全局搜索', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 720));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final controller = _baseController();
@@ -236,48 +344,34 @@ void main() {
       MaterialApp(home: MainShell(controller: controller)),
     );
 
-    expect(find.text('搜索设备或会话'), findsOneWidget);
-    expect(find.byTooltip('收起侧边栏'), findsOneWidget);
+    final handle = find.byKey(const ValueKey('sidebar-resize-handle'));
+    expect(find.byKey(const ValueKey('sidebar-content')), findsOneWidget);
     expect(
       tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
       320,
     );
 
-    await tester.tap(find.byTooltip('收起侧边栏'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 120));
-
-    final collapsingWidth = tester
-        .getSize(find.byKey(const ValueKey('sidebar-animation')))
-        .width;
-    expect(collapsingWidth, greaterThan(0));
-    expect(collapsingWidth, lessThan(320));
+    await tester.drag(handle, const Offset(-240, 0));
     await tester.pumpAndSettle();
-
-    expect(find.text('搜索设备或会话'), findsNothing);
-    expect(find.byTooltip('展开侧边栏'), findsOneWidget);
+    expect(find.byKey(const ValueKey('sidebar-content')), findsNothing);
     expect(
       tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
       0,
     );
 
-    await tester.tap(find.byTooltip('展开侧边栏'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 120));
-
-    final expandingWidth = tester
-        .getSize(find.byKey(const ValueKey('sidebar-animation')))
-        .width;
-    expect(expandingWidth, greaterThan(0));
-    expect(expandingWidth, lessThan(320));
+    await tester.drag(handle, const Offset(140, 0));
     await tester.pumpAndSettle();
-
-    expect(find.text('搜索设备或会话'), findsOneWidget);
-    expect(find.byTooltip('收起侧边栏'), findsOneWidget);
+    expect(find.byKey(const ValueKey('sidebar-content')), findsOneWidget);
     expect(
       tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
-      320,
+      240,
     );
+
+    // 点击最左侧搜索按钮打开居中搜索弹窗
+    await tester.tap(find.byKey(const ValueKey('nav-rail-search')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('global-search-dialog')), findsOneWidget);
+    expect(find.text('搜索联系人、群聊或局域网设备'), findsOneWidget);
   });
 
   testWidgets('拖动分隔线可调整侧边栏宽度并保留收起动画', (tester) async {
@@ -305,17 +399,24 @@ void main() {
       480,
     );
 
-    await tester.drag(handle, const Offset(-500, 0));
+    await tester.drag(handle, const Offset(-240, 0));
     await tester.pumpAndSettle();
     expect(
       tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
       240,
     );
 
-    await tester.tap(find.byTooltip('收起侧边栏'));
+    // 继续向左拖过阈值时自动收起侧边栏
+    await tester.drag(handle, const Offset(-160, 0));
     await tester.pumpAndSettle();
-    expect(handle, findsNothing);
-    await tester.tap(find.byTooltip('展开侧边栏'));
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
+      0,
+    );
+    expect(handle, findsOneWidget);
+
+    // 收起状态下向右拖动分隔线重新展开侧边栏
+    await tester.drag(handle, const Offset(140, 0));
     await tester.pumpAndSettle();
     expect(
       tester.getSize(find.byKey(const ValueKey('sidebar-animation'))).width,
@@ -528,7 +629,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('修改群聊备注'));
     await tester.pumpAndSettle();
-    expect(find.text('群聊备注'), findsOneWidget);
-    expect(find.text('原始名称：原始群名'), findsOneWidget);
+    expect(find.byType(TextFormField), findsOneWidget);
+    expect(find.text('填写备注（留空清除）'), findsOneWidget);
   });
 }

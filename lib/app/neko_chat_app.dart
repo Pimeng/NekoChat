@@ -10,19 +10,130 @@ import '../features/chat/main_shell.dart';
 import '../features/onboarding/auth_page.dart';
 import 'app_controller.dart';
 
-ThemeData buildNekoChatTheme() => ThemeData(
-  useMaterial3: true,
-  fontFamily: 'LXGWWenKai',
-  colorScheme: ColorScheme.fromSeed(
+ThemeData buildNekoChatTheme() {
+  final colorScheme = ColorScheme.fromSeed(
     seedColor: const Color(0xff4666e5),
     brightness: Brightness.light,
-  ),
-  scaffoldBackgroundColor: const Color(0xfff7f8fc),
-  inputDecorationTheme: const InputDecorationTheme(
-    border: OutlineInputBorder(),
-  ),
-  cardTheme: const CardThemeData(margin: EdgeInsets.zero),
-);
+  );
+  const fontFamily = 'LXGWWenKai';
+  return ThemeData(
+    useMaterial3: true,
+    fontFamily: fontFamily,
+    colorScheme: colorScheme,
+    scaffoldBackgroundColor: const Color(0xfff7f8fc),
+    textTheme: TextTheme(
+      headlineMedium: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 22,
+        fontWeight: FontWeight.w600,
+      ),
+      headlineSmall: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 20,
+        fontWeight: FontWeight.w600,
+      ),
+      titleLarge: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+      ),
+      titleMedium: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 15,
+        fontWeight: FontWeight.w600,
+      ),
+      titleSmall: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+      ),
+      bodyLarge: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 14,
+        fontWeight: FontWeight.w400,
+      ),
+      bodyMedium: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 14,
+        fontWeight: FontWeight.w400,
+      ),
+      bodySmall: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 12,
+        fontWeight: FontWeight.w400,
+        color: colorScheme.onSurfaceVariant,
+      ),
+      labelLarge: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+      ),
+      labelMedium: const TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+      ),
+      labelSmall: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 11,
+        fontWeight: FontWeight.w400,
+        color: colorScheme.onSurfaceVariant,
+      ),
+    ),
+    appBarTheme: AppBarTheme(
+      titleTextStyle: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        color: colorScheme.onSurface,
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      titleTextStyle: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        color: colorScheme.onSurface,
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      titleTextStyle: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: colorScheme.onSurface,
+      ),
+      subtitleTextStyle: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 12,
+        fontWeight: FontWeight.w400,
+        color: colorScheme.onSurfaceVariant,
+      ),
+      leadingAndTrailingTextStyle: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 12,
+        fontWeight: FontWeight.w400,
+        color: colorScheme.onSurfaceVariant,
+      ),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      border: const OutlineInputBorder(),
+      hintStyle: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 13,
+        fontWeight: FontWeight.w400,
+        color: colorScheme.onSurfaceVariant,
+      ),
+      labelStyle: TextStyle(
+        fontFamily: fontFamily,
+        fontSize: 13,
+        fontWeight: FontWeight.w400,
+        color: colorScheme.onSurfaceVariant,
+      ),
+    ),
+    cardTheme: const CardThemeData(margin: EdgeInsets.zero),
+  );
+}
 
 class NekoChatApp extends StatefulWidget {
   const NekoChatApp({super.key, this.singleInstanceService});
@@ -36,9 +147,16 @@ class NekoChatApp extends StatefulWidget {
 
 class _NekoChatAppState extends State<NekoChatApp> {
   final _log = Logger('NekoChatApp');
+  late ThemeData _theme = buildNekoChatTheme();
   late final AppController controller;
   late final SingleInstanceService _singleInstance;
   StreamSubscription<void>? _singleInstanceSubscription;
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _theme = buildNekoChatTheme();
+  }
 
   @override
   void initState() {
@@ -96,7 +214,7 @@ class _NekoChatAppState extends State<NekoChatApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'NekoChat 局域网聊天',
-      theme: buildNekoChatTheme(),
+      theme: _theme,
       home: AnimatedBuilder(
         animation: controller,
         builder: (context, _) => switch (controller.stage) {

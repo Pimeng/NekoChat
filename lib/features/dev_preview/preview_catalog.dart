@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../app/app_controller.dart';
 import '../../app/neko_chat_app.dart';
 import '../../core/models/models.dart';
+import '../chat/group_info_drawer.dart';
 import '../chat/main_shell.dart';
 import '../chat/mention_autocomplete.dart';
 import '../chat/message_composer.dart';
@@ -364,6 +365,35 @@ List<PreviewEntry> buildPreviewCatalog(
         ),
       ),
     ),
+    PreviewEntry(
+      id: 'group-info-drawer',
+      name: '群聊右侧悬浮面板',
+      widgetType: 'GroupInfoDrawer',
+      description: '群聊右侧悬浮信息面板，集成成员网格、成员管理、群资料备注与解散/退出。',
+      category: PreviewCategory.sidebar,
+      builder: (_) => AnimatedBuilder(
+        animation: controller,
+        builder: (_, _) {
+          final group = controller.groups.firstOrNull;
+          if (group == null) {
+            return const Text('示例群聊已解散，点击右上角「重置数据」恢复');
+          }
+          return SizedBox(
+            height: 600,
+            child: Align(
+              alignment: Alignment.topRight,
+              child: GroupInfoDrawer(
+                controller: controller,
+                group: group,
+                onClose: () => onAction('关闭群聊悬浮面板'),
+                onOpenInWindow: () async => onAction('独立窗口打开：${group.name}'),
+                onMentionMember: (name) => onAction('@ 提及 $name'),
+              ),
+            ),
+          );
+        },
+      ),
+    ),
 
     // ==================== 消息与输入 ====================
     PreviewEntry(
@@ -681,6 +711,76 @@ List<PreviewEntry> buildPreviewCatalog(
       category: PreviewCategory.pages,
       isFullPage: true,
       builder: (_) => Scaffold(body: WelcomePane(controller: controller)),
+    ),
+    PreviewEntry(
+      id: 'friend-requests-pane',
+      name: '新朋友审批面板',
+      widgetType: 'FriendRequestsPane',
+      description: '联系人页“新朋友”右侧审批区，集中展示收发中的 6 位验证码请求。',
+      category: PreviewCategory.pages,
+      isFullPage: true,
+      builder: (_) => AnimatedBuilder(
+        animation: controller,
+        builder: (_, _) => Scaffold(
+          body: FriendRequestsPane(
+            controller: controller,
+            requests: controller.chatRequests.values.toList(),
+          ),
+        ),
+      ),
+    ),
+    PreviewEntry(
+      id: 'group-notifications-pane',
+      name: '群通知审批面板',
+      widgetType: 'GroupNotificationsPane',
+      description: '联系人页“群通知”右侧审批区，集中处理收到的局域网群聊邀请。',
+      category: PreviewCategory.pages,
+      isFullPage: true,
+      builder: (_) => AnimatedBuilder(
+        animation: controller,
+        builder: (_, _) => Scaffold(
+          body: GroupNotificationsPane(
+            controller: controller,
+            invitations: controller.groupInvitations.values.toList(),
+          ),
+        ),
+      ),
+    ),
+    PreviewEntry(
+      id: 'contact-detail-pane',
+      name: '联系人详情面板',
+      widgetType: 'ContactDetailPane',
+      description: '点击已验证联系人后展示的资料卡，支持发消息、修改备注与拉黑/解除拉黑。',
+      category: PreviewCategory.pages,
+      isFullPage: true,
+      builder: (_) => AnimatedBuilder(
+        animation: controller,
+        builder: (_, _) {
+          final trusted =
+              controller.trustedPeers[PreviewFixtures.aliceDeviceId];
+          if (trusted == null) {
+            return const Scaffold(
+              body: Center(child: Text('该示例联系人已取消验证，点击右上角「重置数据」可恢复')),
+            );
+          }
+          final peer = controller.peers
+              .where((p) => p.deviceId == trusted.deviceId)
+              .firstOrNull;
+          return Scaffold(
+            body: ContactDetailPane(
+              controller: controller,
+              trustedPeer: trusted,
+              discoveredPeer: peer,
+              onStartChat: () => onAction('点击了发消息：${trusted.displayName}'),
+              onEditRemark: () => onAction('点击了修改备注：${trusted.displayName}'),
+              onToggleBlock: () =>
+                  controller.setBlocked(trusted.deviceId, !trusted.blocked),
+              onRevokeVerification: () =>
+                  controller.revokePeerVerification(trusted.deviceId),
+            ),
+          );
+        },
+      ),
     ),
     PreviewEntry(
       id: 'auth-page',

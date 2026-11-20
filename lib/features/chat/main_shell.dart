@@ -10,6 +10,7 @@ import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
 import '../../core/protocol/protocol.dart';
 import '../settings/settings_page.dart';
+import 'group_info_drawer.dart';
 import 'message_composer.dart';
 import 'mention_autocomplete.dart';
 import 'view_drop_service.dart';
@@ -96,20 +97,40 @@ class MainShell extends StatefulWidget {
   State<MainShell> createState() => _MainShellState();
 }
 
+enum _MainNavTab { messages, contacts, settings }
+
+enum _ContactsSubTab { friends, groups }
+
+enum _ContactDetailMode { none, friendRequests, groupNotifications, peer }
+
 class _MainShellState extends State<MainShell> {
+  static const _navRailWidth = 60.0;
   static const _defaultSidebarWidth = 320.0;
   static const _minimumSidebarWidth = 240.0;
   static const _maximumSidebarWidth = 480.0;
+  static const _collapseSnapThreshold = 100.0;
+  static const _expandSnapThreshold = 130.0;
   static const _sidebarResizeHandleWidth = 12.0;
   static const _sidebarAnimationDuration = Duration(milliseconds: 240);
 
-  final _search = TextEditingController();
   final Map<String, TextEditingController> _composers = {};
   final Map<String, List<PendingAttachment>> _pendingAttachments = {};
   double _sidebarWidth = _defaultSidebarWidth;
+  double _dragTargetWidth = _defaultSidebarWidth;
   bool _sidebarVisible = true;
   bool _sidebarMounted = true;
   bool _resizingSidebar = false;
+  bool _hoveringResizeHandle = false;
+  _MainNavTab _navTab = _MainNavTab.messages;
+  _ContactsSubTab _contactsSubTab = _ContactsSubTab.friends;
+  _ContactDetailMode _contactDetailMode = _ContactDetailMode.none;
+  SettingsSection _settingsSection = SettingsSection.lan;
+  String? _selectedContactDeviceId;
+  bool _verifiedExpanded = true;
+  bool _lanNewExpanded = true;
+  bool _blockedExpanded = false;
+  bool _groupDrawerOpen = false;
+  String? _groupDrawerGroupId;
 
   TextEditingController _composerFor(String conversationId) =>
       _composers.putIfAbsent(conversationId, TextEditingController.new);
@@ -117,42 +138,94 @@ class _MainShellState extends State<MainShell> {
   List<PendingAttachment> _pendingFor(String conversationId) =>
       _pendingAttachments.putIfAbsent(conversationId, () => []);
 
-  void _toggleSidebar() {
-    setState(() {
-      if (_sidebarVisible) {
-        _sidebarVisible = false;
-      } else {
-        _sidebarMounted = true;
-        _sidebarVisible = true;
-      }
-    });
-  }
-
   void _startResizingSidebar(DragStartDetails details) {
-    setState(() => _resizingSidebar = true);
+    setState(() {
+      _resizingSidebar = true;
+      _dragTargetWidth = _sidebarVisible ? _sidebarWidth : 0;
+    });
   }
 
   void _resizeSidebar(DragUpdateDetails details) {
     setState(() {
-      _sidebarWidth = (_sidebarWidth + details.delta.dx).clamp(
-        _minimumSidebarWidth,
+      _dragTargetWidth = (_dragTargetWidth + details.delta.dx).clamp(
+        0.0,
         _maximumSidebarWidth,
       );
+      if (_sidebarVisible) {
+        if (_dragTargetWidth < _collapseSnapThreshold) {
+          _sidebarVisible = false;
+          _sidebarMounted = false;
+        } else {
+          _sidebarWidth = _dragTargetWidth.clamp(
+            _minimumSidebarWidth,
+            _maximumSidebarWidth,
+          );
+        }
+      } else if (_dragTargetWidth >= _expandSnapThreshold) {
+        _sidebarMounted = true;
+        _sidebarVisible = true;
+        _sidebarWidth = _dragTargetWidth.clamp(
+          _minimumSidebarWidth,
+          _maximumSidebarWidth,
+        );
+      }
     });
   }
 
   void _stopResizingSidebar([DragEndDetails? details]) {
     if (!_resizingSidebar) return;
-    setState(() => _resizingSidebar = false);
+    setState(() {
+      _resizingSidebar = false;
+      if (!_sidebarVisible) {
+        _sidebarMounted = false;
+      }
+    });
   }
 
   @override
   void dispose() {
-    _search.dispose();
     for (final composer in _composers.values) {
       composer.dispose();
     }
     super.dispose();
+  }
+
+  List<ChatRequest> _visibleChatRequests(AppController controller) =>
+      controller.chatRequests.values
+          .where(
+            (request) =>
+                request.incoming ||
+                controller.trustedPeers[request.peerDeviceId] == null,
+          )
+          .toList();
+
+  Future<void> _openChatWithPeer(
+    AppController controller,
+    String deviceId,
+  ) async {
+    final existingChat = controller.chats
+        .where((chat) => chat.peerDeviceId == deviceId)
+        .firstOrNull;
+    final peer = controller.peers
+        .where((value) => value.deviceId == deviceId)
+        .firstOrNull;
+    if (existingChat != null &&
+        (existingChat.state == ChatSessionState.active ||
+            peer?.online != true)) {
+      await controller.selectChat(existingChat.chatId);
+    } else if (peer != null && peer.online) {
+      await controller.requestChat(peer);
+      final updatedChat = controller.chats
+          .where((chat) => chat.peerDeviceId == deviceId)
+          .firstOrNull;
+      if (updatedChat != null) {
+        await controller.selectChat(updatedChat.chatId);
+      }
+    } else if (existingChat != null) {
+      await controller.selectChat(existingChat.chatId);
+    }
+    if (!mounted) return;
+    setState(() => _navTab = _MainNavTab.messages);
   }
 
   @override
@@ -164,6 +237,13 @@ class _MainShellState extends State<MainShell> {
           children: [
             Row(
               children: [
+                RepaintBoundary(
+                  child: SizedBox(
+                    width: _navRailWidth,
+                    child: _buildNavRail(controller),
+                  ),
+                ),
+                const VerticalDivider(width: 1),
                 AnimatedContainer(
                   key: const ValueKey('sidebar-animation'),
                   width: _sidebarVisible ? _sidebarWidth : 0,
@@ -172,7 +252,9 @@ class _MainShellState extends State<MainShell> {
                       : _sidebarAnimationDuration,
                   curve: Curves.easeInOutCubic,
                   onEnd: () {
-                    if (!_sidebarVisible && _sidebarMounted) {
+                    if (!_resizingSidebar &&
+                        !_sidebarVisible &&
+                        _sidebarMounted) {
                       setState(() => _sidebarMounted = false);
                     }
                   },
@@ -182,7 +264,9 @@ class _MainShellState extends State<MainShell> {
                             alignment: Alignment.centerLeft,
                             minWidth: _sidebarWidth,
                             maxWidth: _sidebarWidth,
-                            child: _buildSidebar(controller),
+                            child: RepaintBoundary(
+                              child: _buildSidebar(controller),
+                            ),
                           )
                         : const SizedBox.shrink(),
                   ),
@@ -196,49 +280,47 @@ class _MainShellState extends State<MainShell> {
                   color: Theme.of(context).dividerColor,
                 ),
                 Expanded(
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      _buildContent(controller),
-                      Positioned(
-                        top: 14,
-                        left: 10,
-                        child: IconButton.filledTonal(
-                          tooltip: _sidebarVisible ? '收起侧边栏' : '展开侧边栏',
-                          onPressed: _toggleSidebar,
-                          icon: Icon(
-                            _sidebarVisible
-                                ? Icons.keyboard_double_arrow_left
-                                : Icons.keyboard_double_arrow_right,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  child: RepaintBoundary(child: _buildContent(controller)),
                 ),
               ],
             ),
-            if (_sidebarVisible)
-              Positioned(
-                key: const ValueKey('sidebar-resize-handle'),
-                top: 0,
-                bottom: 0,
-                left: _sidebarWidth - (_sidebarResizeHandleWidth - 1) / 2,
-                width: _sidebarResizeHandleWidth,
-                child: MouseRegion(
-                  cursor: SystemMouseCursors.resizeColumn,
-                  child: Semantics(
-                    label: '调整侧边栏宽度',
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onHorizontalDragStart: _startResizingSidebar,
-                      onHorizontalDragUpdate: _resizeSidebar,
-                      onHorizontalDragEnd: _stopResizingSidebar,
-                      onHorizontalDragCancel: _stopResizingSidebar,
+            Positioned(
+              key: const ValueKey('sidebar-resize-handle'),
+              top: 0,
+              bottom: 0,
+              left:
+                  _navRailWidth +
+                  1 +
+                  (_sidebarVisible ? _sidebarWidth : 0) -
+                  (_sidebarResizeHandleWidth - 1) / 2,
+              width: _sidebarResizeHandleWidth,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.resizeColumn,
+                onEnter: (_) => setState(() => _hoveringResizeHandle = true),
+                onExit: (_) => setState(() => _hoveringResizeHandle = false),
+                child: Semantics(
+                  label: '调整侧边栏宽度',
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onHorizontalDragStart: _startResizingSidebar,
+                    onHorizontalDragUpdate: _resizeSidebar,
+                    onHorizontalDragEnd: _stopResizingSidebar,
+                    onHorizontalDragCancel: _stopResizingSidebar,
+                    child: Center(
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 120),
+                        width: (_hoveringResizeHandle || _resizingSidebar)
+                            ? 2
+                            : 0,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.primary.withValues(alpha: .55),
+                      ),
                     ),
                   ),
                 ),
               ),
+            ),
             if (controller.topRightMessage != null)
               Positioned(
                 top: 14,
@@ -255,74 +337,159 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
-  Widget _buildSidebar(AppController controller) {
-    final query = _search.text.trim().toLowerCase();
-    final entries = _unifiedPeerEntries(controller)
-        .where(
-          (entry) =>
-              query.isEmpty ||
-              entry.displayName.toLowerCase().contains(query) ||
-              entry.originalDisplayName.toLowerCase().contains(query) ||
-              (entry.peer?.ip.contains(query) ?? false),
-        )
-        .toList();
-    final visibleChatRequests = controller.chatRequests.values
-        .where(
-          (request) =>
-              request.incoming ||
-              controller.trustedPeers[request.peerDeviceId] == null,
-        )
-        .toList();
-    final groups =
-        controller.groups
-            .where(
-              (group) =>
-                  query.isEmpty ||
-                  group.name.toLowerCase().contains(query) ||
-                  controller
-                      .groupDisplayName(group.groupId, group.name)
-                      .toLowerCase()
-                      .contains(query),
-            )
-            .toList()
-          ..sort((a, b) {
-            final aTime =
-                a.lastMessageAt?.millisecondsSinceEpoch ??
-                a.createdAt.millisecondsSinceEpoch;
-            final bTime =
-                b.lastMessageAt?.millisecondsSinceEpoch ??
-                b.createdAt.millisecondsSinceEpoch;
-            return bTime.compareTo(aTime);
-          });
+  Widget _buildNavRail(AppController controller) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final identity = controller.identity!;
+    final totalUnread =
+        controller.chats.fold<int>(0, (sum, chat) => sum + chat.unreadCount) +
+        controller.groups.fold<int>(
+          0,
+          (sum, group) => sum + group.unreadCount,
+        );
+    final pendingApprovals =
+        _visibleChatRequests(controller).length +
+        controller.groupInvitations.length;
+
     return Material(
-      color: Theme.of(context).colorScheme.surface,
+      color: colorScheme.surfaceContainerLow,
       child: Column(
         children: [
-          IdentityHeader(
-            controller: controller,
-            onTap: () => _showProfileEditor(controller),
-            unreadCount:
-                controller.chats.fold(
-                  0,
-                  (sum, chat) => sum + chat.unreadCount,
-                ) +
-                controller.groups.fold(
-                  0,
-                  (sum, group) => sum + group.unreadCount,
+          const SizedBox(height: 14),
+          Tooltip(
+            message: '编辑头像和昵称',
+            child: InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: () => _showProfileEditor(controller),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: ProfileAvatar(
+                  identity: identity,
+                  imagePath: controller.profileAvatarPath,
+                  radius: 19,
                 ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
-            child: TextField(
-              controller: _search,
-              onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(
-                hintText: '搜索设备或会话',
-                prefixIcon: Icon(Icons.search),
-                isDense: true,
               ),
             ),
           ),
+          const SizedBox(height: 18),
+          _NavRailButton(
+            key: const ValueKey('nav-rail-messages'),
+            tooltip: '消息',
+            icon: _navTab == _MainNavTab.messages
+                ? Icons.chat_bubble
+                : Icons.chat_bubble_outline,
+            selected: _navTab == _MainNavTab.messages,
+            badgeCount: totalUnread,
+            onTap: () => setState(() {
+              _navTab = _MainNavTab.messages;
+              if (!_sidebarVisible) {
+                _sidebarMounted = true;
+                _sidebarVisible = true;
+              }
+            }),
+          ),
+          const SizedBox(height: 8),
+          _NavRailButton(
+            key: const ValueKey('nav-rail-contacts'),
+            tooltip: '联系人',
+            icon: _navTab == _MainNavTab.contacts
+                ? Icons.people
+                : Icons.people_outline,
+            selected: _navTab == _MainNavTab.contacts,
+            badgeCount: pendingApprovals,
+            onTap: () => setState(() {
+              _navTab = _MainNavTab.contacts;
+              if (!_sidebarVisible) {
+                _sidebarMounted = true;
+                _sidebarVisible = true;
+              }
+            }),
+          ),
+          const SizedBox(height: 8),
+          _NavRailButton(
+            key: const ValueKey('nav-rail-search'),
+            tooltip: '搜索设备或会话',
+            icon: Icons.search,
+            selected: false,
+            badgeCount: 0,
+            onTap: () => _showGlobalSearch(controller),
+          ),
+          const SizedBox(height: 8),
+          _NavRailButton(
+            key: const ValueKey('nav-rail-create-group'),
+            tooltip: '创建群聊',
+            icon: Icons.group_add_outlined,
+            selected: false,
+            badgeCount: 0,
+            onTap: () => _showCreateGroup(controller),
+          ),
+          const Spacer(),
+          _NavRailButton(
+            key: const ValueKey('nav-rail-settings'),
+            tooltip: '设置',
+            icon: _navTab == _MainNavTab.settings
+                ? Icons.settings
+                : Icons.settings_outlined,
+            selected: _navTab == _MainNavTab.settings,
+            badgeCount: 0,
+            onTap: () => setState(() {
+              _navTab = _MainNavTab.settings;
+              if (!_sidebarVisible) {
+                _sidebarMounted = true;
+                _sidebarVisible = true;
+              }
+            }),
+          ),
+          const SizedBox(height: 12),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showGlobalSearch(AppController controller) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => _GlobalSearchDialog(
+        controller: controller,
+        onSelectPeer: (entry) async {
+          Navigator.pop(dialogContext);
+          final chat = entry.chat;
+          if (chat?.state == ChatSessionState.active ||
+              entry.peer?.online != true) {
+            if (chat != null) {
+              await controller.selectChat(chat.chatId);
+              if (mounted) setState(() => _navTab = _MainNavTab.messages);
+              return;
+            }
+          }
+          if (entry.trustedPeer != null && !entry.trustedPeer!.blocked) {
+            await _openChatWithPeer(controller, entry.deviceId);
+            return;
+          }
+          if (entry.peer != null && entry.peer!.online) {
+            await controller.requestChat(entry.peer!);
+            if (mounted) {
+              setState(() {
+                _navTab = _MainNavTab.contacts;
+                _contactDetailMode = _ContactDetailMode.friendRequests;
+              });
+            }
+          }
+        },
+        onSelectGroup: (group) async {
+          Navigator.pop(dialogContext);
+          await controller.selectGroup(group.groupId);
+          if (mounted) setState(() => _navTab = _MainNavTab.messages);
+        },
+      ),
+    );
+  }
+
+  Widget _buildSidebar(AppController controller) {
+    return Material(
+      key: const ValueKey('sidebar-content'),
+      color: Theme.of(context).colorScheme.surface,
+      child: Column(
+        children: [
           if (controller.errorMessage != null)
             MaterialBanner(
               content: Text(controller.errorMessage!),
@@ -334,111 +501,531 @@ class _MainShellState extends State<MainShell> {
               ],
             ),
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.only(bottom: 16),
-              children: [
-                if (visibleChatRequests.isNotEmpty) ...[
-                  const SectionTitle(title: '聊天邀请'),
-                  for (final request in visibleChatRequests)
-                    ChatRequestCard(controller: controller, request: request),
-                ],
-                if (controller.groupInvitations.isNotEmpty) ...[
-                  const SectionTitle(title: '群邀请'),
-                  for (final invitation in controller.groupInvitations.values)
-                    GroupInviteCard(
-                      controller: controller,
-                      invitation: invitation,
-                    ),
-                ],
-                const SectionTitle(title: '会话与设备'),
-                if (entries.isEmpty)
-                  const EmptyHint(icon: Icons.radar, text: '正在寻找局域网设备…')
-                else
-                  for (final entry in entries)
-                    UnifiedPeerTile(
-                      entry: entry,
-                      selected:
-                          entry.chat != null &&
-                          controller.selectedChatId == entry.chat!.chatId,
-                      onSecondaryTapDown: (details) =>
-                          _showPeerContextMenu(controller, entry, details),
-                      onTap: () async {
-                        final chat = entry.chat;
-                        if (chat?.state == ChatSessionState.active ||
-                            entry.peer?.online != true) {
-                          if (chat != null) {
-                            await controller.selectChat(chat.chatId);
-                          }
-                          return;
-                        }
-                        if (chat?.state == ChatSessionState.pendingIncoming ||
-                            chat?.state == ChatSessionState.pendingOutgoing) {
-                          return;
-                        }
-                        await controller.requestChat(entry.peer!);
-                      },
-                    ),
-                SectionTitle(
-                  title: '群聊',
-                  trailing: IconButton(
-                    tooltip: '创建群聊',
-                    onPressed: () => _showCreateGroup(controller),
-                    icon: const Icon(Icons.add, size: 20),
-                  ),
-                ),
-                if (groups.isEmpty)
-                  const EmptyHint(icon: Icons.groups_outlined, text: '还没有群聊')
-                else
-                  for (final group in groups)
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onSecondaryTapDown: (details) =>
-                          _showGroupContextMenu(controller, group, details),
-                      child: ListTile(
-                        selected: controller.selectedGroupId == group.groupId,
-                        leading: const CircleAvatar(
-                          child: Icon(Icons.groups, size: 20),
-                        ),
-                        title: Text(
-                          controller.groupDisplayName(group.groupId, group.name),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          _groupListSubtitle(controller, group),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing:
-                            group.unreadCount > 0 || group.lastMessageAt != null
-                            ? ConversationMeta(
-                                time: group.lastMessageAt,
-                                unreadCount: group.unreadCount,
-                              )
-                            : null,
-                        onTap: () => controller.selectGroup(group.groupId),
-                      ),
-                    ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          ListTile(
-            leading: const Icon(Icons.settings_outlined),
-            title: const Text('设置'),
-            subtitle: const Text('文件接收、通知与存储'),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => SettingsPage(controller: controller),
-              ),
-            ),
+            child: switch (_navTab) {
+              _MainNavTab.messages => _buildMessagesSidebar(controller),
+              _MainNavTab.contacts => _buildContactsSidebar(controller),
+              _MainNavTab.settings => _buildSettingsSidebar(controller),
+            },
           ),
         ],
       ),
     );
   }
 
+  Widget _buildMessagesSidebar(AppController controller) {
+    final entries = _unifiedPeerEntries(controller)
+        .where((entry) => entry.trustedPeer?.blocked != true)
+        .toList();
+    final groups = controller.groups;
+
+    final items = <({int rank, int timestamp, Widget tile})>[
+      for (final entry in entries)
+        (
+          rank: entry.chat != null ? 0 : 1,
+          timestamp:
+              entry.chat?.lastMessageAt?.millisecondsSinceEpoch ??
+              entry.chat?.createdAt?.millisecondsSinceEpoch ??
+              entry.peer?.lastSeen.millisecondsSinceEpoch ??
+              0,
+          tile: UnifiedPeerTile(
+            entry: entry,
+            selected:
+                entry.chat != null &&
+                controller.selectedChatId == entry.chat!.chatId,
+            onSecondaryTapDown: (details) =>
+                _showPeerContextMenu(controller, entry, details),
+            onTap: () async {
+              final chat = entry.chat;
+              if (chat?.state == ChatSessionState.active ||
+                  entry.peer?.online != true) {
+                if (chat != null) {
+                  await controller.selectChat(chat.chatId);
+                }
+                return;
+              }
+              if (chat?.state == ChatSessionState.pendingIncoming ||
+                  chat?.state == ChatSessionState.pendingOutgoing) {
+                setState(() {
+                  _navTab = _MainNavTab.contacts;
+                  _contactDetailMode = _ContactDetailMode.friendRequests;
+                });
+                return;
+              }
+              await controller.requestChat(entry.peer!);
+            },
+          ),
+        ),
+      for (final group in groups)
+        (
+          rank: 0,
+          timestamp:
+              group.lastMessageAt?.millisecondsSinceEpoch ??
+              group.createdAt.millisecondsSinceEpoch,
+          tile: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onSecondaryTapDown: (details) =>
+                _showGroupContextMenu(controller, group, details),
+            child: ListTile(
+              selected: controller.selectedGroupId == group.groupId,
+              leading: const CircleAvatar(
+                child: Icon(Icons.groups, size: 20),
+              ),
+              title: Text(
+                controller.groupDisplayName(group.groupId, group.name),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                _groupListSubtitle(controller, group),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: group.unreadCount > 0 || group.lastMessageAt != null
+                  ? ConversationMeta(
+                      time: group.lastMessageAt,
+                      unreadCount: group.unreadCount,
+                    )
+                  : null,
+              onTap: () => controller.selectGroup(group.groupId),
+            ),
+          ),
+        ),
+    ]..sort((a, b) {
+        if (a.rank != b.rank) return a.rank.compareTo(b.rank);
+        return b.timestamp.compareTo(a.timestamp);
+      });
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      children: [
+        if (items.isEmpty)
+          const EmptyHint(icon: Icons.radar, text: '正在寻找局域网设备…')
+        else
+          for (final item in items) item.tile,
+      ],
+    );
+  }
+
+  Widget _buildContactsSidebar(AppController controller) {
+    final visibleRequests = _visibleChatRequests(controller);
+    final groupInviteCount = controller.groupInvitations.length;
+    final peersById = {for (final peer in controller.peers) peer.deviceId: peer};
+    final chatsByPeer = {
+      for (final chat in controller.chats) chat.peerDeviceId: chat,
+    };
+
+    final verifiedContacts =
+        controller.trustedPeers.values
+            .where((trusted) => !trusted.blocked)
+            .toList()
+          ..sort((a, b) {
+            final aOnline = peersById[a.deviceId]?.online == true ? 0 : 1;
+            final bOnline = peersById[b.deviceId]?.online == true ? 0 : 1;
+            if (aOnline != bOnline) return aOnline.compareTo(bOnline);
+            return controller
+                .peerDisplayName(a.deviceId, a.displayName)
+                .compareTo(
+                  controller.peerDisplayName(b.deviceId, b.displayName),
+                );
+          });
+    final onlineVerifiedCount = verifiedContacts
+        .where((trusted) => peersById[trusted.deviceId]?.online == true)
+        .length;
+
+    final unverifiedOnlinePeers = controller.peers
+        .where(
+          (peer) =>
+              peer.online && controller.trustedPeers[peer.deviceId] == null,
+        )
+        .toList();
+
+    final blockedPeers = controller.blockedPeers;
+
+    final groups = controller.groups;
+
+    return Column(
+      children: [
+        ListTile(
+          key: const ValueKey('contacts-nav-friend-requests'),
+          dense: true,
+          selected: _contactDetailMode == _ContactDetailMode.friendRequests,
+          title: const Text('新朋友'),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (visibleRequests.isNotEmpty)
+                UnreadBadge(count: visibleRequests.length),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right, size: 18),
+            ],
+          ),
+          onTap: () => setState(() {
+            _contactDetailMode = _ContactDetailMode.friendRequests;
+            _selectedContactDeviceId = null;
+          }),
+        ),
+        ListTile(
+          key: const ValueKey('contacts-nav-group-notifications'),
+          dense: true,
+          selected: _contactDetailMode == _ContactDetailMode.groupNotifications,
+          title: const Text('群通知'),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (groupInviteCount > 0) UnreadBadge(count: groupInviteCount),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right, size: 18),
+            ],
+          ),
+          onTap: () => setState(() {
+            _contactDetailMode = _ContactDetailMode.groupNotifications;
+            _selectedContactDeviceId = null;
+          }),
+        ),
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+          child: SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<_ContactsSubTab>(
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(
+                  value: _ContactsSubTab.friends,
+                  label: Text('好友'),
+                ),
+                ButtonSegment(
+                  value: _ContactsSubTab.groups,
+                  label: Text('群聊'),
+                ),
+              ],
+              selected: {_contactsSubTab},
+              onSelectionChanged: (selection) =>
+                  setState(() => _contactsSubTab = selection.first),
+            ),
+          ),
+        ),
+        Expanded(
+          child: _contactsSubTab == _ContactsSubTab.friends
+              ? ListView(
+                  key: const ValueKey('contacts-friends-list'),
+                  padding: const EdgeInsets.only(bottom: 16),
+                  children: [
+                    _ContactGroupHeader(
+                      title: '已验证联系人',
+                      countLabel:
+                          '$onlineVerifiedCount/${verifiedContacts.length}',
+                      expanded: _verifiedExpanded,
+                      onTap: () => setState(
+                        () => _verifiedExpanded = !_verifiedExpanded,
+                      ),
+                    ),
+                    if (_verifiedExpanded) ...[
+                      if (verifiedContacts.isEmpty)
+                        const EmptyHint(
+                          icon: Icons.verified_user_outlined,
+                          text: '暂无已验证联系人',
+                        )
+                      else
+                        for (final trusted in verifiedContacts)
+                          _buildVerifiedContactTile(
+                            controller,
+                            trusted: trusted,
+                            peer: peersById[trusted.deviceId],
+                            chat: chatsByPeer[trusted.deviceId],
+                          ),
+                    ],
+                    if (unverifiedOnlinePeers.isNotEmpty) ...[
+                      _ContactGroupHeader(
+                        title: '局域网发现',
+                        countLabel: '${unverifiedOnlinePeers.length}',
+                        expanded: _lanNewExpanded,
+                        onTap: () =>
+                            setState(() => _lanNewExpanded = !_lanNewExpanded),
+                      ),
+                      if (_lanNewExpanded)
+                        for (final peer in unverifiedOnlinePeers)
+                          ListTile(
+                            dense: true,
+                            leading: NamedAvatar(
+                              imagePath: controller.peerAvatarPath(
+                                peer.deviceId,
+                              ),
+                              name: peer.displayName,
+                              radius: 18,
+                            ),
+                            title: Text(
+                              peer.displayName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              '未验证 · ${peer.ip}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: TextButton(
+                              onPressed: () async {
+                                await controller.requestChat(peer);
+                                if (!mounted) return;
+                                setState(() {
+                                  _contactDetailMode =
+                                      _ContactDetailMode.friendRequests;
+                                  _selectedContactDeviceId = null;
+                                });
+                              },
+                              child: const Text('加好友'),
+                            ),
+                          ),
+                    ],
+                    if (blockedPeers.isNotEmpty) ...[
+                      _ContactGroupHeader(
+                        title: '黑名单',
+                        countLabel: '${blockedPeers.length}',
+                        expanded: _blockedExpanded,
+                        onTap: () => setState(
+                          () => _blockedExpanded = !_blockedExpanded,
+                        ),
+                      ),
+                      if (_blockedExpanded)
+                        for (final trusted in blockedPeers)
+                          _buildVerifiedContactTile(
+                            controller,
+                            trusted: trusted,
+                            peer: peersById[trusted.deviceId],
+                            chat: chatsByPeer[trusted.deviceId],
+                          ),
+                    ],
+                  ],
+                )
+              : ListView(
+                  key: const ValueKey('contacts-groups-list'),
+                  padding: const EdgeInsets.only(bottom: 16),
+                  children: [
+                    if (groups.isEmpty)
+                      const EmptyHint(icon: Icons.groups_outlined, text: '还没有群聊')
+                    else
+                      for (final group in groups)
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onSecondaryTapDown: (details) =>
+                              _showGroupContextMenu(controller, group, details),
+                          child: ListTile(
+                            dense: true,
+                            leading: const CircleAvatar(
+                              radius: 18,
+                              child: Icon(Icons.groups, size: 19),
+                            ),
+                            title: Text(
+                              controller.groupDisplayName(
+                                group.groupId,
+                                group.name,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              group.ownerDeviceId ==
+                                      controller.identity?.deviceId
+                                  ? '我创建的群聊'
+                                  : '已加入的群聊',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: const Icon(Icons.chevron_right, size: 18),
+                            onTap: () async {
+                              await controller.selectGroup(group.groupId);
+                              if (!mounted) return;
+                              setState(() => _navTab = _MainNavTab.messages);
+                            },
+                          ),
+                        ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildVerifiedContactTile(
+    AppController controller, {
+    required TrustedPeer trusted,
+    required DiscoveredPeer? peer,
+    required ChatSummary? chat,
+  }) {
+    final originalName = peer?.displayName ?? trusted.displayName;
+    final displayName = controller.peerDisplayName(
+      trusted.deviceId,
+      originalName,
+    );
+    final online = peer?.online == true;
+    final selected =
+        _contactDetailMode == _ContactDetailMode.peer &&
+        _selectedContactDeviceId == trusted.deviceId;
+    final entry = UnifiedPeerEntry(
+      deviceId: trusted.deviceId,
+      displayName: displayName,
+      originalDisplayName: originalName,
+      peer: peer,
+      chat: chat,
+      trustedPeer: trusted,
+      avatarPath: controller.peerAvatarPath(trusted.deviceId),
+    );
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: (details) =>
+          _showPeerContextMenu(controller, entry, details),
+      child: ListTile(
+        dense: true,
+        selected: selected,
+        leading: Stack(
+          children: [
+            NamedAvatar(
+              imagePath: entry.avatarPath,
+              name: displayName,
+              radius: 18,
+            ),
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: online ? Colors.green : Colors.grey,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.surface,
+                    width: 1.5,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text(displayName, overflow: TextOverflow.ellipsis),
+            ),
+            if (!trusted.blocked) ...[
+              const SizedBox(width: 4),
+              const Icon(Icons.verified, color: Colors.blue, size: 15),
+            ],
+          ],
+        ),
+        subtitle: Text(
+          trusted.blocked
+              ? '已拉黑'
+              : (online ? '在线 · ${peer!.ip}' : '离线 · ${trusted.lastKnownIp}'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        onTap: () => setState(() {
+          _contactDetailMode = _ContactDetailMode.peer;
+          _selectedContactDeviceId = trusted.deviceId;
+        }),
+      ),
+    );
+  }
+
+  Widget _buildSettingsSidebar(AppController controller) {
+    return ListView(
+      key: const ValueKey('settings-sidebar-list'),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        const SectionTitle(title: '设置'),
+        for (final section in SettingsSection.values)
+          ListTile(
+            key: ValueKey('settings-nav-${section.name}'),
+            dense: true,
+            selected: _settingsSection == section,
+            leading: Icon(section.icon, size: 20),
+            title: Text(section.title),
+            subtitle: Text(
+              section.subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            onTap: () => setState(() => _settingsSection = section),
+          ),
+      ],
+    );
+  }
+
   Widget _buildContent(AppController controller) {
+    return switch (_navTab) {
+      _MainNavTab.messages => _buildMessagesContent(controller),
+      _MainNavTab.contacts => _buildContactsContent(controller),
+      _MainNavTab.settings => SettingsSectionPane(
+        controller: controller,
+        section: _settingsSection,
+      ),
+    };
+  }
+
+  Widget _buildContactsContent(AppController controller) {
+    switch (_contactDetailMode) {
+      case _ContactDetailMode.friendRequests:
+        return FriendRequestsPane(
+          controller: controller,
+          requests: _visibleChatRequests(controller),
+        );
+      case _ContactDetailMode.groupNotifications:
+        return GroupNotificationsPane(
+          controller: controller,
+          invitations: controller.groupInvitations.values.toList(),
+        );
+      case _ContactDetailMode.peer:
+        final deviceId = _selectedContactDeviceId;
+        final trusted = deviceId == null
+            ? null
+            : controller.trustedPeers[deviceId];
+        if (deviceId != null && trusted != null) {
+          final peer = controller.peers
+              .where((value) => value.deviceId == deviceId)
+              .firstOrNull;
+          final originalName = peer?.displayName ?? trusted.displayName;
+          final displayName = controller.peerDisplayName(
+            deviceId,
+            originalName,
+          );
+          return ContactDetailPane(
+            controller: controller,
+            trustedPeer: trusted,
+            discoveredPeer: peer,
+            onStartChat: () => _openChatWithPeer(controller, deviceId),
+            onEditRemark: () =>
+                _showPeerRemark(context, controller, deviceId, originalName),
+            onToggleBlock: () async {
+              if (trusted.blocked) {
+                if (await _confirmUnblockPeer(displayName)) {
+                  await controller.setBlocked(deviceId, false);
+                }
+              } else if (await _confirmBlockPeer(displayName)) {
+                await controller.setBlocked(deviceId, true);
+              }
+            },
+            onRevokeVerification: () async {
+              if (await _confirmRevokeVerification(displayName)) {
+                await controller.revokePeerVerification(deviceId);
+                if (mounted) {
+                  setState(() {
+                    _contactDetailMode = _ContactDetailMode.none;
+                    _selectedContactDeviceId = null;
+                  });
+                }
+              }
+            },
+          );
+        }
+        return const _ContactsPlaceholderPane();
+      case _ContactDetailMode.none:
+        return const _ContactsPlaceholderPane();
+    }
+  }
+
+  Widget _buildMessagesContent(AppController controller) {
     if (controller.selectedChatId != null) {
       final chat = controller.chats
           .where((value) => value.chatId == controller.selectedChatId)
@@ -536,10 +1123,15 @@ class _MainShellState extends State<MainShell> {
                     await controller.setBlocked(chat.peerDeviceId, false);
                   }
                 }
+                if (value == 'revokeVerification') {
+                  if (await _confirmRevokeVerification(displayName)) {
+                    await controller.revokePeerVerification(chat.peerDeviceId);
+                  }
+                }
               },
               itemBuilder: (_) {
-                final isBlocked =
-                    controller.trustedPeers[chat.peerDeviceId]?.blocked == true;
+                final trusted = controller.trustedPeers[chat.peerDeviceId];
+                final isBlocked = trusted?.blocked == true;
                 return [
                   const PopupMenuItem(
                     value: 'info',
@@ -566,6 +1158,14 @@ class _MainShellState extends State<MainShell> {
                       title: Text('关闭对话'),
                     ),
                   ),
+                  if (trusted != null)
+                    const PopupMenuItem(
+                      value: 'revokeVerification',
+                      child: ListTile(
+                        leading: Icon(Icons.gpp_bad_outlined),
+                        title: Text('取消验证'),
+                      ),
+                    ),
                   PopupMenuItem(
                     value: isBlocked ? 'unblock' : 'block',
                     child: ListTile(
@@ -593,7 +1193,9 @@ class _MainShellState extends State<MainShell> {
           group.groupId,
           group.name,
         );
-        return _ConversationPane(
+        final drawerOpen =
+            _groupDrawerOpen && _groupDrawerGroupId == group.groupId;
+        final pane = _ConversationPane(
           key: ValueKey(conversationId),
           conversationId: conversationId,
           title: displayName,
@@ -683,88 +1285,53 @@ class _MainShellState extends State<MainShell> {
           },
           actions: [
             IconButton(
-              tooltip: '邀请在线成员',
-              onPressed: () => _showInviteMembers(context, controller, group),
-              icon: const Icon(Icons.person_add_alt_1),
-            ),
-            PopupMenuButton<String>(
               tooltip: '群聊操作',
-              onSelected: (value) async {
-                if (value == 'openWindow') {
-                  await widget.openConversationWindow(
+              onPressed: () => setState(() {
+                if (drawerOpen) {
+                  _groupDrawerOpen = false;
+                } else {
+                  _groupDrawerGroupId = group.groupId;
+                  _groupDrawerOpen = true;
+                }
+              }),
+              icon: Icon(
+                Icons.more_horiz,
+                color: drawerOpen
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+              ),
+            ),
+          ],
+        );
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            pane,
+            if (drawerOpen) ...[
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _groupDrawerOpen = false),
+                  child: const ColoredBox(color: Colors.black12),
+                ),
+              ),
+              Positioned(
+                top: 10,
+                right: 12,
+                bottom: 12,
+                child: GroupInfoDrawer(
+                  controller: controller,
+                  group: group,
+                  onClose: () => setState(() => _groupDrawerOpen = false),
+                  onOpenInWindow: () => widget.openConversationWindow(
                     context,
                     controller,
                     'group:${group.groupId}',
-                  );
-                  if (!mounted) return;
-                }
-                if (value == 'remark') {
-                  await _showGroupRemark(context, controller, group);
-                  if (!mounted) return;
-                }
-                if (value == 'members') {
-                  await _showGroupMembers(context, controller, group);
-                  if (!mounted) return;
-                }
-                if (value == 'rename') {
-                  await _showRenameGroup(context, controller, group);
-                  if (!mounted) return;
-                }
-                if (value == 'leave') {
-                  await _confirmLeaveGroup(context, controller, group);
-                }
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(
-                  value: 'openWindow',
-                  child: ListTile(
-                    leading: Icon(Icons.open_in_new),
-                    title: Text('在独立窗口打开'),
                   ),
+                  onMentionMember: (name) => _insertMention(composer, name),
                 ),
-                PopupMenuItem(
-                  value: 'remark',
-                  child: ListTile(
-                    leading: const Icon(Icons.drive_file_rename_outline),
-                    title: Text(
-                      controller.groupRemarks.containsKey(group.groupId)
-                          ? '修改群聊备注'
-                          : '添加群聊备注',
-                    ),
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'members',
-                  child: ListTile(
-                    leading: Icon(Icons.people_outline),
-                    title: Text('群成员'),
-                  ),
-                ),
-                if (group.ownerDeviceId == controller.identity!.deviceId)
-                  const PopupMenuItem(
-                    value: 'rename',
-                    child: ListTile(
-                      leading: Icon(Icons.edit_outlined),
-                      title: Text('修改群名'),
-                    ),
-                  ),
-                PopupMenuItem(
-                  value: 'leave',
-                  child: ListTile(
-                    leading: Icon(
-                      group.ownerDeviceId == controller.identity!.deviceId
-                          ? Icons.delete_outline
-                          : Icons.logout,
-                    ),
-                    title: Text(
-                      group.ownerDeviceId == controller.identity!.deviceId
-                          ? '解散群聊'
-                          : '退出群聊',
-                    ),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ],
         );
       }
@@ -1031,8 +1598,17 @@ class _MainShellState extends State<MainShell> {
     AppController controller,
     ChatGroup group,
   ) async {
+    final existingIds = (await controller.groupMembers(
+      group.groupId,
+    )).map((member) => member.deviceId).toSet();
+    if (!context.mounted) return;
     final available = controller.peers
-        .where((peer) => peer.online && peer.trusted)
+        .where(
+          (peer) =>
+              peer.online &&
+              peer.trusted &&
+              !existingIds.contains(peer.deviceId),
+        )
         .toList();
     final peer = await showDialog<DiscoveredPeer>(
       context: context,
@@ -1295,10 +1871,7 @@ class _MainShellState extends State<MainShell> {
               Center(
                 child: Text(
                   displayName,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
               const SizedBox(height: 16),
@@ -1330,6 +1903,16 @@ class _MainShellState extends State<MainShell> {
           ),
         ),
         actions: [
+          if (trusted != null)
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                if (await _confirmRevokeVerification(displayName)) {
+                  await controller.revokePeerVerification(deviceId);
+                }
+              },
+              child: const Text('取消验证'),
+            ),
           if (trusted?.blocked == true)
             FilledButton.tonal(
               onPressed: () async {
@@ -1394,6 +1977,14 @@ class _MainShellState extends State<MainShell> {
             title: Text('删除对话'),
           ),
         ),
+        if (entry.trustedPeer != null)
+          const PopupMenuItem(
+            value: _PeerContextAction.revokeVerification,
+            child: ListTile(
+              leading: Icon(Icons.gpp_bad_outlined),
+              title: Text('取消验证'),
+            ),
+          ),
         PopupMenuItem(
           value: _PeerContextAction.block,
           enabled: entry.trustedPeer != null,
@@ -1437,6 +2028,10 @@ class _MainShellState extends State<MainShell> {
           final composer = _composers.remove(chat.chatId);
           composer?.dispose();
           _pendingAttachments.remove(chat.chatId);
+        }
+      case _PeerContextAction.revokeVerification:
+        if (await _confirmRevokeVerification(entry.displayName)) {
+          await controller.revokePeerVerification(entry.deviceId);
         }
       case _PeerContextAction.block:
         if (entry.trustedPeer?.blocked == true) {
@@ -1503,6 +2098,26 @@ class _MainShellState extends State<MainShell> {
             FilledButton(
               onPressed: () => Navigator.pop(dialogContext, true),
               child: const Text('解除拉黑'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  Future<bool> _confirmRevokeVerification(String displayName) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('取消验证？'),
+          content: Text('取消对“$displayName”的验证后，对方将移出已验证联系人，下次聊天需重新核对 6 位验证码。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('取消验证'),
             ),
           ],
         ),
@@ -1726,8 +2341,8 @@ class IdentityHeader extends StatelessWidget {
                   Text(
                     identity.displayName,
                     style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1787,6 +2402,8 @@ class ProfileAvatar extends StatelessWidget {
         File(path),
         width: radius * 2,
         height: radius * 2,
+        cacheWidth: (radius * 4).round(),
+        cacheHeight: (radius * 4).round(),
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => fallback,
       ),
@@ -1820,6 +2437,8 @@ class NamedAvatar extends StatelessWidget {
         File(path),
         width: radius * 2,
         height: radius * 2,
+        cacheWidth: (radius * 4).round(),
+        cacheHeight: (radius * 4).round(),
         fit: BoxFit.cover,
         errorBuilder: (_, _, _) => fallback,
       ),
@@ -1858,7 +2477,7 @@ class RoleTag extends StatelessWidget {
         _groupRoleLabel(role),
         style: TextStyle(
           fontSize: 10,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
           color: foreground,
         ),
       ),
@@ -1883,8 +2502,8 @@ class UnreadBadge extends StatelessWidget {
       count > 99 ? '99+' : '$count',
       textAlign: TextAlign.center,
       style: TextStyle(
-        fontSize: 12,
-        fontWeight: FontWeight.w700,
+        fontSize: 11,
+        fontWeight: FontWeight.w600,
         color: Theme.of(context).colorScheme.onError,
       ),
     ),
@@ -2068,7 +2687,14 @@ class UnifiedPeerTile extends StatelessWidget {
   }
 }
 
-enum _PeerContextAction { openInWindow, info, remark, delete, block }
+enum _PeerContextAction {
+  openInWindow,
+  info,
+  remark,
+  delete,
+  revokeVerification,
+  block,
+}
 
 enum _GroupContextAction { openInWindow, members, remark, invite, rename, leave }
 
@@ -2094,7 +2720,7 @@ class ChatRequestCard extends StatelessWidget {
             request.incoming
                 ? '${controller.peerDisplayName(request.peerDeviceId, request.displayName)} 请求与你聊天'
                 : '等待 ${controller.peerDisplayName(request.peerDeviceId, request.displayName)} 确认',
-            style: const TextStyle(fontWeight: FontWeight.w700),
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 5),
           Text('设备：${request.peerDeviceId.substring(0, 8)}…'),
@@ -2230,6 +2856,7 @@ class _DetachedConversationWindowState
   List<ChatMessage> _messages = const [];
   ChatMessage? _replyingTo;
   int _refreshGeneration = 0;
+  bool _groupDrawerOpen = false;
 
   @override
   void initState() {
@@ -2337,11 +2964,14 @@ class _DetachedConversationWindowState
 
     return Scaffold(
       body: SafeArea(
-        child: _ViewDropArea(
-          viewId: widget.viewId,
-          enabled: enabled,
-          onDropFiles: dropFiles,
-          child: _ConversationPane(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _ViewDropArea(
+              viewId: widget.viewId,
+              enabled: enabled,
+              onDropFiles: dropFiles,
+              child: _ConversationPane(
             conversationId: widget.conversationId,
             title: title,
             subtitle: isGroup
@@ -2423,107 +3053,51 @@ class _DetachedConversationWindowState
             actions: isGroup
                 ? [
                     IconButton(
-                      tooltip: '邀请在线成员',
-                      onPressed: () => _MainShellState._showInviteMembers(
-                        context,
-                        controller,
-                        group,
-                      ),
-                      icon: const Icon(Icons.person_add_alt_1),
-                    ),
-                    PopupMenuButton<String>(
                       tooltip: '群聊操作',
-                      onSelected: (value) async {
-                        if (value == 'remark') {
-                          await _MainShellState._showGroupRemark(
-                            context,
-                            controller,
-                            group,
-                          );
-                          if (!context.mounted) return;
-                        }
-                        if (value == 'members') {
-                          await _MainShellState._showGroupMembers(
-                            context,
-                            controller,
-                            group,
-                          );
-                          if (!context.mounted) return;
-                        }
-                        if (value == 'rename') {
-                          await _MainShellState._showRenameGroup(
-                            context,
-                            controller,
-                            group,
-                          );
-                          if (!context.mounted) return;
-                        }
-                        if (value == 'leave') {
-                          await _MainShellState._confirmLeaveGroup(
-                            context,
-                            controller,
-                            group,
-                          );
-                          if (!context.mounted) return;
-                          if (!controller.groups.any(
-                            (item) => item.groupId == group.groupId,
-                          )) {
-                            await MultiViewDesktop.of(context).closeWindow();
-                          }
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        PopupMenuItem(
-                          value: 'remark',
-                          child: ListTile(
-                            leading: const Icon(
-                              Icons.drive_file_rename_outline,
-                            ),
-                            title: Text(
-                              controller.groupRemarks.containsKey(
-                                    group.groupId,
-                                  )
-                                  ? '修改群聊备注'
-                                  : '添加群聊备注',
-                            ),
-                          ),
-                        ),
-                        const PopupMenuItem(
-                          value: 'members',
-                          child: ListTile(
-                            leading: Icon(Icons.people_outline),
-                            title: Text('群成员'),
-                          ),
-                        ),
-                        if (group.ownerDeviceId == localDeviceId)
-                          const PopupMenuItem(
-                            value: 'rename',
-                            child: ListTile(
-                              leading: Icon(Icons.edit_outlined),
-                              title: Text('修改群名'),
-                            ),
-                          ),
-                        PopupMenuItem(
-                          value: 'leave',
-                          child: ListTile(
-                            leading: Icon(
-                              group.ownerDeviceId == localDeviceId
-                                  ? Icons.delete_outline
-                                  : Icons.logout,
-                            ),
-                            title: Text(
-                              group.ownerDeviceId == localDeviceId
-                                  ? '解散群聊'
-                                  : '退出群聊',
-                            ),
-                          ),
-                        ),
-                      ],
+                      onPressed: () =>
+                          setState(() => _groupDrawerOpen = !_groupDrawerOpen),
+                      icon: Icon(
+                        Icons.more_horiz,
+                        color: _groupDrawerOpen
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
                     ),
                   ]
                 : const [],
             headerLeftPadding: 22,
           ),
+        ),
+            if (isGroup && _groupDrawerOpen) ...[
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _groupDrawerOpen = false),
+                  child: const ColoredBox(color: Colors.black12),
+                ),
+              ),
+              Positioned(
+                top: 10,
+                right: 12,
+                bottom: 12,
+                child: GroupInfoDrawer(
+                  controller: controller,
+                  group: group,
+                  onClose: () => setState(() => _groupDrawerOpen = false),
+                  onAfterLeaveOrDisband: () async {
+                    if (!context.mounted) return;
+                    if (!controller.groups.any(
+                      (item) => item.groupId == group.groupId,
+                    )) {
+                      await MultiViewDesktop.of(context).closeWindow();
+                    }
+                  },
+                  onMentionMember: (name) =>
+                      _MainShellState._insertMention(_composer, name),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -2648,7 +3222,7 @@ class _ConversationPane extends StatefulWidget {
     this.recallNoticeFor,
     this.onMention,
     this.loadMentionCandidates,
-    this.headerLeftPadding = 64,
+    this.headerLeftPadding = 22,
     this.useDesktopDrop = true,
     this.isGroup = false,
     this.senderHeaderFor,
@@ -2958,7 +3532,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
     final content = Column(
       children: [
         Container(
-          height: 72,
+          height: 68,
           padding: EdgeInsets.only(left: widget.headerLeftPadding, right: 22),
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.surface,
@@ -2978,8 +3552,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     Text(
@@ -3011,7 +3585,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
                     ],
                   ),
                 )
-              : ListView.builder(
+              : RepaintBoundary(
+                  child: ListView.builder(
                   key: PageStorageKey(widget.conversationId),
                   controller: _scroll,
                   reverse: true,
@@ -3085,6 +3660,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
                       onShowFallbackMenu: _showFallbackMenu,
                     );
                   },
+                  ),
                 ),
         ),
         Container(
@@ -3192,9 +3768,7 @@ class FileDropOverlay extends StatelessWidget {
               const SizedBox(height: 12),
               Text(
                 sending ? '正在发送文件…' : '松开发送文件',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                style: Theme.of(context).textTheme.titleMedium,
               ),
               if (!sending) ...[
                 const SizedBox(height: 4),
@@ -3404,7 +3978,7 @@ class ReplyBanner extends StatelessWidget {
                   '引用 $senderName',
                   style: TextStyle(
                     fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     color: Theme.of(context).colorScheme.primary,
                   ),
                 ),
@@ -3642,7 +4216,7 @@ class MessageBubble extends StatelessWidget {
               '@我',
               style: TextStyle(
                 fontSize: 11,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
                 color: Theme.of(context).colorScheme.onErrorContainer,
               ),
             ),
@@ -3898,7 +4472,7 @@ class MessageBubble extends StatelessWidget {
                       replySenderName ?? '被引用的消息',
                       style: TextStyle(
                         fontSize: 11,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w600,
                         color: Theme.of(context).colorScheme.primary,
                       ),
                     ),
@@ -4122,6 +4696,748 @@ class TopRightSnackBar extends StatelessWidget {
   );
 }
 
+class _NavRailButton extends StatelessWidget {
+  const _NavRailButton({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    required this.selected,
+    required this.badgeCount,
+    required this.onTap,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final bool selected;
+  final int badgeCount;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: selected
+                    ? colorScheme.primaryContainer
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                icon,
+                size: 22,
+                color: selected
+                    ? colorScheme.primary
+                    : colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (badgeCount > 0)
+              Positioned(
+                top: -3,
+                right: -5,
+                child: UnreadBadge(count: badgeCount),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ContactGroupHeader extends StatelessWidget {
+  const _ContactGroupHeader({
+    required this.title,
+    required this.countLabel,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  final String title;
+  final String countLabel;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 14, 10),
+      child: Row(
+        children: [
+          Icon(
+            expanded ? Icons.expand_more : Icons.chevron_right,
+            size: 18,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              title,
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+          ),
+          Text(
+            countLabel,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// 联系人 -> 新朋友：右侧审批面板，集中处理收发中的 6 位验证码好友请求。
+class FriendRequestsPane extends StatelessWidget {
+  const FriendRequestsPane({
+    super.key,
+    required this.controller,
+    required this.requests,
+  });
+
+  final AppController controller;
+  final List<ChatRequest> requests;
+
+  @override
+  Widget build(BuildContext context) {
+    final incoming = requests.where((r) => r.incoming).toList();
+    final outgoing = requests.where((r) => !r.incoming).toList();
+    return Column(
+      children: [
+        _PaneHeader(
+          title: '新朋友',
+          subtitle: '核对 6 位验证码并通过后，对方将加入已验证联系人',
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: requests.isEmpty
+              ? const _EmptyApprovalState(
+                  icon: Icons.person_add_disabled_outlined,
+                  title: '暂无新的好友验证请求',
+                  subtitle: '收到局域网其他设备的聊天请求或你主动发起请求时，会在这里显示。',
+                )
+              : Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 680),
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+                      children: [
+                        if (incoming.isNotEmpty) ...[
+                          const SectionTitle(title: '待我审批'),
+                          for (final request in incoming)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: ChatRequestCard(
+                                controller: controller,
+                                request: request,
+                              ),
+                            ),
+                        ],
+                        if (outgoing.isNotEmpty) ...[
+                          const SectionTitle(title: '等待对方确认'),
+                          for (final request in outgoing)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: ChatRequestCard(
+                                controller: controller,
+                                request: request,
+                              ),
+                            ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 联系人 -> 群通知：右侧审批面板，集中处理收到的局域网群聊邀请。
+class GroupNotificationsPane extends StatelessWidget {
+  const GroupNotificationsPane({
+    super.key,
+    required this.controller,
+    required this.invitations,
+  });
+
+  final AppController controller;
+  final List<GroupInvitation> invitations;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const _PaneHeader(
+          title: '群通知',
+          subtitle: '审批收到的局域网群聊邀请',
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: invitations.isEmpty
+              ? const _EmptyApprovalState(
+                  icon: Icons.notifications_none_outlined,
+                  title: '暂无新的群通知',
+                  subtitle: '当其他设备邀请你加入群聊时，会在这里等待你同意或拒绝。',
+                )
+              : Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 680),
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+                      children: [
+                        const SectionTitle(title: '待处理群邀请'),
+                        for (final invitation in invitations)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: GroupInviteCard(
+                              controller: controller,
+                              invitation: invitation,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 联系人详情面板：展示已验证联系人的完整资料与快捷操作。
+class ContactDetailPane extends StatelessWidget {
+  const ContactDetailPane({
+    super.key,
+    required this.controller,
+    required this.trustedPeer,
+    required this.discoveredPeer,
+    required this.onStartChat,
+    required this.onEditRemark,
+    required this.onToggleBlock,
+    this.onRevokeVerification,
+  });
+
+  final AppController controller;
+  final TrustedPeer trustedPeer;
+  final DiscoveredPeer? discoveredPeer;
+  final VoidCallback onStartChat;
+  final VoidCallback onEditRemark;
+  final VoidCallback onToggleBlock;
+  final VoidCallback? onRevokeVerification;
+
+  @override
+  Widget build(BuildContext context) {
+    final originalName = discoveredPeer?.displayName ?? trustedPeer.displayName;
+    final displayName = controller.peerDisplayName(
+      trustedPeer.deviceId,
+      originalName,
+    );
+    final remark = controller.peerRemarks[trustedPeer.deviceId];
+    final online = discoveredPeer?.online == true;
+    final blocked = trustedPeer.blocked;
+    final rows = <(IconData, String, String)>[
+      (Icons.badge_outlined, '昵称', originalName),
+      if (remark != null) (Icons.edit_note_outlined, '备注', remark),
+      (Icons.fingerprint, '设备 ID', trustedPeer.deviceId),
+      (
+        Icons.lan_outlined,
+        '网络',
+        discoveredPeer?.ip ??
+            (trustedPeer.lastKnownIp.isNotEmpty
+                ? '${trustedPeer.lastKnownIp}（最近已知）'
+                : '离线'),
+      ),
+      (Icons.wifi_tethering, '在线状态', online ? '在线' : '离线'),
+      (
+        Icons.verified_user_outlined,
+        '验证状态',
+        blocked ? '已拉黑' : '已确认验证码',
+      ),
+    ];
+
+    return Column(
+      children: [
+        _PaneHeader(
+          title: '联系人资料',
+          subtitle: blocked ? '该联系人当前在黑名单中' : '已验证的局域网联系人',
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(28),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Center(
+                          child: NamedAvatar(
+                            imagePath: controller.peerAvatarPath(
+                              trustedPeer.deviceId,
+                            ),
+                            name: displayName,
+                            radius: 40,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                displayName,
+                                style: Theme.of(context).textTheme.titleLarge,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (!blocked) ...[
+                              const SizedBox(width: 6),
+                              const Icon(
+                                Icons.verified,
+                                color: Colors.blue,
+                                size: 20,
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        for (final row in rows)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 5),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(row.$1, size: 18, color: Colors.grey),
+                                const SizedBox(width: 10),
+                                SizedBox(
+                                  width: 72,
+                                  child: Text(
+                                    row.$2,
+                                    style: const TextStyle(color: Colors.grey),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: SelectableText(
+                                    row.$3,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(height: 24),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          alignment: WrapAlignment.center,
+                          children: [
+                            if (!blocked)
+                              FilledButton.icon(
+                                onPressed: onStartChat,
+                                icon: const Icon(
+                                  Icons.chat_bubble_outline,
+                                  size: 18,
+                                ),
+                                label: const Text('发消息'),
+                              ),
+                            OutlinedButton.icon(
+                              onPressed: onEditRemark,
+                              icon: const Icon(
+                                Icons.drive_file_rename_outline,
+                                size: 18,
+                              ),
+                              label: const Text('修改备注'),
+                            ),
+                            if (onRevokeVerification != null)
+                              OutlinedButton.icon(
+                                onPressed: onRevokeVerification,
+                                icon: const Icon(
+                                  Icons.gpp_bad_outlined,
+                                  size: 18,
+                                ),
+                                label: const Text('取消验证'),
+                              ),
+                            OutlinedButton.icon(
+                              onPressed: onToggleBlock,
+                              icon: Icon(
+                                blocked
+                                    ? Icons.check_circle_outline
+                                    : Icons.block,
+                                size: 18,
+                              ),
+                              label: Text(blocked ? '解除拉黑' : '拉黑此人'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PaneHeader extends StatelessWidget {
+  const _PaneHeader({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Theme.of(context).colorScheme.surface,
+    child: Container(
+      height: 68,
+      padding: const EdgeInsets.fromLTRB(22, 10, 20, 10),
+      alignment: Alignment.centerLeft,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _EmptyApprovalState extends StatelessWidget {
+  const _EmptyApprovalState({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 420),
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 56, color: Theme.of(context).colorScheme.outline),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _ContactsPlaceholderPane extends StatelessWidget {
+  const _ContactsPlaceholderPane();
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.contacts_outlined,
+          size: 64,
+          color: Theme.of(context).colorScheme.outline.withValues(alpha: .45),
+        ),
+        const SizedBox(height: 14),
+        Text(
+          '选择左侧新朋友、群通知或已验证联系人',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _GlobalSearchDialog extends StatefulWidget {
+  const _GlobalSearchDialog({
+    required this.controller,
+    required this.onSelectPeer,
+    required this.onSelectGroup,
+  });
+
+  final AppController controller;
+  final Future<void> Function(UnifiedPeerEntry entry) onSelectPeer;
+  final Future<void> Function(ChatGroup group) onSelectGroup;
+
+  @override
+  State<_GlobalSearchDialog> createState() => _GlobalSearchDialogState();
+}
+
+class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
+  final _queryController = TextEditingController();
+
+  @override
+  void dispose() {
+    _queryController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final query = _queryController.text.trim().toLowerCase();
+
+    final peersById = {for (final peer in controller.peers) peer.deviceId: peer};
+    final chatsByPeer = {
+      for (final chat in controller.chats) chat.peerDeviceId: chat,
+    };
+    final candidateIds = <String>{
+      ..._unifiedPeerEntries(controller)
+          .where((e) => e.trustedPeer?.blocked != true)
+          .map((e) => e.deviceId),
+      ...controller.trustedPeers.values
+          .where((t) => !t.blocked)
+          .map((t) => t.deviceId),
+    };
+
+    final matchedPeers = <UnifiedPeerEntry>[
+      for (final deviceId in candidateIds)
+        () {
+          final peer = peersById[deviceId];
+          final chat = chatsByPeer[deviceId];
+          final trusted = controller.trustedPeers[deviceId];
+          final originalName =
+              peer?.displayName ??
+              chat?.displayName ??
+              trusted?.displayName ??
+              '未知设备';
+          final displayName = controller.peerDisplayName(
+            deviceId,
+            originalName,
+          );
+          return UnifiedPeerEntry(
+            deviceId: deviceId,
+            displayName: displayName,
+            originalDisplayName: originalName,
+            peer: peer,
+            chat: chat,
+            trustedPeer: trusted,
+            avatarPath: controller.peerAvatarPath(deviceId),
+          );
+        }(),
+    ].where((entry) {
+      if (query.isEmpty) return true;
+      return entry.displayName.toLowerCase().contains(query) ||
+          entry.originalDisplayName.toLowerCase().contains(query) ||
+          entry.deviceId.toLowerCase().contains(query) ||
+          (entry.peer?.ip.contains(query) ?? false) ||
+          (entry.trustedPeer?.lastKnownIp.contains(query) ?? false);
+    }).toList();
+
+    final matchedGroups = controller.groups.where((group) {
+      if (query.isEmpty) return true;
+      final displayName = controller.groupDisplayName(
+        group.groupId,
+        group.name,
+      );
+      return displayName.toLowerCase().contains(query) ||
+          group.name.toLowerCase().contains(query);
+    }).toList();
+
+    return Dialog(
+      key: const ValueKey('global-search-dialog'),
+      insetPadding: const EdgeInsets.all(24),
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 540),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+              child: TextField(
+                controller: _queryController,
+                autofocus: true,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  hintText: '搜索联系人、群聊或局域网设备',
+                  prefixIcon: const Icon(Icons.search),
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                  suffixIcon: _queryController.text.isEmpty
+                      ? IconButton(
+                          tooltip: '关闭',
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close, size: 18),
+                        )
+                      : IconButton(
+                          tooltip: '清空',
+                          onPressed: () {
+                            _queryController.clear();
+                            setState(() {});
+                          },
+                          icon: const Icon(Icons.close, size: 18),
+                        ),
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: matchedPeers.isEmpty && matchedGroups.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 48),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.search_off, size: 42, color: Colors.grey),
+                          SizedBox(height: 10),
+                          Text(
+                            '没有找到匹配的联系人或群聊',
+                            style: TextStyle(color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    )
+                  : ListView(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.only(bottom: 12),
+                      children: [
+                        if (matchedPeers.isNotEmpty) ...[
+                          const SectionTitle(title: '联系人与设备'),
+                          for (final entry in matchedPeers)
+                            ListTile(
+                              dense: true,
+                              leading: NamedAvatar(
+                                imagePath: entry.avatarPath,
+                                name: entry.displayName,
+                                radius: 18,
+                              ),
+                              title: Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      entry.displayName,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (entry.trustedPeer != null) ...[
+                                    const SizedBox(width: 4),
+                                    const Icon(
+                                      Icons.verified,
+                                      color: Colors.blue,
+                                      size: 15,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              subtitle: Text(
+                                [
+                                  if (entry.displayName !=
+                                      entry.originalDisplayName)
+                                    '原名：${entry.originalDisplayName}',
+                                  entry.peer?.online == true ? '在线' : '离线',
+                                  if (entry.peer?.ip != null) entry.peer!.ip,
+                                ].join(' · '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: const Icon(
+                                Icons.chevron_right,
+                                size: 18,
+                              ),
+                              onTap: () => widget.onSelectPeer(entry),
+                            ),
+                        ],
+                        if (matchedGroups.isNotEmpty) ...[
+                          const SectionTitle(title: '群聊'),
+                          for (final group in matchedGroups)
+                            ListTile(
+                              dense: true,
+                              leading: const CircleAvatar(
+                                radius: 18,
+                                child: Icon(Icons.groups, size: 19),
+                              ),
+                              title: Text(
+                                controller.groupDisplayName(
+                                  group.groupId,
+                                  group.name,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                _groupListSubtitle(controller, group),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: const Icon(
+                                Icons.chevron_right,
+                                size: 18,
+                              ),
+                              onTap: () => widget.onSelectGroup(group),
+                            ),
+                        ],
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class WelcomePane extends StatelessWidget {
   const WelcomePane({super.key, required this.controller});
   final AppController controller;
@@ -4142,8 +5458,7 @@ class WelcomePane extends StatelessWidget {
             const SizedBox(height: 20),
             Text(
               '你好，${controller.identity!.displayName}',
-              style: Theme.of(context).textTheme.headlineMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: 12),
             const Text(

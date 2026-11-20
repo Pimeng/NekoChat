@@ -359,6 +359,12 @@ class AppDatabase {
         'blocked': peer.blocked ? 1 : 0,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
 
+  Future<void> deleteTrustedPeer(String deviceId) => database.delete(
+    'trusted_peers',
+    where: 'device_id = ?',
+    whereArgs: [deviceId],
+  );
+
   Future<List<ChatSummary>> loadChats() async {
     final rows = await database.query(
       'chats',

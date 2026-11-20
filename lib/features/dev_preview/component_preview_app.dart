@@ -26,15 +26,28 @@ enum _CanvasBackground {
 }
 
 /// NekoChat 组件预览开发模式根应用。
-class ComponentPreviewApp extends StatelessWidget {
+class ComponentPreviewApp extends StatefulWidget {
   const ComponentPreviewApp({super.key});
+
+  @override
+  State<ComponentPreviewApp> createState() => _ComponentPreviewAppState();
+}
+
+class _ComponentPreviewAppState extends State<ComponentPreviewApp> {
+  late ThemeData _theme = buildNekoChatTheme();
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    _theme = buildNekoChatTheme();
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'NekoChat · 组件预览开发模式',
-      theme: buildNekoChatTheme(),
+      theme: _theme,
       home: const ComponentPreviewWorkbench(),
     );
   }
@@ -52,6 +65,7 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
   static const _overviewId = '__all__';
 
   late final PreviewAppController _controller;
+  late List<PreviewEntry> _catalog;
   final _searchController = TextEditingController();
   String _selectedId = _overviewId;
   _ViewportPreset _viewport = _ViewportPreset.auto;
@@ -65,12 +79,14 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
   void initState() {
     super.initState();
     _controller = PreviewAppController();
+    _catalog = buildPreviewCatalog(_controller, onAction: _showActionToast);
   }
 
   @override
   void reassemble() {
     super.reassemble();
-    // Flutter 每次触发 Hot Reload 都会调用 reassemble()，这里记录刷新次数与时间。
+    // Flutter 每次触发 Hot Reload 都会调用 reassemble()，这里刷新目录并记录刷新次数与时间。
+    _catalog = buildPreviewCatalog(_controller, onAction: _showActionToast);
     _hotReloadCount++;
     _lastHotReloadAt = DateTime.now();
   }
@@ -103,7 +119,7 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
 
   @override
   Widget build(BuildContext context) {
-    final catalog = buildPreviewCatalog(_controller, onAction: _showActionToast);
+    final catalog = _catalog;
     final query = _searchController.text.trim().toLowerCase();
     final filteredCatalog = query.isEmpty
         ? catalog
@@ -126,22 +142,27 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
         child: Row(
           children: [
             if (_sidebarOpen) ...[
-              SizedBox(
-                width: 280,
-                child: _buildSidebar(context, catalog, filteredCatalog),
+              RepaintBoundary(
+                child: SizedBox(
+                  width: 280,
+                  child: _buildSidebar(context, catalog, filteredCatalog),
+                ),
               ),
               const VerticalDivider(width: 1),
             ],
             Expanded(
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildToolbar(context, selectedEntry),
+                  RepaintBoundary(child: _buildToolbar(context, selectedEntry)),
                   const Divider(height: 1),
                   Expanded(
-                    child: _buildStage(
-                      context,
-                      selectedEntry: selectedEntry,
-                      catalog: filteredCatalog,
+                    child: RepaintBoundary(
+                      child: _buildStage(
+                        context,
+                        selectedEntry: selectedEntry,
+                        catalog: filteredCatalog,
+                      ),
                     ),
                   ),
                 ],
@@ -443,12 +464,9 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
         ? _buildOverviewGallery(context, catalog)
         : _buildSingleEntryStage(context, selectedEntry);
 
-    final scaled = MediaQuery(
-      data: MediaQuery.of(
-        context,
-      ).copyWith(textScaler: TextScaler.linear(_textScale)),
-      child: child,
-    );
+    final scaled = _textScale == 1.0
+        ? child
+        : _TextScaleScope(textScale: _textScale, child: child);
 
     final bgWidget = _CanvasSurface(background: _background, child: scaled);
     final presetSize = _viewport.size;
@@ -693,6 +711,23 @@ class _PreviewCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TextScaleScope extends StatelessWidget {
+  const _TextScaleScope({required this.textScale, required this.child});
+
+  final double textScale;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return MediaQuery(
+      data: MediaQuery.of(
+        context,
+      ).copyWith(textScaler: TextScaler.linear(textScale)),
+      child: child,
     );
   }
 }

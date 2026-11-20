@@ -1281,6 +1281,21 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 撤销对端验证状态，使其回到未验证状态；下次聊天需要重新核对 6 位验证码。
+  Future<void> revokePeerVerification(String deviceId) async {
+    if (!trustedPeers.containsKey(deviceId)) return;
+    trustedPeers.remove(deviceId);
+    await _database.deleteTrustedPeer(deviceId);
+    final chat = chats
+        .where((value) => value.peerDeviceId == deviceId)
+        .firstOrNull;
+    if (chat != null) {
+      await _upsertChat(deviceId, chat.displayName, ChatSessionState.none);
+    }
+    _discovery?.refreshTrust();
+    notifyListeners();
+  }
+
   Future<ChatGroup> createGroup(
     String name,
     List<DiscoveredPeer> invitees,

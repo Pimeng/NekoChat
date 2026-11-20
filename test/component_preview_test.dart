@@ -85,6 +85,8 @@ void main() {
       200,
       scrollable: sidebarScrollable,
     );
+    await tester.ensureVisible(settingsNav);
+    await tester.pumpAndSettle();
     await tester.tap(settingsNav);
     await tester.pumpAndSettle();
 
@@ -101,11 +103,15 @@ void main() {
       -200,
       scrollable: sidebarScrollable,
     );
+    await tester.ensureVisible(mainShellNav);
+    await tester.pumpAndSettle();
     await tester.tap(mainShellNav);
     await tester.pumpAndSettle();
 
-    expect(find.text('橘猫工程师'), findsWidgets);
+    expect(find.byKey(const ValueKey('nav-rail-messages')), findsOneWidget);
+    expect(find.byKey(const ValueKey('nav-rail-contacts')), findsOneWidget);
     expect(find.text('晓猫（前端）'), findsWidgets);
+    expect(find.text('机房联调群'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

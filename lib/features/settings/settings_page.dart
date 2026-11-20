@@ -5,6 +5,19 @@ import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
 import '../../core/models/models.dart';
 
+enum SettingsSection {
+  lan('局域网', '局域网设备相互发现', Icons.wifi_find_outlined),
+  privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
+  files('文件接收', '自动接收与大小上限', Icons.download_outlined),
+  notifications('通知', 'Windows 系统通知与测试', Icons.notifications_outlined),
+  storage('存储与关于', '数据文件夹与版本信息', Icons.folder_outlined);
+
+  const SettingsSection(this.title, this.subtitle, this.icon);
+  final String title;
+  final String subtitle;
+  final IconData icon;
+}
+
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, required this.controller});
 
@@ -312,9 +325,14 @@ class SettingsVersionFooter extends StatelessWidget {
 }
 
 class BossKeyShortcutPage extends StatefulWidget {
-  const BossKeyShortcutPage({super.key, required this.controller});
+  const BossKeyShortcutPage({
+    super.key,
+    required this.controller,
+    this.onBack,
+  });
 
   final AppController controller;
+  final VoidCallback? onBack;
 
   @override
   State<BossKeyShortcutPage> createState() => _BossKeyShortcutPageState();
@@ -376,7 +394,11 @@ class _BossKeyShortcutPageState extends State<BossKeyShortcutPage> {
     final saved = await widget.controller.setBossKeyShortcut(_candidate);
     if (!mounted) return;
     if (saved) {
-      Navigator.of(context).pop();
+      if (widget.onBack != null) {
+        widget.onBack!();
+      } else {
+        Navigator.of(context).pop();
+      }
     } else {
       setState(() {
         _saving = false;
@@ -389,6 +411,13 @@ class _BossKeyShortcutPageState extends State<BossKeyShortcutPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
+      leading: widget.onBack != null
+          ? IconButton(
+              tooltip: '返回',
+              onPressed: widget.onBack,
+              icon: const Icon(Icons.arrow_back),
+            )
+          : null,
       title: const Text('老板键快捷键'),
       actions: [
         TextButton(
@@ -467,9 +496,14 @@ class _BossKeyShortcutPageState extends State<BossKeyShortcutPage> {
 }
 
 class BlockedPeersPage extends StatelessWidget {
-  const BlockedPeersPage({super.key, required this.controller});
+  const BlockedPeersPage({
+    super.key,
+    required this.controller,
+    this.onBack,
+  });
 
   final AppController controller;
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -477,7 +511,16 @@ class BlockedPeersPage extends StatelessWidget {
     builder: (context, _) {
       final blocked = controller.blockedPeers;
       return Scaffold(
-        appBar: AppBar(title: const Text('黑名单')),
+        appBar: AppBar(
+          leading: onBack != null
+              ? IconButton(
+                  tooltip: '返回',
+                  onPressed: onBack,
+                  icon: const Icon(Icons.arrow_back),
+                )
+              : null,
+          title: const Text('黑名单'),
+        ),
         body: blocked.isEmpty
             ? Center(
                 child: Padding(
@@ -491,12 +534,9 @@ class BlockedPeersPage extends StatelessWidget {
                         color: Theme.of(context).colorScheme.outline,
                       ),
                       const SizedBox(height: 16),
-                      const Text(
+                      Text(
                         '黑名单为空',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 8),
                       const Text(
@@ -592,5 +632,286 @@ class BlockedPeersPage extends StatelessWidget {
         false;
     if (!confirmed) return;
     await controller.setBlocked(deviceId, false);
+  }
+}
+
+enum _PrivacySubPage { none, bossKeyShortcut, blockedPeers }
+
+/// 主界面右侧嵌入式设置内容区：配合侧边栏分类快捷切换，二级页也在右侧原地展示。
+class SettingsSectionPane extends StatefulWidget {
+  const SettingsSectionPane({
+    super.key,
+    required this.controller,
+    required this.section,
+  });
+
+  final AppController controller;
+  final SettingsSection section;
+
+  @override
+  State<SettingsSectionPane> createState() => _SettingsSectionPaneState();
+}
+
+class _SettingsSectionPaneState extends State<SettingsSectionPane> {
+  _PrivacySubPage _privacySubPage = _PrivacySubPage.none;
+
+  @override
+  void didUpdateWidget(covariant SettingsSectionPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.section != widget.section) {
+      _privacySubPage = _PrivacySubPage.none;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.section == SettingsSection.privacy) {
+      if (_privacySubPage == _PrivacySubPage.bossKeyShortcut) {
+        return BossKeyShortcutPage(
+          controller: widget.controller,
+          onBack: () =>
+              setState(() => _privacySubPage = _PrivacySubPage.none),
+        );
+      }
+      if (_privacySubPage == _PrivacySubPage.blockedPeers) {
+        return BlockedPeersPage(
+          controller: widget.controller,
+          onBack: () =>
+              setState(() => _privacySubPage = _PrivacySubPage.none),
+        );
+      }
+    }
+
+    return AnimatedBuilder(
+      animation: widget.controller,
+      builder: (context, _) => Column(
+        children: [
+          Material(
+            color: Theme.of(context).colorScheme.surface,
+            child: Container(
+              height: 68,
+              padding: const EdgeInsets.fromLTRB(22, 10, 20, 10),
+              alignment: Alignment.centerLeft,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.section.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    widget.section.subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+                  children: _buildSectionBody(context),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildSectionBody(BuildContext context) {
+    final controller = widget.controller;
+    return switch (widget.section) {
+      SettingsSection.lan => [
+        Card(
+          child: SwitchListTile(
+            secondary: const Icon(Icons.wifi_find_outlined),
+            title: const Text('局域网相互发现'),
+            subtitle: const Text('允许本机与同一局域网内的 NekoChat 设备相互发现'),
+            value: controller.lanDiscoveryEnabled,
+            onChanged: controller.setLanDiscoveryEnabled,
+          ),
+        ),
+      ],
+      SettingsSection.privacy => [
+        Card(
+          child: Column(
+            children: [
+              SwitchListTile(
+                secondary: const Icon(Icons.visibility_off_outlined),
+                title: const Text('老板键'),
+                subtitle: const Text('开启全局快捷键隐藏或恢复应用'),
+                value: controller.bossKeyEnabled,
+                onChanged: controller.setBossKeyEnabled,
+              ),
+              const Divider(height: 1, indent: 56),
+              ListTile(
+                leading: const Icon(Icons.keyboard_outlined),
+                title: const Text('快捷键'),
+                subtitle: Text(controller.bossKeyShortcut.displayLabel),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => setState(
+                  () => _privacySubPage = _PrivacySubPage.bossKeyShortcut,
+                ),
+              ),
+              const Divider(height: 1, indent: 56),
+              SwitchListTile(
+                secondary: const Icon(Icons.notifications_active_outlined),
+                title: const Text('隐藏后仍然弹出通知'),
+                subtitle: const Text('老板键隐藏窗口后，新消息仍显示 Windows 通知'),
+                value: controller.bossKeyNotifyWhenHidden,
+                onChanged: controller.setBossKeyNotifyWhenHidden,
+              ),
+              if (controller.bossKeyError != null) ...[
+                const Divider(height: 1, indent: 56),
+                ListTile(
+                  leading: Icon(
+                    Icons.warning_amber_rounded,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  title: Text(
+                    controller.bossKeyError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: Text(
+            '隐藏后不显示任务栏入口或系统通知，再按当前快捷键 '
+            '或重新启动 NekoChat 即可恢复。进程仍会在任务管理器中显示。',
+            style: TextStyle(color: Colors.black54, fontSize: 12),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.block_outlined),
+            title: const Text('黑名单'),
+            subtitle: Text(
+              controller.blockedPeers.isEmpty
+                  ? '暂无已拉黑的联系人'
+                  : '已拉黑 ${controller.blockedPeers.length} 人，可随时解除拉黑',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => setState(
+              () => _privacySubPage = _PrivacySubPage.blockedPeers,
+            ),
+          ),
+        ),
+      ],
+      SettingsSection.files => [
+        Card(
+          child: Column(
+            children: [
+              SwitchListTile(
+                secondary: const Icon(Icons.download_outlined),
+                title: const Text('自动接收文件'),
+                subtitle: const Text('小文件自动下载，大文件仍需手动确认'),
+                value: controller.autoReceiveFiles,
+                onChanged: controller.setAutoReceiveFiles,
+              ),
+              const Divider(height: 1, indent: 56),
+              ListTile(
+                leading: const Icon(Icons.data_usage_outlined),
+                title: const Text('自动接收大小上限'),
+                subtitle: Text(
+                  '小于 ${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB '
+                  '的文件自动接收；达到上限后需要确认',
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB',
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.chevron_right),
+                  ],
+                ),
+                onTap: () =>
+                    SettingsPage(controller: controller)
+                        ._showAutoReceiveLimitDialog(context),
+              ),
+            ],
+          ),
+        ),
+      ],
+      SettingsSection.notifications => [
+        Card(
+          child: Column(
+            children: [
+              SwitchListTile(
+                secondary: const Icon(Icons.notifications_outlined),
+                title: const Text('开启 Windows 通知'),
+                subtitle: const Text('在后台或查看其他会话时提醒新消息'),
+                value: controller.windowsNotificationsEnabled,
+                onChanged: controller.setWindowsNotificationsEnabled,
+              ),
+              const Divider(height: 1, indent: 56),
+              ListTile(
+                enabled: controller.windowsNotificationsEnabled,
+                leading: const Icon(Icons.notification_add_outlined),
+                title: const Text('发送测试通知'),
+                subtitle: Text(
+                  controller.windowsNotificationsEnabled
+                      ? '验证 Windows 系统通知是否正常'
+                      : '开启通知后可用',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: controller.windowsNotificationsEnabled
+                    ? controller.showTestNotification
+                    : null,
+              ),
+            ],
+          ),
+        ),
+      ],
+      SettingsSection.storage => [
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.folder_outlined),
+            title: const Text('数据文件夹'),
+            subtitle: Text(
+              controller.dataDirectory ?? '数据目录尚未就绪',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: const Icon(Icons.open_in_new, size: 20),
+            onTap: controller.dataDirectory == null
+                ? null
+                : controller.openDataDirectory,
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: Text(
+            '聊天记录、身份数据和已接收附件都保存在本机。',
+            style: TextStyle(color: Colors.black54, fontSize: 12),
+          ),
+        ),
+        const SizedBox(height: 28),
+        const SettingsVersionFooter(),
+      ],
+    };
   }
 }
