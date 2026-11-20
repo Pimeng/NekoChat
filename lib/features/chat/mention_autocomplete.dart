@@ -27,6 +27,7 @@ class MentionAutocomplete extends StatefulWidget {
     required this.enabled,
     required this.onSend,
     required this.loadCandidates,
+    this.hasAttachments = false,
     this.onPasteAttachments,
   });
 
@@ -34,6 +35,7 @@ class MentionAutocomplete extends StatefulWidget {
   final FocusNode focusNode;
   final bool enabled;
   final VoidCallback onSend;
+  final bool hasAttachments;
   final Future<List<MentionCandidate>> Function() loadCandidates;
   final Future<bool> Function()? onPasteAttachments;
 
@@ -197,11 +199,24 @@ class _MentionAutocompleteState extends State<MentionAutocomplete> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (_menuOpen) _buildSuggestions(context),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.bottomCenter,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 140),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            child: _menuOpen
+                ? _buildSuggestions(context)
+                : const SizedBox.shrink(),
+          ),
+        ),
         MessageComposer(
           controller: widget.controller,
           focusNode: widget.focusNode,
           enabled: widget.enabled,
+          hasAttachments: widget.hasAttachments,
           onSend: widget.onSend,
           onPasteAttachments: widget.onPasteAttachments,
           onSuggestionPrevious: keyboardActive

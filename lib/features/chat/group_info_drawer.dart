@@ -283,7 +283,19 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
       child: SizedBox(
         width: 332,
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 160),
+          duration: const Duration(milliseconds: 190),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0.04, 0),
+                end: Offset.zero,
+              ).animate(animation),
+              child: child,
+            ),
+          ),
           child: switch (_page) {
             _DrawerPage.overview => _buildOverviewView(context),
             _DrawerPage.members => _buildMembersManagementView(context),
@@ -545,43 +557,60 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
                             }
                           : null,
                     ),
-                    if (_editingGroupName)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-                        child: KeyboardListener(
-                          focusNode: FocusNode(skipTraversal: true),
-                          onKeyEvent: (event) {
-                            if (event is KeyDownEvent &&
-                                event.logicalKey == LogicalKeyboardKey.escape) {
-                              setState(() {
-                                _groupNameController.text = group.name;
-                                _editingGroupName = false;
-                              });
-                            }
-                          },
-                          child: TextField(
-                            controller: _groupNameController,
-                            focusNode: _groupNameFocus,
-                            maxLength: 40,
-                            style: const TextStyle(fontSize: 13),
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: (_) => _commitGroupName(),
-                            decoration: InputDecoration(
-                              hintText: '输入新群名',
-                              hintStyle: TextStyle(
-                                fontSize: 13,
-                                color: colorScheme.onSurfaceVariant,
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 9,
-                              ),
-                              counterText: '',
-                              isDense: true,
-                            ),
-                          ),
-                        ),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 240),
+                      curve: const Cubic(0.16, 1.0, 0.3, 1.0),
+                      alignment: Alignment.topCenter,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 150),
+                        child: _editingGroupName
+                            ? Padding(
+                                key: const ValueKey('group-name-editor'),
+                                padding: const EdgeInsets.fromLTRB(
+                                  14,
+                                  0,
+                                  14,
+                                  12,
+                                ),
+                                child: KeyboardListener(
+                                  focusNode: FocusNode(skipTraversal: true),
+                                  onKeyEvent: (event) {
+                                    if (event is KeyDownEvent &&
+                                        event.logicalKey ==
+                                            LogicalKeyboardKey.escape) {
+                                      setState(() {
+                                        _groupNameController.text = group.name;
+                                        _editingGroupName = false;
+                                      });
+                                    }
+                                  },
+                                  child: TextField(
+                                    controller: _groupNameController,
+                                    focusNode: _groupNameFocus,
+                                    maxLength: 40,
+                                    style: const TextStyle(fontSize: 13),
+                                    textInputAction: TextInputAction.done,
+                                    onSubmitted: (_) => _commitGroupName(),
+                                    decoration: InputDecoration(
+                                      hintText: '输入新群名',
+                                      hintStyle: TextStyle(
+                                        fontSize: 13,
+                                        color: colorScheme.onSurfaceVariant,
+                                      ),
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 9,
+                                          ),
+                                      counterText: '',
+                                      isDense: true,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : const SizedBox.shrink(),
                       ),
+                    ),
                     if (_inlineError != null)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -632,53 +661,76 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
                         }
                       },
                     ),
-                    if (_editingGroupRemark)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-                        child: KeyboardListener(
-                          focusNode: FocusNode(skipTraversal: true),
-                          onKeyEvent: (event) {
-                            if (event is KeyDownEvent &&
-                                event.logicalKey == LogicalKeyboardKey.escape) {
-                              setState(() {
-                                _groupRemarkController.text = remark ?? '';
-                                _editingGroupRemark = false;
-                              });
-                            }
-                          },
-                          child: TextFormField(
-                            controller: _groupRemarkController,
-                            focusNode: _groupRemarkFocus,
-                            maxLength: 40,
-                            style: const TextStyle(fontSize: 13),
-                            textInputAction: TextInputAction.done,
-                            onFieldSubmitted: (_) => _commitGroupRemark(),
-                            decoration: InputDecoration(
-                              hintText: '填写备注（留空清除）',
-                              hintStyle: TextStyle(
-                                fontSize: 13,
-                                color: colorScheme.onSurfaceVariant,
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 9,
-                              ),
-                              counterText: '',
-                              isDense: true,
-                              suffixIcon: _groupRemarkController.text.isEmpty
-                                  ? null
-                                  : IconButton(
-                                      tooltip: '清空备注',
-                                      onPressed: () {
-                                        _groupRemarkController.clear();
-                                        _commitGroupRemark();
-                                      },
-                                      icon: const Icon(Icons.close, size: 16),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 240),
+                      curve: const Cubic(0.16, 1.0, 0.3, 1.0),
+                      alignment: Alignment.topCenter,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 150),
+                        child: _editingGroupRemark
+                            ? Padding(
+                                key: const ValueKey('group-remark-editor'),
+                                padding: const EdgeInsets.fromLTRB(
+                                  14,
+                                  0,
+                                  14,
+                                  12,
+                                ),
+                                child: KeyboardListener(
+                                  focusNode: FocusNode(skipTraversal: true),
+                                  onKeyEvent: (event) {
+                                    if (event is KeyDownEvent &&
+                                        event.logicalKey ==
+                                            LogicalKeyboardKey.escape) {
+                                      setState(() {
+                                        _groupRemarkController.text =
+                                            remark ?? '';
+                                        _editingGroupRemark = false;
+                                      });
+                                    }
+                                  },
+                                  child: TextFormField(
+                                    controller: _groupRemarkController,
+                                    focusNode: _groupRemarkFocus,
+                                    maxLength: 40,
+                                    style: const TextStyle(fontSize: 13),
+                                    textInputAction: TextInputAction.done,
+                                    onFieldSubmitted: (_) =>
+                                        _commitGroupRemark(),
+                                    decoration: InputDecoration(
+                                      hintText: '填写备注（留空清除）',
+                                      hintStyle: TextStyle(
+                                        fontSize: 13,
+                                        color: colorScheme.onSurfaceVariant,
+                                      ),
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                            horizontal: 10,
+                                            vertical: 9,
+                                          ),
+                                      counterText: '',
+                                      isDense: true,
+                                      suffixIcon:
+                                          _groupRemarkController.text.isEmpty
+                                          ? null
+                                          : IconButton(
+                                              tooltip: '清空备注',
+                                              onPressed: () {
+                                                _groupRemarkController.clear();
+                                                _commitGroupRemark();
+                                              },
+                                              icon: const Icon(
+                                                Icons.close,
+                                                size: 16,
+                                              ),
+                                            ),
                                     ),
-                            ),
-                          ),
-                        ),
+                                  ),
+                                ),
+                              )
+                            : const SizedBox.shrink(),
                       ),
+                    ),
                   ],
                 ),
               ),
@@ -688,66 +740,76 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
         const Divider(height: 1),
         Padding(
           padding: const EdgeInsets.all(14),
-          child: _confirmingLeave
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      _isOwner
-                          ? '解散后本机与在线成员将退出该群聊，确定继续？'
-                          : '退出后将不再接收该群聊消息，确定继续？',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: colorScheme.error,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 240),
+            curve: const Cubic(0.16, 1.0, 0.3, 1.0),
+            alignment: Alignment.bottomCenter,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 150),
+              child: _confirmingLeave
+                  ? Column(
+                      key: const ValueKey('group-leave-confirm'),
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () =>
-                                setState(() => _confirmingLeave = false),
-                            child: const Text('取消'),
-                          ),
+                        Text(
+                          _isOwner
+                              ? '解散后本机与在线成员将退出该群聊，确定继续？'
+                              : '退出后将不再接收该群聊消息，确定继续？',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: colorScheme.error),
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: colorScheme.error,
-                              foregroundColor: colorScheme.onError,
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () =>
+                                    setState(() => _confirmingLeave = false),
+                                child: const Text('取消'),
+                              ),
                             ),
-                            onPressed: () async {
-                              await widget.controller.leaveOrDisbandGroup(
-                                widget.group,
-                              );
-                              widget.onClose();
-                              await widget.onAfterLeaveOrDisband?.call();
-                            },
-                            child: Text(_isOwner ? '确认解散' : '确认退出'),
-                          ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: FilledButton(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: colorScheme.error,
+                                  foregroundColor: colorScheme.onError,
+                                ),
+                                onPressed: () async {
+                                  await widget.controller.leaveOrDisbandGroup(
+                                    widget.group,
+                                  );
+                                  widget.onClose();
+                                  await widget.onAfterLeaveOrDisband?.call();
+                                },
+                                child: Text(_isOwner ? '确认解散' : '确认退出'),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
-                    ),
-                  ],
-                )
-              : SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: colorScheme.error,
-                      side: BorderSide(
-                        color: colorScheme.error.withValues(alpha: .45),
+                    )
+                  : SizedBox(
+                      key: const ValueKey('group-leave-button'),
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: colorScheme.error,
+                          side: BorderSide(
+                            color: colorScheme.error.withValues(alpha: .45),
+                          ),
+                        ),
+                        onPressed: () =>
+                            setState(() => _confirmingLeave = true),
+                        icon: Icon(
+                          _isOwner ? Icons.delete_outline : Icons.logout,
+                          size: 18,
+                        ),
+                        label: Text(_isOwner ? '解散群聊' : '退出群聊'),
                       ),
                     ),
-                    onPressed: () => setState(() => _confirmingLeave = true),
-                    icon: Icon(
-                      _isOwner ? Icons.delete_outline : Icons.logout,
-                      size: 18,
-                    ),
-                    label: Text(_isOwner ? '解散群聊' : '退出群聊'),
-                  ),
-                ),
+            ),
+          ),
         ),
       ],
     );

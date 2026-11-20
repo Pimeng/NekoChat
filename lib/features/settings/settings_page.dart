@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
 import '../../core/models/models.dart';
+import '../common/smooth_dialog.dart';
 
 enum SettingsSection {
   lan('局域网', '局域网设备相互发现', Icons.wifi_find_outlined),
@@ -226,7 +227,7 @@ class SettingsPage extends StatelessWidget {
     var input = _formatMegabytes(controller.autoReceiveFileLimitBytes)
         .toString();
     String? errorText;
-    final megabytes = await showDialog<int>(
+    final megabytes = await showNekoDialog<int>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -612,7 +613,7 @@ class BlockedPeersPage extends StatelessWidget {
     required String displayName,
   }) async {
     final confirmed =
-        await showDialog<bool>(
+        await showNekoDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: const Text('解除拉黑？'),
@@ -665,70 +666,106 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.section == SettingsSection.privacy) {
-      if (_privacySubPage == _PrivacySubPage.bossKeyShortcut) {
-        return BossKeyShortcutPage(
-          controller: widget.controller,
-          onBack: () =>
-              setState(() => _privacySubPage = _PrivacySubPage.none),
-        );
-      }
-      if (_privacySubPage == _PrivacySubPage.blockedPeers) {
-        return BlockedPeersPage(
-          controller: widget.controller,
-          onBack: () =>
-              setState(() => _privacySubPage = _PrivacySubPage.none),
-        );
-      }
-    }
-
-    return AnimatedBuilder(
-      animation: widget.controller,
-      builder: (context, _) => Column(
-        children: [
-          Material(
-            color: Theme.of(context).colorScheme.surface,
-            child: Container(
-              height: 68,
-              padding: const EdgeInsets.fromLTRB(22, 10, 20, 10),
-              alignment: Alignment.centerLeft,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.section.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
+    final Widget child;
+    if (widget.section == SettingsSection.privacy &&
+        _privacySubPage == _PrivacySubPage.bossKeyShortcut) {
+      child = BossKeyShortcutPage(
+        key: const ValueKey('settings-sub-bosskey'),
+        controller: widget.controller,
+        onBack: () => setState(() => _privacySubPage = _PrivacySubPage.none),
+      );
+    } else if (widget.section == SettingsSection.privacy &&
+        _privacySubPage == _PrivacySubPage.blockedPeers) {
+      child = BlockedPeersPage(
+        key: const ValueKey('settings-sub-blocked'),
+        controller: widget.controller,
+        onBack: () => setState(() => _privacySubPage = _PrivacySubPage.none),
+      );
+    } else {
+      child = AnimatedBuilder(
+        key: ValueKey('settings-main-${widget.section.name}'),
+        animation: widget.controller,
+        builder: (context, _) => Column(
+          children: [
+            Material(
+              color: Theme.of(context).colorScheme.surface,
+              child: Container(
+                height: 68,
+                padding: const EdgeInsets.fromLTRB(22, 10, 20, 10),
+                alignment: Alignment.centerLeft,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.section.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                  Text(
-                    widget.section.subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 760),
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
-                  children: _buildSectionBody(context),
+                    Text(
+                      widget.section.subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                 ),
               ),
             ),
-          ),
-        ],
+            const Divider(height: 1),
+            Expanded(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+                    children: _buildSectionBody(context),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final isSubPage = _privacySubPage != _PrivacySubPage.none;
+    return ClipRect(
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 240),
+        reverseDuration: const Duration(milliseconds: 120),
+        switchInCurve: const Cubic(0.16, 1.0, 0.3, 1.0),
+        switchOutCurve: Curves.easeOut,
+        transitionBuilder: (widget, animation) {
+          final isIncoming = widget.key == child.key;
+          if (!isIncoming) {
+            return FadeTransition(opacity: animation, child: widget);
+          }
+          return FadeTransition(
+            opacity: CurvedAnimation(
+              parent: animation,
+              curve: const Interval(0.0, 0.75, curve: Curves.easeOut),
+            ),
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: isSubPage
+                    ? const Offset(0.06, 0)
+                    : const Offset(0, 0.035),
+                end: Offset.zero,
+              ).animate(animation),
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.988, end: 1.0).animate(animation),
+                child: widget,
+              ),
+            ),
+          );
+        },
+        child: child,
       ),
     );
   }

@@ -305,32 +305,51 @@ class _PeerInfoDrawerState extends State<PeerInfoDrawer> {
                         }
                       },
                     ),
-                    if (_editingRemark)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                        child: TextField(
-                          key: const ValueKey('peer-drawer-remark-field'),
-                          controller: _remarkController,
-                          focusNode: _remarkFocus,
-                          maxLength: 32,
-                          style: const TextStyle(fontSize: 13),
-                          textInputAction: TextInputAction.done,
-                          onSubmitted: (_) => _commitRemark(),
-                          decoration: InputDecoration(
-                            hintText: '填写备注（留空清除）',
-                            hintStyle: TextStyle(
-                              fontSize: 13,
-                              color: colorScheme.onSurfaceVariant,
-                            ),
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 9,
-                            ),
-                            counterText: '',
-                          ),
-                        ),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 240),
+                      curve: const Cubic(0.16, 1.0, 0.3, 1.0),
+                      alignment: Alignment.topCenter,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 150),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        child: _editingRemark
+                            ? Padding(
+                                key: const ValueKey('peer-remark-editor'),
+                                padding: const EdgeInsets.fromLTRB(
+                                  12,
+                                  0,
+                                  12,
+                                  12,
+                                ),
+                                child: TextField(
+                                  key: const ValueKey(
+                                    'peer-drawer-remark-field',
+                                  ),
+                                  controller: _remarkController,
+                                  focusNode: _remarkFocus,
+                                  maxLength: 32,
+                                  style: const TextStyle(fontSize: 13),
+                                  textInputAction: TextInputAction.done,
+                                  onSubmitted: (_) => _commitRemark(),
+                                  decoration: InputDecoration(
+                                    hintText: '填写备注（留空清除）',
+                                    hintStyle: TextStyle(
+                                      fontSize: 13,
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
+                                    isDense: true,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 9,
+                                    ),
+                                    counterText: '',
+                                  ),
+                                ),
+                              )
+                            : const SizedBox.shrink(),
                       ),
+                    ),
                   ],
                 ),
               ),
@@ -376,8 +395,10 @@ class _PeerInfoDrawerState extends State<PeerInfoDrawer> {
                               ),
                             ),
                             Expanded(
-                              child: SelectableText(
+                              child: Text(
                                 infoRows[i].$3,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w500,
@@ -517,10 +538,23 @@ class _PeerInfoDrawerState extends State<PeerInfoDrawer> {
                   ],
                 ),
               ),
-              if (_confirmAction != _PeerConfirmAction.none) ...[
-                const SizedBox(height: 10),
-                _buildConfirmBanner(context, displayName),
-              ],
+              AnimatedSize(
+                duration: const Duration(milliseconds: 240),
+                curve: const Cubic(0.16, 1.0, 0.3, 1.0),
+                alignment: Alignment.topCenter,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  child: _confirmAction != _PeerConfirmAction.none
+                      ? Padding(
+                          key: ValueKey('peer-confirm-${_confirmAction.name}'),
+                          padding: const EdgeInsets.only(top: 10),
+                          child: _buildConfirmBanner(context, displayName),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ),
             ],
           ),
         ),

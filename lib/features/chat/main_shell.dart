@@ -9,6 +9,7 @@ import '../../app/app_controller.dart';
 import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
 import '../../core/protocol/protocol.dart';
+import '../common/smooth_dialog.dart';
 import '../settings/settings_page.dart';
 import 'group_info_drawer.dart';
 import 'message_composer.dart';
@@ -134,6 +135,7 @@ class _MainShellState extends State<MainShell> {
   String? _groupDrawerGroupId;
   bool _peerDrawerOpen = false;
   String? _peerDrawerChatId;
+  Widget? _cachedDrawer;
 
   TextEditingController _composerFor(String conversationId) =>
       _composers.putIfAbsent(conversationId, TextEditingController.new);
@@ -324,16 +326,35 @@ class _MainShellState extends State<MainShell> {
                 ),
               ),
             ),
-            if (controller.topRightMessage != null)
-              Positioned(
-                top: 14,
-                right: 18,
-                child: TopRightSnackBar(
-                  message: controller.topRightMessage!,
-                  icon: controller.topRightIcon,
-                  onClose: controller.clearTopRightMessage,
+            Positioned.fill(child: _buildRootDrawerOverlay(controller)),
+            Positioned(
+              top: 14,
+              right: 18,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 260),
+                reverseDuration: const Duration(milliseconds: 180),
+                switchInCurve: const Cubic(0.16, 1.0, 0.3, 1.0),
+                switchOutCurve: Curves.easeInOutCubic,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0, -0.25),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
+                  ),
                 ),
+                child: controller.topRightMessage != null
+                    ? TopRightSnackBar(
+                        key: ValueKey(controller.topRightMessage),
+                        message: controller.topRightMessage!,
+                        icon: controller.topRightIcon,
+                        onClose: controller.clearTopRightMessage,
+                      )
+                    : const SizedBox.shrink(),
               ),
+            ),
           ],
         ),
       ),
@@ -449,7 +470,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   Future<void> _showGlobalSearch(AppController controller) async {
-    await showDialog<void>(
+    await showNekoDialog<void>(
       context: context,
       builder: (dialogContext) => _GlobalSearchDialog(
         controller: controller,
@@ -504,11 +525,38 @@ class _MainShellState extends State<MainShell> {
               ],
             ),
           Expanded(
-            child: switch (_navTab) {
-              _MainNavTab.messages => _buildMessagesSidebar(controller),
-              _MainNavTab.contacts => _buildContactsSidebar(controller),
-              _MainNavTab.settings => _buildSettingsSidebar(controller),
-            },
+            child: ClipRect(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                reverseDuration: const Duration(milliseconds: 120),
+                switchInCurve: const Cubic(0.16, 1.0, 0.3, 1.0),
+                switchOutCurve: Curves.easeOut,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0.06, 0),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: switch (_navTab) {
+                  _MainNavTab.messages => KeyedSubtree(
+                    key: const ValueKey('sidebar-tab-messages'),
+                    child: _buildMessagesSidebar(controller),
+                  ),
+                  _MainNavTab.contacts => KeyedSubtree(
+                    key: const ValueKey('sidebar-tab-contacts'),
+                    child: _buildContactsSidebar(controller),
+                  ),
+                  _MainNavTab.settings => KeyedSubtree(
+                    key: const ValueKey('sidebar-tab-settings'),
+                    child: _buildSettingsSidebar(controller),
+                  ),
+                },
+              ),
+            ),
           ),
         ],
       ),
@@ -957,14 +1005,51 @@ class _MainShellState extends State<MainShell> {
   }
 
   Widget _buildContent(AppController controller) {
-    return switch (_navTab) {
+    final child = switch (_navTab) {
       _MainNavTab.messages => _buildMessagesContent(controller),
-      _MainNavTab.contacts => _buildContactsContent(controller),
+      _MainNavTab.contacts => KeyedSubtree(
+        key: ValueKey(
+          'content-contacts-${_contactDetailMode.name}-${_selectedContactDeviceId ?? ''}',
+        ),
+        child: _buildContactsContent(controller),
+      ),
       _MainNavTab.settings => SettingsSectionPane(
+        key: const ValueKey('content-settings'),
         controller: controller,
         section: _settingsSection,
       ),
     };
+    return ClipRect(
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 240),
+        reverseDuration: const Duration(milliseconds: 120),
+        switchInCurve: const Cubic(0.16, 1.0, 0.3, 1.0),
+        switchOutCurve: Curves.easeOut,
+        transitionBuilder: (widget, animation) {
+          final isIncoming = widget.key == child.key;
+          if (!isIncoming) {
+            return FadeTransition(opacity: animation, child: widget);
+          }
+          return FadeTransition(
+            opacity: CurvedAnimation(
+              parent: animation,
+              curve: const Interval(0.0, 0.75, curve: Curves.easeOut),
+            ),
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.035),
+                end: Offset.zero,
+              ).animate(animation),
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.988, end: 1.0).animate(animation),
+                child: widget,
+              ),
+            ),
+          );
+        },
+        child: child,
+      ),
+    );
   }
 
   Widget _buildContactsContent(AppController controller) {
@@ -1047,8 +1132,8 @@ class _MainShellState extends State<MainShell> {
           originalDisplayName,
         );
         final drawerOpen = _peerDrawerOpen && _peerDrawerChatId == chat.chatId;
-        final pane = _ConversationPane(
-          key: ValueKey(chat.chatId),
+        return _ConversationPane(
+          key: ValueKey('content-chat-${chat.chatId}'),
           conversationId: conversationId,
           title: displayName,
           subtitle: [
@@ -1102,6 +1187,7 @@ class _MainShellState extends State<MainShell> {
                 if (drawerOpen) {
                   _peerDrawerOpen = false;
                 } else {
+                  _groupDrawerOpen = false;
                   _peerDrawerChatId = chat.chatId;
                   _peerDrawerOpen = true;
                 }
@@ -1113,33 +1199,6 @@ class _MainShellState extends State<MainShell> {
                     : null,
               ),
             ),
-          ],
-        );
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            pane,
-            if (drawerOpen) ...[
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _peerDrawerOpen = false),
-                  child: const ColoredBox(color: Colors.black12),
-                ),
-              ),
-              Positioned(
-                top: 10,
-                right: 12,
-                bottom: 12,
-                child: PeerInfoDrawer(
-                  controller: controller,
-                  chat: chat,
-                  onClose: () => setState(() => _peerDrawerOpen = false),
-                  onOpenInWindow: () =>
-                      openConversationInWindow(context, controller, chat.chatId),
-                ),
-              ),
-            ],
           ],
         );
       }
@@ -1157,8 +1216,8 @@ class _MainShellState extends State<MainShell> {
         );
         final drawerOpen =
             _groupDrawerOpen && _groupDrawerGroupId == group.groupId;
-        final pane = _ConversationPane(
-          key: ValueKey(conversationId),
+        return _ConversationPane(
+          key: ValueKey('content-group-${group.groupId}'),
           conversationId: conversationId,
           title: displayName,
           subtitle: [
@@ -1252,6 +1311,7 @@ class _MainShellState extends State<MainShell> {
                 if (drawerOpen) {
                   _groupDrawerOpen = false;
                 } else {
+                  _peerDrawerOpen = false;
                   _groupDrawerGroupId = group.groupId;
                   _groupDrawerOpen = true;
                 }
@@ -1265,47 +1325,75 @@ class _MainShellState extends State<MainShell> {
             ),
           ],
         );
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            pane,
-            if (drawerOpen) ...[
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _groupDrawerOpen = false),
-                  child: const ColoredBox(color: Colors.black12),
-                ),
-              ),
-              Positioned(
-                top: 10,
-                right: 12,
-                bottom: 12,
-                child: GroupInfoDrawer(
-                  controller: controller,
-                  group: group,
-                  onClose: () => setState(() => _groupDrawerOpen = false),
-                  onOpenInWindow: () => widget.openConversationWindow(
-                    context,
-                    controller,
-                    'group:${group.groupId}',
-                  ),
-                  onMentionMember: (name) => _insertMention(composer, name),
-                ),
-              ),
-            ],
-          ],
-        );
       }
     }
-    return WelcomePane(controller: controller);
+    return WelcomePane(
+      key: const ValueKey('content-welcome'),
+      controller: controller,
+    );
+  }
+
+  /// 全窗口级别的右侧悬浮面板（遮罩覆盖导航栏、侧边栏与聊天区，沉浸感更强）。
+  Widget _buildRootDrawerOverlay(AppController controller) {
+    Widget? activeDrawer;
+    if (_navTab == _MainNavTab.messages) {
+      if (_peerDrawerOpen &&
+          controller.selectedChatId != null &&
+          _peerDrawerChatId == controller.selectedChatId) {
+        final chat = controller.chats
+            .where((value) => value.chatId == controller.selectedChatId)
+            .firstOrNull;
+        if (chat != null) {
+          activeDrawer = PeerInfoDrawer(
+            key: ValueKey('root-peer-drawer-${chat.chatId}'),
+            controller: controller,
+            chat: chat,
+            onClose: () => setState(() => _peerDrawerOpen = false),
+            onOpenInWindow: () =>
+                openConversationInWindow(context, controller, chat.chatId),
+          );
+        }
+      } else if (_groupDrawerOpen &&
+          controller.selectedGroupId != null &&
+          _groupDrawerGroupId == controller.selectedGroupId) {
+        final group = controller.groups
+            .where((value) => value.groupId == controller.selectedGroupId)
+            .firstOrNull;
+        if (group != null) {
+          final composer = _composerFor('group:${group.groupId}');
+          activeDrawer = GroupInfoDrawer(
+            key: ValueKey('root-group-drawer-${group.groupId}'),
+            controller: controller,
+            group: group,
+            onClose: () => setState(() => _groupDrawerOpen = false),
+            onOpenInWindow: () => widget.openConversationWindow(
+              context,
+              controller,
+              'group:${group.groupId}',
+            ),
+            onMentionMember: (name) => _insertMention(composer, name),
+          );
+        }
+      }
+    }
+    if (activeDrawer != null) {
+      _cachedDrawer = activeDrawer;
+    }
+    return _FloatingDrawerOverlay(
+      open: activeDrawer != null,
+      onDismiss: () => setState(() {
+        _peerDrawerOpen = false;
+        _groupDrawerOpen = false;
+      }),
+      drawer: activeDrawer ?? _cachedDrawer ?? const SizedBox.shrink(),
+    );
   }
 
   Future<void> _showProfileEditor(AppController controller) async {
     var displayName = controller.identity!.displayName;
     String? errorText;
     var saving = false;
-    await showDialog<void>(
+    await showNekoDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -1480,7 +1568,7 @@ class _MainShellState extends State<MainShell> {
         .where((peer) => peer.online && peer.trusted)
         .toList();
     final selected = <String>{};
-    final create = await showDialog<bool>(
+    final create = await showNekoDialog<bool>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -1572,7 +1660,7 @@ class _MainShellState extends State<MainShell> {
               !existingIds.contains(peer.deviceId),
         )
         .toList();
-    final peer = await showDialog<DiscoveredPeer>(
+    final peer = await showNekoDialog<DiscoveredPeer>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
         title: const Text('邀请成员'),
@@ -1621,7 +1709,7 @@ class _MainShellState extends State<MainShell> {
         ?.role;
     final isOwner = myRole == GroupRole.owner;
     final isAdmin = myRole == GroupRole.admin;
-    await showDialog<void>(
+    await showNekoDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -1741,7 +1829,7 @@ class _MainShellState extends State<MainShell> {
     ChatGroup group,
   ) async {
     var name = group.name;
-    final accepted = await showDialog<bool>(
+    final accepted = await showNekoDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('修改群名'),
@@ -1812,7 +1900,7 @@ class _MainShellState extends State<MainShell> {
       if (peer != null) (Icons.settings_ethernet, '端口', '${peer.port}'),
     ];
     if (!mounted) return;
-    await showDialog<void>(
+    await showNekoDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('人员资料'),
@@ -2007,7 +2095,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   Future<bool> _confirmDeleteChat(String displayName) async =>
-      await showDialog<bool>(
+      await showNekoDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('删除对话？'),
@@ -2027,7 +2115,7 @@ class _MainShellState extends State<MainShell> {
       false;
 
   Future<bool> _confirmBlockPeer(String displayName) async =>
-      await showDialog<bool>(
+      await showNekoDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('拉黑此人？'),
@@ -2047,7 +2135,7 @@ class _MainShellState extends State<MainShell> {
       false;
 
   Future<bool> _confirmUnblockPeer(String displayName) async =>
-      await showDialog<bool>(
+      await showNekoDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('解除拉黑？'),
@@ -2067,7 +2155,7 @@ class _MainShellState extends State<MainShell> {
       false;
 
   Future<bool> _confirmRevokeVerification(String displayName) async =>
-      await showDialog<bool>(
+      await showNekoDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('取消验证？'),
@@ -2193,7 +2281,7 @@ class _MainShellState extends State<MainShell> {
     required Future<void> Function(String value) onSave,
   }) async {
     var remark = currentRemark ?? '';
-    final accepted = await showDialog<bool>(
+    final accepted = await showNekoDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(title),
@@ -2244,7 +2332,7 @@ class _MainShellState extends State<MainShell> {
     ChatGroup group,
   ) async {
     final isOwner = group.ownerDeviceId == controller.identity!.deviceId;
-    final accepted = await showDialog<bool>(
+    final accepted = await showNekoDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text(isOwner ? '解散群聊？' : '退出群聊？'),
@@ -3028,45 +3116,40 @@ class _DetachedConversationWindowState
             headerLeftPadding: 22,
           ),
         ),
-            if (_infoDrawerOpen && (isGroup || chat != null)) ...[
+            if (isGroup || chat != null)
               Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _infoDrawerOpen = false),
-                  child: const ColoredBox(color: Colors.black12),
+                child: _FloatingDrawerOverlay(
+                  open: _infoDrawerOpen,
+                  onDismiss: () => setState(() => _infoDrawerOpen = false),
+                  drawer: isGroup
+                      ? GroupInfoDrawer(
+                          controller: controller,
+                          group: group,
+                          onClose: () =>
+                              setState(() => _infoDrawerOpen = false),
+                          onAfterLeaveOrDisband: () async {
+                            if (!context.mounted) return;
+                            if (!controller.groups.any(
+                              (item) => item.groupId == group.groupId,
+                            )) {
+                              await MultiViewDesktop.of(context).closeWindow();
+                            }
+                          },
+                          onMentionMember: (name) =>
+                              _MainShellState._insertMention(_composer, name),
+                        )
+                      : PeerInfoDrawer(
+                          controller: controller,
+                          chat: chat!,
+                          onClose: () =>
+                              setState(() => _infoDrawerOpen = false),
+                          onAfterClose: () async {
+                            if (!context.mounted) return;
+                            await MultiViewDesktop.of(context).closeWindow();
+                          },
+                        ),
                 ),
               ),
-              Positioned(
-                top: 10,
-                right: 12,
-                bottom: 12,
-                child: isGroup
-                    ? GroupInfoDrawer(
-                        controller: controller,
-                        group: group,
-                        onClose: () => setState(() => _infoDrawerOpen = false),
-                        onAfterLeaveOrDisband: () async {
-                          if (!context.mounted) return;
-                          if (!controller.groups.any(
-                            (item) => item.groupId == group.groupId,
-                          )) {
-                            await MultiViewDesktop.of(context).closeWindow();
-                          }
-                        },
-                        onMentionMember: (name) =>
-                            _MainShellState._insertMention(_composer, name),
-                      )
-                    : PeerInfoDrawer(
-                        controller: controller,
-                        chat: chat!,
-                        onClose: () => setState(() => _infoDrawerOpen = false),
-                        onAfterClose: () async {
-                          if (!context.mounted) return;
-                          await MultiViewDesktop.of(context).closeWindow();
-                        },
-                      ),
-              ),
-            ],
           ],
         ),
       ),
@@ -3268,6 +3351,35 @@ class _ConversationPaneState extends State<_ConversationPane> {
 
   /// 图片气泡的自绘右键菜单。
   OverlayEntry? _fallbackMenu;
+
+  /// 记录已展示过的消息 ID，仅对新发出或新收到的消息播放轻快入场动画。
+  final Set<String> _knownMessageIds = {};
+  final Set<String> _enteringMessageIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    for (final message in widget.messages) {
+      _knownMessageIds.add(message.messageId);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConversationPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.conversationId != widget.conversationId) {
+      _knownMessageIds
+        ..clear()
+        ..addAll(widget.messages.map((m) => m.messageId));
+      _enteringMessageIds.clear();
+      return;
+    }
+    for (final message in widget.messages) {
+      if (_knownMessageIds.add(message.messageId)) {
+        _enteringMessageIds.add(message.messageId);
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -3580,7 +3692,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
                         highlighted: _highlightedMessageId == message.messageId,
                       );
                     }
-                    return MessageBubble(
+                    final bubble = MessageBubble(
                       key: _keyFor(message.messageId),
                       message: message,
                       mine: mine,
@@ -3629,6 +3741,16 @@ class _ConversationPaneState extends State<_ConversationPane> {
                           : null,
                       onShowFallbackMenu: _showFallbackMenu,
                     );
+                    if (_enteringMessageIds.contains(message.messageId)) {
+                      return _AnimatedMessageEntrance(
+                        key: ValueKey('enter-${message.messageId}'),
+                        mine: mine,
+                        onCompleted: () =>
+                            _enteringMessageIds.remove(message.messageId),
+                        child: bubble,
+                      );
+                    }
+                    return bubble;
                   },
                   ),
                 ),
@@ -3639,20 +3761,47 @@ class _ConversationPaneState extends State<_ConversationPane> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (widget.replyingTo != null)
-                ReplyBanner(
-                  message: widget.replyingTo!,
-                  senderName:
-                      widget.replyingTo!.senderDeviceId == widget.localDeviceId
-                      ? '我'
-                      : widget.peerName(widget.replyingTo!.senderDeviceId),
-                  onCancel: widget.onCancelReply,
+              AnimatedSize(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                alignment: Alignment.bottomCenter,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  child: widget.replyingTo != null
+                      ? ReplyBanner(
+                          key: ValueKey('reply-${widget.replyingTo!.messageId}'),
+                          message: widget.replyingTo!,
+                          senderName:
+                              widget.replyingTo!.senderDeviceId ==
+                                  widget.localDeviceId
+                              ? '我'
+                              : widget.peerName(
+                                  widget.replyingTo!.senderDeviceId,
+                                ),
+                          onCancel: widget.onCancelReply,
+                        )
+                      : const SizedBox.shrink(),
                 ),
-              if (widget.pendingAttachments.isNotEmpty)
-                PendingAttachments(
-                  attachments: widget.pendingAttachments,
-                  onRemove: _removeAttachment,
+              ),
+              AnimatedSize(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                alignment: Alignment.bottomCenter,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  child: widget.pendingAttachments.isNotEmpty
+                      ? PendingAttachments(
+                          key: const ValueKey('pending-attachments'),
+                          attachments: widget.pendingAttachments,
+                          onRemove: _removeAttachment,
+                        )
+                      : const SizedBox.shrink(),
                 ),
+              ),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
@@ -3668,6 +3817,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
                             controller: widget.composer,
                             focusNode: _composerFocus,
                             enabled: widget.enabled,
+                            hasAttachments: widget.pendingAttachments.isNotEmpty,
                             onSend: () => unawaited(_handleSend()),
                             onPasteAttachments: _pasteAttachments,
                           )
@@ -3675,6 +3825,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
                             controller: widget.composer,
                             focusNode: _composerFocus,
                             enabled: widget.enabled,
+                            hasAttachments: widget.pendingAttachments.isNotEmpty,
                             onSend: () => unawaited(_handleSend()),
                             onPasteAttachments: _pasteAttachments,
                             loadCandidates: widget.loadMentionCandidates!,
@@ -4666,6 +4817,168 @@ class TopRightSnackBar extends StatelessWidget {
   );
 }
 
+class _FloatingDrawerOverlay extends StatefulWidget {
+  const _FloatingDrawerOverlay({
+    required this.open,
+    required this.onDismiss,
+    required this.drawer,
+  });
+
+  final bool open;
+  final VoidCallback onDismiss;
+  final Widget drawer;
+
+  @override
+  State<_FloatingDrawerOverlay> createState() => _FloatingDrawerOverlayState();
+}
+
+class _FloatingDrawerOverlayState extends State<_FloatingDrawerOverlay>
+    with SingleTickerProviderStateMixin {
+  static const Curve _openCurve = Cubic(0.16, 1.0, 0.3, 1.0);
+  static const Curve _closeCurve = Curves.easeOutCubic;
+
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 280),
+    reverseDuration: const Duration(milliseconds: 220),
+  );
+  late final Animation<double> _scrimFade = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOut,
+    reverseCurve: Curves.easeOut,
+  );
+  late final Animation<Offset> _slide =
+      Tween<Offset>(begin: const Offset(1.04, 0), end: Offset.zero).animate(
+        CurvedAnimation(
+          parent: _controller,
+          curve: _openCurve,
+          reverseCurve: _closeCurve,
+        ),
+      );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.open) {
+      _controller.value = 1.0;
+    }
+    _controller.addStatusListener(_handleStatusChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _FloatingDrawerOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.open && !oldWidget.open) {
+      _controller.forward();
+    } else if (!widget.open && oldWidget.open) {
+      _controller.reverse();
+    }
+  }
+
+  void _handleStatusChanged(AnimationStatus status) {
+    if (status == AnimationStatus.dismissed && mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeStatusListener(_handleStatusChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.open && _controller.isDismissed) {
+      return const IgnorePointer(child: SizedBox.shrink());
+    }
+    return IgnorePointer(
+      ignoring: !widget.open,
+      child: ClipRect(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            FadeTransition(
+              opacity: _scrimFade,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: widget.open ? widget.onDismiss : null,
+                child: const ColoredBox(color: Colors.black12),
+              ),
+            ),
+            Positioned(
+              top: 10,
+              right: 12,
+              bottom: 12,
+              child: SlideTransition(
+                position: _slide,
+                child: widget.drawer,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AnimatedMessageEntrance extends StatefulWidget {
+  const _AnimatedMessageEntrance({
+    super.key,
+    required this.mine,
+    required this.child,
+    required this.onCompleted,
+  });
+
+  final bool mine;
+  final Widget child;
+  final VoidCallback onCompleted;
+
+  @override
+  State<_AnimatedMessageEntrance> createState() =>
+      _AnimatedMessageEntranceState();
+}
+
+class _AnimatedMessageEntranceState extends State<_AnimatedMessageEntrance>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+  );
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _controller,
+    curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
+  );
+  late final Animation<Offset> _slide =
+      Tween<Offset>(begin: const Offset(0, 0.16), end: Offset.zero).animate(
+        CurvedAnimation(
+          parent: _controller,
+          curve: const Cubic(0.16, 1.0, 0.3, 1.0),
+        ),
+      );
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.forward().whenComplete(() {
+      if (mounted) widget.onCompleted();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: _fade,
+    child: SlideTransition(position: _slide, child: widget.child),
+  );
+}
+
 class _NavRailButton extends StatelessWidget {
   const _NavRailButton({
     super.key,
@@ -4693,7 +5006,9 @@ class _NavRailButton extends StatelessWidget {
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            Container(
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
               width: 44,
               height: 44,
               decoration: BoxDecoration(
@@ -4743,10 +5058,15 @@ class _ContactGroupHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 10, 14, 10),
       child: Row(
         children: [
-          Icon(
-            expanded ? Icons.expand_more : Icons.chevron_right,
-            size: 18,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          AnimatedRotation(
+            turns: expanded ? 0.25 : 0.0,
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOutCubic,
+            child: Icon(
+              Icons.chevron_right,
+              size: 18,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(width: 6),
           Expanded(

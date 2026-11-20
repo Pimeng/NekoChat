@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-class MessageComposer extends StatelessWidget {
+class MessageComposer extends StatefulWidget {
   const MessageComposer({
     super.key,
     required this.controller,
     required this.enabled,
     required this.onSend,
+    this.hasAttachments = false,
     this.focusNode,
     this.onPasteAttachments,
     this.onSuggestionPrevious,
@@ -19,6 +20,9 @@ class MessageComposer extends StatelessWidget {
   final bool enabled;
   final VoidCallback onSend;
 
+  /// 是否有待发送附件，用于在输入框为空但有附件时高亮发送按钮。
+  final bool hasAttachments;
+
   /// 由外部持有，方便引用回复后立刻把光标送回输入框。
   final FocusNode? focusNode;
   final Future<bool> Function()? onPasteAttachments;
@@ -28,7 +32,44 @@ class MessageComposer extends StatelessWidget {
   final VoidCallback? onSuggestionDismiss;
 
   @override
+  State<MessageComposer> createState() => _MessageComposerState();
+}
+
+class _MessageComposerState extends State<MessageComposer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _sendPulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 180),
+  );
+  late final Animation<double> _sendScale = TweenSequence<double>([
+    TweenSequenceItem(
+      tween: Tween(begin: 1.0, end: 0.86).chain(CurveTween(curve: Curves.easeOut)),
+      weight: 40,
+    ),
+    TweenSequenceItem(
+      tween: Tween(
+        begin: 0.86,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.easeOutBack)),
+      weight: 60,
+    ),
+  ]).animate(_sendPulse);
+
+  @override
+  void dispose() {
+    _sendPulse.dispose();
+    super.dispose();
+  }
+
+  void _triggerSend() {
+    if (!widget.enabled) return;
+    _sendPulse.forward(from: 0);
+    widget.onSend();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
@@ -36,11 +77,11 @@ class MessageComposer extends StatelessWidget {
           child: CallbackShortcuts(
             bindings: {
               const SingleActivator(LogicalKeyboardKey.enter):
-                  onSuggestionAccept ?? _send,
+                  widget.onSuggestionAccept ?? _send,
               const SingleActivator(LogicalKeyboardKey.enter, control: true):
                   _insertNewline,
               const SingleActivator(LogicalKeyboardKey.numpadEnter):
-                  onSuggestionAccept ?? _send,
+                  widget.onSuggestionAccept ?? _send,
               const SingleActivator(
                 LogicalKeyboardKey.numpadEnter,
                 control: true,
@@ -48,22 +89,22 @@ class MessageComposer extends StatelessWidget {
               const SingleActivator(LogicalKeyboardKey.keyV, control: true):
                   _paste,
               const SingleActivator(LogicalKeyboardKey.arrowUp):
-                  ?onSuggestionPrevious,
+                  ?widget.onSuggestionPrevious,
               const SingleActivator(LogicalKeyboardKey.arrowDown):
-                  ?onSuggestionNext,
+                  ?widget.onSuggestionNext,
               const SingleActivator(LogicalKeyboardKey.escape):
-                  ?onSuggestionDismiss,
+                  ?widget.onSuggestionDismiss,
             },
             child: TextField(
-              controller: controller,
-              focusNode: focusNode,
-              enabled: enabled,
+              controller: widget.controller,
+              focusNode: widget.focusNode,
+              enabled: widget.enabled,
               minLines: 1,
               maxLines: 5,
               keyboardType: TextInputType.multiline,
               textInputAction: TextInputAction.newline,
               decoration: InputDecoration(
-                hintText: enabled
+                hintText: widget.enabled
                     ? '输入消息（Enter 发送，Ctrl + Enter 换行，可直接粘贴图片）'
                     : '对方离线，暂时无法发送',
                 border: const OutlineInputBorder(),
@@ -73,23 +114,56 @@ class MessageComposer extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        IconButton.filled(
-          tooltip: '发送',
-          onPressed: enabled ? onSend : null,
-          icon: const Icon(Icons.send),
+        ValueListenableBuilder<TextEditingValue>(
+          valueListenable: widget.controller,
+          builder: (context, value, _) {
+            final ready =
+                widget.enabled &&
+                (value.text.trim().isNotEmpty || widget.hasAttachments);
+            return ScaleTransition(
+              scale: _sendScale,
+              child: AnimatedScale(
+                duration: const Duration(milliseconds: 160),
+                curve: Curves.easeOutCubic,
+                scale: ready ? 1.0 : 0.94,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                  decoration: BoxDecoration(
+                    color: !widget.enabled
+                        ? colorScheme.onSurface.withValues(alpha: 0.12)
+                        : ready
+                        ? colorScheme.primary
+                        : colorScheme.primaryContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    tooltip: '发送',
+                    onPressed: widget.enabled ? _triggerSend : null,
+                    color: !widget.enabled
+                        ? colorScheme.onSurface.withValues(alpha: 0.38)
+                        : ready
+                        ? colorScheme.onPrimary
+                        : colorScheme.onPrimaryContainer,
+                    icon: const Icon(Icons.send, size: 20),
+                  ),
+                ),
+              ),
+            );
+          },
         ),
       ],
     );
   }
 
   void _send() {
-    if (!enabled || _isComposing) return;
-    onSend();
+    if (!widget.enabled || _isComposing) return;
+    _triggerSend();
   }
 
   void _insertNewline() {
-    if (!enabled || _isComposing) return;
-    final value = controller.value;
+    if (!widget.enabled || _isComposing) return;
+    final value = widget.controller.value;
     final selection = value.selection.isValid
         ? value.selection
         : TextSelection.collapsed(offset: value.text.length);
@@ -98,7 +172,7 @@ class MessageComposer extends StatelessWidget {
       selection.end,
       '\n',
     );
-    controller.value = value.copyWith(
+    widget.controller.value = value.copyWith(
       text: updatedText,
       selection: TextSelection.collapsed(offset: selection.start + 1),
       composing: TextRange.empty,
@@ -106,8 +180,8 @@ class MessageComposer extends StatelessWidget {
   }
 
   Future<void> _paste() async {
-    if (!enabled || _isComposing) return;
-    final attachmentHandled = await onPasteAttachments?.call() ?? false;
+    if (!widget.enabled || _isComposing) return;
+    final attachmentHandled = await widget.onPasteAttachments?.call() ?? false;
     if (attachmentHandled) return;
     final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
     final text = clipboard?.text;
@@ -116,7 +190,7 @@ class MessageComposer extends StatelessWidget {
   }
 
   void _insertText(String text) {
-    final value = controller.value;
+    final value = widget.controller.value;
     final selection = value.selection.isValid
         ? value.selection
         : TextSelection.collapsed(offset: value.text.length);
@@ -125,7 +199,7 @@ class MessageComposer extends StatelessWidget {
       selection.end,
       text,
     );
-    controller.value = value.copyWith(
+    widget.controller.value = value.copyWith(
       text: updatedText,
       selection: TextSelection.collapsed(offset: selection.start + text.length),
       composing: TextRange.empty,
@@ -133,7 +207,7 @@ class MessageComposer extends StatelessWidget {
   }
 
   bool get _isComposing {
-    final composing = controller.value.composing;
+    final composing = widget.controller.value.composing;
     return composing.isValid && !composing.isCollapsed;
   }
 }
