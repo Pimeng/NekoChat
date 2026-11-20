@@ -527,43 +527,56 @@ class _MainShellState extends State<MainShell> {
                 }
                 if (value == 'close') await controller.closeChat(chat);
                 if (value == 'block') {
-                  await controller.setBlocked(chat.peerDeviceId, true);
+                  if (await _confirmBlockPeer(displayName)) {
+                    await controller.setBlocked(chat.peerDeviceId, true);
+                  }
+                }
+                if (value == 'unblock') {
+                  if (await _confirmUnblockPeer(displayName)) {
+                    await controller.setBlocked(chat.peerDeviceId, false);
+                  }
                 }
               },
-              itemBuilder: (_) => [
-                const PopupMenuItem(
-                  value: 'info',
-                  child: ListTile(
-                    leading: Icon(Icons.badge_outlined),
-                    title: Text('查看资料'),
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'remark',
-                  child: ListTile(
-                    leading: const Icon(Icons.drive_file_rename_outline),
-                    title: Text(
-                      controller.peerRemarks.containsKey(chat.peerDeviceId)
-                          ? '修改人员备注'
-                          : '添加人员备注',
+              itemBuilder: (_) {
+                final isBlocked =
+                    controller.trustedPeers[chat.peerDeviceId]?.blocked == true;
+                return [
+                  const PopupMenuItem(
+                    value: 'info',
+                    child: ListTile(
+                      leading: Icon(Icons.badge_outlined),
+                      title: Text('查看资料'),
                     ),
                   ),
-                ),
-                const PopupMenuItem(
-                  value: 'close',
-                  child: ListTile(
-                    leading: Icon(Icons.close),
-                    title: Text('关闭对话'),
+                  PopupMenuItem(
+                    value: 'remark',
+                    child: ListTile(
+                      leading: const Icon(Icons.drive_file_rename_outline),
+                      title: Text(
+                        controller.peerRemarks.containsKey(chat.peerDeviceId)
+                            ? '修改人员备注'
+                            : '添加人员备注',
+                      ),
+                    ),
                   ),
-                ),
-                const PopupMenuItem(
-                  value: 'block',
-                  child: ListTile(
-                    leading: Icon(Icons.block),
-                    title: Text('加入黑名单'),
+                  const PopupMenuItem(
+                    value: 'close',
+                    child: ListTile(
+                      leading: Icon(Icons.close),
+                      title: Text('关闭对话'),
+                    ),
                   ),
-                ),
-              ],
+                  PopupMenuItem(
+                    value: isBlocked ? 'unblock' : 'block',
+                    child: ListTile(
+                      leading: Icon(
+                        isBlocked ? Icons.check_circle_outline : Icons.block,
+                      ),
+                      title: Text(isBlocked ? '解除拉黑' : '加入黑名单'),
+                    ),
+                  ),
+                ];
+              },
             ),
           ],
         );
@@ -1317,6 +1330,16 @@ class _MainShellState extends State<MainShell> {
           ),
         ),
         actions: [
+          if (trusted?.blocked == true)
+            FilledButton.tonal(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+                if (await _confirmUnblockPeer(displayName)) {
+                  await controller.setBlocked(deviceId, false);
+                }
+              },
+              child: const Text('解除拉黑'),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('关闭'),
@@ -1373,11 +1396,16 @@ class _MainShellState extends State<MainShell> {
         ),
         PopupMenuItem(
           value: _PeerContextAction.block,
-          enabled:
-              entry.trustedPeer != null && entry.trustedPeer?.blocked != true,
+          enabled: entry.trustedPeer != null,
           child: ListTile(
-            leading: const Icon(Icons.block),
-            title: Text(entry.trustedPeer?.blocked == true ? '已拉黑' : '拉黑此人'),
+            leading: Icon(
+              entry.trustedPeer?.blocked == true
+                  ? Icons.check_circle_outline
+                  : Icons.block,
+            ),
+            title: Text(
+              entry.trustedPeer?.blocked == true ? '解除拉黑' : '拉黑此人',
+            ),
           ),
         ),
       ],
@@ -1411,7 +1439,11 @@ class _MainShellState extends State<MainShell> {
           _pendingAttachments.remove(chat.chatId);
         }
       case _PeerContextAction.block:
-        if (await _confirmBlockPeer(entry.displayName)) {
+        if (entry.trustedPeer?.blocked == true) {
+          if (await _confirmUnblockPeer(entry.displayName)) {
+            await controller.setBlocked(entry.deviceId, false);
+          }
+        } else if (await _confirmBlockPeer(entry.displayName)) {
           await controller.setBlocked(entry.deviceId, true);
         }
     }
@@ -1451,6 +1483,26 @@ class _MainShellState extends State<MainShell> {
             FilledButton(
               onPressed: () => Navigator.pop(dialogContext, true),
               child: const Text('拉黑'),
+            ),
+          ],
+        ),
+      ) ??
+      false;
+
+  Future<bool> _confirmUnblockPeer(String displayName) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('解除拉黑？'),
+          content: Text('解除对“$displayName”的拉黑后，将重新接受此人的聊天请求和消息。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('解除拉黑'),
             ),
           ],
         ),

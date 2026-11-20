@@ -1249,6 +1249,12 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  List<TrustedPeer> get blockedPeers {
+    final list = trustedPeers.values.where((peer) => peer.blocked).toList()
+      ..sort((a, b) => a.displayName.compareTo(b.displayName));
+    return list;
+  }
+
   Future<void> setBlocked(String deviceId, bool blocked) async {
     final old = trustedPeers[deviceId];
     if (old == null) return;

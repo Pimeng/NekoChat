@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
+import '../../core/models/models.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, required this.controller});
@@ -90,6 +91,24 @@ class SettingsPage extends StatelessWidget {
                   '隐藏后不显示任务栏入口或系统通知，再按当前快捷键 '
                   '或重新启动 NekoChat 即可恢复。进程仍会在任务管理器中显示。',
                   style: TextStyle(color: Colors.black54, fontSize: 12),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.block_outlined),
+                  title: const Text('黑名单'),
+                  subtitle: Text(
+                    controller.blockedPeers.isEmpty
+                        ? '暂无已拉黑的联系人'
+                        : '已拉黑 ${controller.blockedPeers.length} 人，可随时解除拉黑',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => BlockedPeersPage(controller: controller),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 24),
@@ -445,4 +464,133 @@ class _BossKeyShortcutPageState extends State<BossKeyShortcutPage> {
       ),
     ),
   );
+}
+
+class BlockedPeersPage extends StatelessWidget {
+  const BlockedPeersPage({super.key, required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: controller,
+    builder: (context, _) {
+      final blocked = controller.blockedPeers;
+      return Scaffold(
+        appBar: AppBar(title: const Text('黑名单')),
+        body: blocked.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.check_circle_outline,
+                        size: 52,
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        '黑名单为空',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        '被拉黑的联系人会显示在这里，你可以随时解除拉黑。',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.black54),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+                    children: [
+                      Card(
+                        child: Column(
+                          children: [
+                            for (var i = 0; i < blocked.length; i++) ...[
+                              if (i > 0) const Divider(height: 1, indent: 56),
+                              _buildPeerTile(context, blocked[i]),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+      );
+    },
+  );
+
+  Widget _buildPeerTile(BuildContext context, TrustedPeer peer) {
+    final displayName = controller.peerDisplayName(
+      peer.deviceId,
+      peer.displayName,
+    );
+    final hasRemark = displayName != peer.displayName;
+    final devicePrefix = peer.deviceId.length > 8
+        ? peer.deviceId.substring(0, 8)
+        : peer.deviceId;
+    final subtitleParts = [
+      if (hasRemark) '原名：${peer.displayName}',
+      '设备 $devicePrefix',
+      if (peer.lastKnownIp.isNotEmpty) peer.lastKnownIp,
+    ];
+    return ListTile(
+      leading: const CircleAvatar(child: Icon(Icons.block, size: 20)),
+      title: Text(displayName, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        subtitleParts.join(' · '),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: OutlinedButton(
+        onPressed: () => _confirmUnblock(
+          context,
+          deviceId: peer.deviceId,
+          displayName: displayName,
+        ),
+        child: const Text('解除拉黑'),
+      ),
+    );
+  }
+
+  Future<void> _confirmUnblock(
+    BuildContext context, {
+    required String deviceId,
+    required String displayName,
+  }) async {
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('解除拉黑？'),
+            content: Text('解除对“$displayName”的拉黑后，将重新接受此人的聊天请求和消息。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('解除拉黑'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!confirmed) return;
+    await controller.setBlocked(deviceId, false);
+  }
 }

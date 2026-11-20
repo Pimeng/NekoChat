@@ -713,6 +713,15 @@ List<PreviewEntry> buildPreviewCatalog(
       builder: (_) => BossKeyShortcutPage(controller: controller),
     ),
     PreviewEntry(
+      id: 'blocked-peers-page',
+      name: '黑名单管理页',
+      widgetType: 'BlockedPeersPage',
+      description: '集中展示所有已拉黑联系人，支持确认后一键解除拉黑及空态预览。',
+      category: PreviewCategory.pages,
+      isFullPage: true,
+      builder: (_) => BlockedPeersPage(controller: controller),
+    ),
+    PreviewEntry(
       id: 'boot-page',
       name: '启动加载页',
       widgetType: 'BootPage',

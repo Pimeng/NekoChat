@@ -42,6 +42,7 @@ _ProfileSaveController _profileSaveController() {
 class _SidebarActionsController extends AppController {
   ChatSummary? deletedChat;
   String? blockedDeviceId;
+  String? unblockedDeviceId;
   String? savedRemark;
 
   @override
@@ -53,7 +54,22 @@ class _SidebarActionsController extends AppController {
 
   @override
   Future<void> setBlocked(String deviceId, bool blocked) async {
-    if (blocked) blockedDeviceId = deviceId;
+    if (blocked) {
+      blockedDeviceId = deviceId;
+    } else {
+      unblockedDeviceId = deviceId;
+    }
+    final existing = trustedPeers[deviceId];
+    if (existing != null) {
+      trustedPeers[deviceId] = TrustedPeer(
+        deviceId: existing.deviceId,
+        displayName: existing.displayName,
+        lastKnownIp: existing.lastKnownIp,
+        verifiedAt: existing.verifiedAt,
+        blocked: blocked,
+      );
+      notifyListeners();
+    }
   }
 
   @override
@@ -186,6 +202,30 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.blockedDeviceId, 'peer-1');
+  });
+
+  testWidgets('侧边栏已拉黑联系人右键菜单确认后可解除拉黑', (tester) async {
+    final controller = _sidebarActionsController();
+    controller.trustedPeers['peer-1'] = TrustedPeer(
+      deviceId: 'peer-1',
+      displayName: '李四',
+      lastKnownIp: '10.0.0.2',
+      verifiedAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      blocked: true,
+    );
+    addTearDown(controller.dispose);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await _openSidebarContextMenu(tester, controller);
+
+    expect(find.text('解除拉黑'), findsOneWidget);
+    await tester.tap(find.text('解除拉黑'));
+    await tester.pumpAndSettle();
+    expect(find.text('解除拉黑？'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '解除拉黑'));
+    await tester.pumpAndSettle();
+
+    expect(controller.unblockedDeviceId, 'peer-1');
+    expect(controller.trustedPeers['peer-1']?.blocked, isFalse);
   });
 
   testWidgets('侧边栏可从内容区标题栏收起并重新展开', (tester) async {
