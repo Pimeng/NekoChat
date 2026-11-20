@@ -147,6 +147,16 @@ flutter build windows
 flutter run -d windows
 ```
 
+组件预览开发模式（展示所有组件并支持 Flutter 热重载 `r` / 热重启 `R`，不占用本地数据库与网络端口）：
+
+```powershell
+flutter run -d windows -t lib/main_preview.dart
+# 若已有 NekoChat 实例正在运行，可附加多实例参数并行启动预览：
+flutter run -d windows -t lib/main_preview.dart -a --allow-multiple-instances
+# 或通过编译宏启动：
+flutter run -d windows --dart-define=COMPONENT_PREVIEW=true
+```
+
 机房联调时至少使用两台电脑，并确认它们在同一局域网、Windows 网络类型为“专用网络”，且 UDP 23332 与 TCP 23333 未被防火墙拦截。
 
 ## MVP 实现顺序

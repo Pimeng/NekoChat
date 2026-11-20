@@ -4,9 +4,20 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app/neko_chat_app.dart';
+import 'features/dev_preview/component_preview_app.dart';
+
+const bool _componentPreviewMode = bool.fromEnvironment('COMPONENT_PREVIEW');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (_componentPreviewMode) {
+    await windowManager.ensureInitialized();
+    await windowManager.setMinimumSize(const Size(720, 640));
+    await windowManager.setSize(const Size(1280, 860));
+    await windowManager.setTitle('NekoChat · 组件预览开发模式');
+    runMultiApp(home: (_, _) => const ComponentPreviewApp());
+    return;
+  }
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
   await windowManager.ensureInitialized();

@@ -243,7 +243,7 @@ class _MainShellState extends State<MainShell> {
               Positioned(
                 top: 14,
                 right: 18,
-                child: _TopRightSnackBar(
+                child: TopRightSnackBar(
                   message: controller.topRightMessage!,
                   icon: controller.topRightIcon,
                   onClose: controller.clearTopRightMessage,
@@ -298,7 +298,7 @@ class _MainShellState extends State<MainShell> {
       color: Theme.of(context).colorScheme.surface,
       child: Column(
         children: [
-          _IdentityHeader(
+          IdentityHeader(
             controller: controller,
             onTap: () => _showProfileEditor(controller),
             unreadCount:
@@ -338,24 +338,24 @@ class _MainShellState extends State<MainShell> {
               padding: const EdgeInsets.only(bottom: 16),
               children: [
                 if (visibleChatRequests.isNotEmpty) ...[
-                  const _SectionTitle(title: '聊天邀请'),
+                  const SectionTitle(title: '聊天邀请'),
                   for (final request in visibleChatRequests)
-                    _ChatRequestCard(controller: controller, request: request),
+                    ChatRequestCard(controller: controller, request: request),
                 ],
                 if (controller.groupInvitations.isNotEmpty) ...[
-                  const _SectionTitle(title: '群邀请'),
+                  const SectionTitle(title: '群邀请'),
                   for (final invitation in controller.groupInvitations.values)
-                    _GroupInviteCard(
+                    GroupInviteCard(
                       controller: controller,
                       invitation: invitation,
                     ),
                 ],
-                const _SectionTitle(title: '会话与设备'),
+                const SectionTitle(title: '会话与设备'),
                 if (entries.isEmpty)
-                  const _EmptyHint(icon: Icons.radar, text: '正在寻找局域网设备…')
+                  const EmptyHint(icon: Icons.radar, text: '正在寻找局域网设备…')
                 else
                   for (final entry in entries)
-                    _UnifiedPeerTile(
+                    UnifiedPeerTile(
                       entry: entry,
                       selected:
                           entry.chat != null &&
@@ -378,7 +378,7 @@ class _MainShellState extends State<MainShell> {
                         await controller.requestChat(entry.peer!);
                       },
                     ),
-                _SectionTitle(
+                SectionTitle(
                   title: '群聊',
                   trailing: IconButton(
                     tooltip: '创建群聊',
@@ -387,7 +387,7 @@ class _MainShellState extends State<MainShell> {
                   ),
                 ),
                 if (groups.isEmpty)
-                  const _EmptyHint(icon: Icons.groups_outlined, text: '还没有群聊')
+                  const EmptyHint(icon: Icons.groups_outlined, text: '还没有群聊')
                 else
                   for (final group in groups)
                     GestureDetector(
@@ -411,7 +411,7 @@ class _MainShellState extends State<MainShell> {
                         ),
                         trailing:
                             group.unreadCount > 0 || group.lastMessageAt != null
-                            ? _ConversationMeta(
+                            ? ConversationMeta(
                                 time: group.lastMessageAt,
                                 unreadCount: group.unreadCount,
                               )
@@ -756,7 +756,7 @@ class _MainShellState extends State<MainShell> {
         );
       }
     }
-    return _WelcomePane(controller: controller);
+    return WelcomePane(controller: controller);
   }
 
   Future<void> _showProfileEditor(AppController controller) async {
@@ -773,7 +773,7 @@ class _MainShellState extends State<MainShell> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _ProfileAvatar(
+                ProfileAvatar(
                   identity: controller.identity!,
                   imagePath: controller.profileAvatarPath,
                   radius: 46,
@@ -1084,7 +1084,7 @@ class _MainShellState extends State<MainShell> {
               children: [
                 for (final member in members)
                   ListTile(
-                    leading: _NamedAvatar(
+                    leading: NamedAvatar(
                       imagePath: controller.peerAvatarPath(member.deviceId),
                       name: controller.peerDisplayName(
                         member.deviceId,
@@ -1272,7 +1272,7 @@ class _MainShellState extends State<MainShell> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Center(
-                child: _NamedAvatar(
+                child: NamedAvatar(
                   imagePath: controller.peerAvatarPath(deviceId),
                   name: displayName,
                   radius: 36,
@@ -1328,7 +1328,7 @@ class _MainShellState extends State<MainShell> {
 
   Future<void> _showPeerContextMenu(
     AppController controller,
-    _UnifiedPeerEntry entry,
+    UnifiedPeerEntry entry,
     TapDownDetails details,
   ) async {
     final overlay =
@@ -1638,8 +1638,9 @@ class _MainShellState extends State<MainShell> {
   }
 }
 
-class _IdentityHeader extends StatelessWidget {
-  const _IdentityHeader({
+class IdentityHeader extends StatelessWidget {
+  const IdentityHeader({
+    super.key,
     required this.controller,
     required this.onTap,
     this.unreadCount = 0,
@@ -1660,7 +1661,7 @@ class _IdentityHeader extends StatelessWidget {
         ),
         child: Row(
           children: [
-            _ProfileAvatar(
+            ProfileAvatar(
               identity: identity,
               imagePath: controller.profileAvatarPath,
               radius: 23,
@@ -1697,7 +1698,7 @@ class _IdentityHeader extends StatelessWidget {
               const SizedBox(width: 10),
               Tooltip(
                 message: '有 $unreadCount 条未读消息',
-                child: _UnreadBadge(count: unreadCount),
+                child: UnreadBadge(count: unreadCount),
               ),
             ],
           ],
@@ -1707,8 +1708,9 @@ class _IdentityHeader extends StatelessWidget {
   }
 }
 
-class _ProfileAvatar extends StatelessWidget {
-  const _ProfileAvatar({
+class ProfileAvatar extends StatelessWidget {
+  const ProfileAvatar({
+    super.key,
     required this.identity,
     required this.imagePath,
     required this.radius,
@@ -1741,8 +1743,13 @@ class _ProfileAvatar extends StatelessWidget {
 }
 
 /// 对端头像：同步到本地就显示图片，否则回退到昵称首字母。
-class _NamedAvatar extends StatelessWidget {
-  const _NamedAvatar({required this.imagePath, required this.name, this.radius = 20});
+class NamedAvatar extends StatelessWidget {
+  const NamedAvatar({
+    super.key,
+    required this.imagePath,
+    required this.name,
+    this.radius = 20,
+  });
 
   final String? imagePath;
   final String name;
@@ -1769,8 +1776,8 @@ class _NamedAvatar extends StatelessWidget {
 }
 
 /// 群成员角色标签（群主/管理员），用于消息昵称前的小徽标。
-class _RoleTag extends StatelessWidget {
-  const _RoleTag({required this.role});
+class RoleTag extends StatelessWidget {
+  const RoleTag({super.key, required this.role});
   final GroupRole role;
 
   @override
@@ -1808,8 +1815,8 @@ class _RoleTag extends StatelessWidget {
 }
 
 /// 未读消息徽标，样式参考聊天软件的红色圆角计数。
-class _UnreadBadge extends StatelessWidget {
-  const _UnreadBadge({required this.count});
+class UnreadBadge extends StatelessWidget {
+  const UnreadBadge({super.key, required this.count});
   final int count;
 
   @override
@@ -1833,8 +1840,12 @@ class _UnreadBadge extends StatelessWidget {
 }
 
 /// 会话条目右侧的最近消息时间与未读徽标。
-class _ConversationMeta extends StatelessWidget {
-  const _ConversationMeta({required this.time, required this.unreadCount});
+class ConversationMeta extends StatelessWidget {
+  const ConversationMeta({
+    super.key,
+    required this.time,
+    required this.unreadCount,
+  });
   final DateTime? time;
   final int unreadCount;
 
@@ -1850,14 +1861,14 @@ class _ConversationMeta extends StatelessWidget {
         ),
       if (unreadCount > 0) ...[
         const SizedBox(height: 4),
-        _UnreadBadge(count: unreadCount),
+        UnreadBadge(count: unreadCount),
       ],
     ],
   );
 }
 
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle({required this.title, this.trailing});
+class SectionTitle extends StatelessWidget {
+  const SectionTitle({super.key, required this.title, this.trailing});
   final String title;
   final Widget? trailing;
   @override
@@ -1878,8 +1889,8 @@ class _SectionTitle extends StatelessWidget {
   );
 }
 
-class _EmptyHint extends StatelessWidget {
-  const _EmptyHint({required this.icon, required this.text});
+class EmptyHint extends StatelessWidget {
+  const EmptyHint({super.key, required this.icon, required this.text});
   final IconData icon;
   final String text;
   @override
@@ -1895,8 +1906,8 @@ class _EmptyHint extends StatelessWidget {
   );
 }
 
-class _UnifiedPeerEntry {
-  const _UnifiedPeerEntry({
+class UnifiedPeerEntry {
+  const UnifiedPeerEntry({
     required this.deviceId,
     required this.displayName,
     required this.originalDisplayName,
@@ -1915,14 +1926,15 @@ class _UnifiedPeerEntry {
   final String? avatarPath;
 }
 
-class _UnifiedPeerTile extends StatelessWidget {
-  const _UnifiedPeerTile({
+class UnifiedPeerTile extends StatelessWidget {
+  const UnifiedPeerTile({
+    super.key,
     required this.entry,
     required this.selected,
     required this.onTap,
     required this.onSecondaryTapDown,
   });
-  final _UnifiedPeerEntry entry;
+  final UnifiedPeerEntry entry;
   final bool selected;
   final VoidCallback onTap;
   final GestureTapDownCallback onSecondaryTapDown;
@@ -1944,7 +1956,7 @@ class _UnifiedPeerTile extends StatelessWidget {
         enabled: !blocked && (online || chat != null),
         leading: Stack(
           children: [
-            _NamedAvatar(
+            NamedAvatar(
               imagePath: entry.avatarPath,
               name: entry.displayName,
             ),
@@ -1988,7 +2000,7 @@ class _UnifiedPeerTile extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             : (chat?.unreadCount ?? 0) > 0 || chat?.lastMessageAt != null
-            ? _ConversationMeta(
+            ? ConversationMeta(
                 time: chat?.lastMessageAt,
                 unreadCount: chat?.unreadCount ?? 0,
               )
@@ -2008,8 +2020,12 @@ enum _PeerContextAction { openInWindow, info, remark, delete, block }
 
 enum _GroupContextAction { openInWindow, members, remark, invite, rename, leave }
 
-class _ChatRequestCard extends StatelessWidget {
-  const _ChatRequestCard({required this.controller, required this.request});
+class ChatRequestCard extends StatelessWidget {
+  const ChatRequestCard({
+    super.key,
+    required this.controller,
+    required this.request,
+  });
   final AppController controller;
   final ChatRequest request;
   @override
@@ -2079,8 +2095,12 @@ class _ChatRequestCard extends StatelessWidget {
   );
 }
 
-class _GroupInviteCard extends StatelessWidget {
-  const _GroupInviteCard({required this.controller, required this.invitation});
+class GroupInviteCard extends StatelessWidget {
+  const GroupInviteCard({
+    super.key,
+    required this.controller,
+    required this.invitation,
+  });
   final AppController controller;
   final GroupInvitation invitation;
   @override
@@ -2538,7 +2558,7 @@ class _ViewDropAreaState extends State<_ViewDropArea> {
     fit: StackFit.expand,
     children: [
       widget.child,
-      if (_dragging || _sending) _FileDropOverlay(sending: _sending),
+      if (_dragging || _sending) FileDropOverlay(sending: _sending),
     ],
   );
 }
@@ -2956,14 +2976,14 @@ class _ConversationPaneState extends State<_ConversationPane> {
                       widget.localDeviceId,
                     );
                     if (message.isRecalled) {
-                      return _RecallNotice(
+                      return RecallNotice(
                         key: _keyFor(message.messageId),
                         text:
                             widget.recallNoticeFor?.call(message) ?? '一条消息已撤回',
                         highlighted: _highlightedMessageId == message.messageId,
                       );
                     }
-                    return _MessageBubble(
+                    return MessageBubble(
                       key: _keyFor(message.messageId),
                       message: message,
                       mine: mine,
@@ -3022,7 +3042,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (widget.replyingTo != null)
-                _ReplyBanner(
+                ReplyBanner(
                   message: widget.replyingTo!,
                   senderName:
                       widget.replyingTo!.senderDeviceId == widget.localDeviceId
@@ -3031,7 +3051,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
                   onCancel: widget.onCancelReply,
                 ),
               if (widget.pendingAttachments.isNotEmpty)
-                _PendingAttachments(
+                PendingAttachments(
                   attachments: widget.pendingAttachments,
                   onRemove: _removeAttachment,
                 ),
@@ -3080,7 +3100,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
         children: [
           content,
           if (_draggingFiles || _sendingDroppedFiles)
-            _FileDropOverlay(sending: _sendingDroppedFiles),
+            FileDropOverlay(sending: _sendingDroppedFiles),
         ],
       ),
     );
@@ -3088,8 +3108,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
 }
 
 /// 拖放文件到会话时的全屏提示层。
-class _FileDropOverlay extends StatelessWidget {
-  const _FileDropOverlay({required this.sending});
+class FileDropOverlay extends StatelessWidget {
+  const FileDropOverlay({super.key, required this.sending});
   final bool sending;
 
   @override
@@ -3140,8 +3160,9 @@ class _FileDropOverlay extends StatelessWidget {
 }
 
 /// 输入框上方的待发送附件区域：图片显示缩略图，其他文件显示文件名。
-class _PendingAttachments extends StatelessWidget {
-  const _PendingAttachments({
+class PendingAttachments extends StatelessWidget {
+  const PendingAttachments({
+    super.key,
     required this.attachments,
     required this.onRemove,
   });
@@ -3181,7 +3202,7 @@ class _PendingAttachments extends StatelessWidget {
             scrollDirection: Axis.horizontal,
             itemCount: attachments.length,
             separatorBuilder: (_, _) => const SizedBox(width: 8),
-            itemBuilder: (context, index) => _PendingAttachmentChip(
+            itemBuilder: (context, index) => PendingAttachmentChip(
               attachment: attachments[index],
               onRemove: () => onRemove(attachments[index]),
             ),
@@ -3192,8 +3213,9 @@ class _PendingAttachments extends StatelessWidget {
   );
 }
 
-class _PendingAttachmentChip extends StatelessWidget {
-  const _PendingAttachmentChip({
+class PendingAttachmentChip extends StatelessWidget {
+  const PendingAttachmentChip({
+    super.key,
     required this.attachment,
     required this.onRemove,
   });
@@ -3284,8 +3306,9 @@ class _RemoveAttachmentButton extends StatelessWidget {
   );
 }
 
-class _ReplyBanner extends StatelessWidget {
-  const _ReplyBanner({
+class ReplyBanner extends StatelessWidget {
+  const ReplyBanner({
+    super.key,
     required this.message,
     required this.senderName,
     this.onCancel,
@@ -3386,8 +3409,8 @@ Widget? _quoteLeading(
   }
 }
 
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({
+class MessageBubble extends StatelessWidget {
+  const MessageBubble({
     super.key,
     required this.message,
     required this.mine,
@@ -3529,7 +3552,7 @@ class _MessageBubble extends StatelessWidget {
   );
 
   /// 头像列。使用 [avatarPath] 渲染同步到的头像，缺失时回退到昵称首字母。
-  Widget _headerAvatar(BuildContext context) => _NamedAvatar(
+  Widget _headerAvatar(BuildContext context) => NamedAvatar(
     imagePath: avatarPath,
     name: headerName ?? senderName,
     radius: 16,
@@ -3542,7 +3565,7 @@ class _MessageBubble extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (senderRole != null) ...[
-          _RoleTag(role: senderRole!),
+          RoleTag(role: senderRole!),
           const SizedBox(width: 6),
         ],
         Text(
@@ -3953,8 +3976,8 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-class _RecallNotice extends StatelessWidget {
-  const _RecallNotice({
+class RecallNotice extends StatelessWidget {
+  const RecallNotice({
     super.key,
     required this.text,
     required this.highlighted,
@@ -3993,8 +4016,9 @@ class _RecallNotice extends StatelessWidget {
 /// 这样「全选」只会选中真正的消息内容。
 Widget _unselectable(Widget child) => SelectionContainer.disabled(child: child);
 
-class _TopRightSnackBar extends StatelessWidget {
-  const _TopRightSnackBar({
+class TopRightSnackBar extends StatelessWidget {
+  const TopRightSnackBar({
+    super.key,
     required this.message,
     required this.icon,
     required this.onClose,
@@ -4046,8 +4070,8 @@ class _TopRightSnackBar extends StatelessWidget {
   );
 }
 
-class _WelcomePane extends StatelessWidget {
-  const _WelcomePane({required this.controller});
+class WelcomePane extends StatelessWidget {
+  const WelcomePane({super.key, required this.controller});
   final AppController controller;
   @override
   Widget build(BuildContext context) => Center(
@@ -4096,7 +4120,7 @@ class _WelcomePane extends StatelessWidget {
   );
 }
 
-List<_UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
+List<UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
   final peersById = {for (final peer in controller.peers) peer.deviceId: peer};
   final chatsByPeer = {
     for (final chat in controller.chats) chat.peerDeviceId: chat,
@@ -4114,7 +4138,7 @@ List<_UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
       '未知设备';
   final entries = [
     for (final deviceId in deviceIds)
-      _UnifiedPeerEntry(
+      UnifiedPeerEntry(
         deviceId: deviceId,
         displayName: controller.peerDisplayName(
           deviceId,
@@ -4139,7 +4163,7 @@ List<_UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
   return entries;
 }
 
-String _peerListSubtitle(_UnifiedPeerEntry entry) {
+String _peerListSubtitle(UnifiedPeerEntry entry) {
   final status = entry.chat?.lastMessagePreview ?? _unifiedPeerSubtitle(entry);
   if (entry.displayName == entry.originalDisplayName) return status;
   return '${entry.originalDisplayName} · $status';
@@ -4159,7 +4183,7 @@ String _groupListSubtitle(AppController controller, ChatGroup group) {
   return '${group.name} · $status';
 }
 
-String _unifiedPeerSubtitle(_UnifiedPeerEntry entry) {
+String _unifiedPeerSubtitle(UnifiedPeerEntry entry) {
   if (entry.trustedPeer?.blocked == true) return '已拉黑';
   final chat = entry.chat;
   if (chat?.state == ChatSessionState.pendingIncoming) return '等待你确认验证码';

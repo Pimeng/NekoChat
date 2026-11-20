@@ -21,7 +21,7 @@ class SettingsPage extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
             children: [
-              const _SettingsSectionTitle('局域网'),
+              const SettingsSectionTitle('局域网'),
               Card(
                 child: SwitchListTile(
                   secondary: const Icon(Icons.wifi_find_outlined),
@@ -32,7 +32,7 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              const _SettingsSectionTitle('隐私'),
+              const SettingsSectionTitle('隐私'),
               Card(
                 child: Column(
                   children: [
@@ -52,7 +52,7 @@ class SettingsPage extends StatelessWidget {
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) =>
-                              _BossKeyShortcutPage(controller: controller),
+                              BossKeyShortcutPage(controller: controller),
                         ),
                       ),
                     ),
@@ -93,7 +93,7 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              const _SettingsSectionTitle('文件接收'),
+              const SettingsSectionTitle('文件接收'),
               Card(
                 child: Column(
                   children: [
@@ -128,7 +128,7 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              const _SettingsSectionTitle('通知'),
+              const SettingsSectionTitle('通知'),
               Card(
                 child: Column(
                   children: [
@@ -158,7 +158,7 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              const _SettingsSectionTitle('存储'),
+              const SettingsSectionTitle('存储'),
               Card(
                 child: ListTile(
                   leading: const Icon(Icons.folder_outlined),
@@ -182,7 +182,7 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 32),
-              const _VersionFooter(),
+              const SettingsVersionFooter(),
             ],
           ),
         ),
@@ -256,8 +256,8 @@ class SettingsPage extends StatelessWidget {
   }
 }
 
-class _SettingsSectionTitle extends StatelessWidget {
-  const _SettingsSectionTitle(this.title);
+class SettingsSectionTitle extends StatelessWidget {
+  const SettingsSectionTitle(this.title, {super.key});
 
   final String title;
 
@@ -276,8 +276,8 @@ class _SettingsSectionTitle extends StatelessWidget {
 
 int _formatMegabytes(int bytes) => bytes ~/ (1024 * 1024);
 
-class _VersionFooter extends StatelessWidget {
-  const _VersionFooter();
+class SettingsVersionFooter extends StatelessWidget {
+  const SettingsVersionFooter({super.key});
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -292,16 +292,16 @@ class _VersionFooter extends StatelessWidget {
   );
 }
 
-class _BossKeyShortcutPage extends StatefulWidget {
-  const _BossKeyShortcutPage({required this.controller});
+class BossKeyShortcutPage extends StatefulWidget {
+  const BossKeyShortcutPage({super.key, required this.controller});
 
   final AppController controller;
 
   @override
-  State<_BossKeyShortcutPage> createState() => _BossKeyShortcutPageState();
+  State<BossKeyShortcutPage> createState() => _BossKeyShortcutPageState();
 }
 
-class _BossKeyShortcutPageState extends State<_BossKeyShortcutPage> {
+class _BossKeyShortcutPageState extends State<BossKeyShortcutPage> {
   final _focusNode = FocusNode(debugLabel: 'boss-key-recorder');
   late BossKeyShortcut _candidate;
   String _hint = '请按下新的快捷键组合';

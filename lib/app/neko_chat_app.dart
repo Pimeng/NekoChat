@@ -100,10 +100,10 @@ class _NekoChatAppState extends State<NekoChatApp> {
       home: AnimatedBuilder(
         animation: controller,
         builder: (context, _) => switch (controller.stage) {
-          AppStage.booting => const _BootPage(),
+          AppStage.booting => const BootPage(),
           AppStage.setup || AppStage.locked => AuthPage(controller: controller),
           AppStage.ready => MainShell(controller: controller),
-          AppStage.error => _FatalPage(
+          AppStage.error => FatalPage(
             message: controller.errorMessage ?? '未知错误',
           ),
         },
@@ -112,8 +112,8 @@ class _NekoChatAppState extends State<NekoChatApp> {
   }
 }
 
-class _BootPage extends StatelessWidget {
-  const _BootPage();
+class BootPage extends StatelessWidget {
+  const BootPage({super.key});
   @override
   Widget build(BuildContext context) => const Scaffold(
     body: Center(
@@ -129,8 +129,8 @@ class _BootPage extends StatelessWidget {
   );
 }
 
-class _FatalPage extends StatelessWidget {
-  const _FatalPage({required this.message});
+class FatalPage extends StatelessWidget {
+  const FatalPage({super.key, required this.message});
   final String message;
   @override
   Widget build(BuildContext context) => Scaffold(

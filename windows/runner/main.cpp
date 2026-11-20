@@ -14,9 +14,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     CreateAndAttachConsole();
   }
 
+  std::vector<std::string> command_line_arguments =
+      GetCommandLineArguments();
+
+  bool allow_multiple_instances = false;
+  for (const auto &arg : command_line_arguments) {
+    if (arg == "--allow-multiple-instances") {
+      allow_multiple_instances = true;
+      break;
+    }
+  }
+
   // If NekoChat is already running, bring the existing window to the front
   // instead of starting a second copy of the application.
-  if (neko_chat::FocusExistingInstanceOrStart()) {
+  if (!allow_multiple_instances && neko_chat::FocusExistingInstanceOrStart()) {
     return EXIT_SUCCESS;
   }
 
@@ -25,9 +36,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   flutter::DartProject project(L"data");
-
-  std::vector<std::string> command_line_arguments =
-      GetCommandLineArguments();
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
