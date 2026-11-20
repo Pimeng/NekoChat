@@ -3973,7 +3973,7 @@ class PendingAttachmentChip extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     return Tooltip(
       message:
-          '${attachment.fileName}\n${_formatFileSize(attachment.fileSize)}',
+          '${attachment.fileName}\n${AppController.formatFileSize(attachment.fileSize)}',
       child: Container(
         width: 88,
         clipBehavior: Clip.antiAlias,
@@ -4482,7 +4482,7 @@ class MessageBubble extends StatelessWidget {
                       ),
                       _unselectable(
                         Text(
-                          _formatFileSize(message.fileSize ?? 0),
+                          AppController.formatFileSize(message.fileSize ?? 0),
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ),
@@ -6068,8 +6068,3 @@ String _statusLabel(MessageStatus status, {required bool mine}) =>
       MessageStatus.recalled => '已撤回',
     };
 
-String _formatFileSize(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-}

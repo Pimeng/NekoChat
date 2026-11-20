@@ -1499,7 +1499,7 @@ class AppController extends ChangeNotifier {
           _myGroupRoles[group.groupId] == GroupRole.admin &&
           me != group.ownerDeviceId;
     }
-    return _canActorRecall(
+    return canActorRecall(
       message,
       actorDeviceId: me,
       group: group,
@@ -1508,7 +1508,11 @@ class AppController extends ChangeNotifier {
     );
   }
 
-  static bool _canActorRecall(
+  /// 撤回权限的唯一判定规则：不依赖实例状态的纯函数，供真实控制器与
+  /// 组件预览共用，避免规则被复制成两份而产生分歧。私聊/普通成员限
+  /// [NetworkConfig.selfRecallWindow]；群主与管理员限
+  /// [NetworkConfig.groupOwnerRecallWindow]（管理员不得撤回群主消息）。
+  static bool canActorRecall(
     ChatMessage message, {
     required String actorDeviceId,
     required ChatGroup? group,
@@ -2316,7 +2320,7 @@ class AppController extends ChangeNotifier {
         message.chatId != chat.chatId ||
         message.groupId != null ||
         message.senderDeviceId != actorDeviceId ||
-        !_canActorRecall(
+        !canActorRecall(
           message,
           actorDeviceId: actorDeviceId,
           group: null,
@@ -2633,7 +2637,7 @@ class AppController extends ChangeNotifier {
     await _notifications.show(
       identifier: 'file:${message.messageId}',
       title: senderName,
-      body: '${message.fileName}（${_formatFileSize(message.fileSize ?? 0)}）',
+      body: '${message.fileName}（${formatFileSize(message.fileSize ?? 0)}）',
       onClick: () => message.groupId == null
           ? selectChat(message.chatId)
           : selectGroup(message.groupId!),
@@ -2850,7 +2854,7 @@ class AppController extends ChangeNotifier {
     final now = DateTime.now();
     if (message == null ||
         message.groupId != groupId ||
-        !_canActorRecall(
+        !canActorRecall(
           message,
           actorDeviceId: actorDeviceId,
           group: group,
@@ -3409,7 +3413,7 @@ class AppController extends ChangeNotifier {
         if (recalledAt.isAfter(
               DateTime.now().add(NetworkConfig.recallClockSkewTolerance),
             ) ||
-            !_canActorRecall(
+            !canActorRecall(
               original,
               actorDeviceId: actor,
               group: group,
@@ -3479,7 +3483,8 @@ class AppController extends ChangeNotifier {
     return '${normalized.substring(0, 100)}…';
   }
 
-  static String _formatFileSize(int bytes) {
+  /// 把字节数格式化为 B/KB/MB 文本，供控制器与聊天界面共用，避免重复实现。
+  static String formatFileSize(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';

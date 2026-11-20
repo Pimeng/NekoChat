@@ -876,8 +876,30 @@ class PreviewAppController extends AppController {
   }
 
   @override
-  bool canRecallMessage(ChatMessage message, {DateTime? now}) =>
-      !message.isRecalled && message.senderDeviceId == identity?.deviceId;
+  bool canRecallMessage(ChatMessage message, {DateTime? now}) {
+    final me = identity?.deviceId;
+    if (me == null || message.isRecalled) return false;
+    ChatGroup? group;
+    var isAdmin = false;
+    if (message.groupId != null) {
+      group = groups
+          .where((value) => value.groupId == message.groupId)
+          .firstOrNull;
+      if (group == null) return false;
+      isAdmin =
+          _rolesByGroup[group.groupId]?[me] == GroupRole.admin &&
+          me != group.ownerDeviceId;
+    }
+    // 复用真实控制器的撤回规则；预览的角色数据在 _rolesByGroup，且时间锚到
+    // 固定数据的 baseTime，避免实际时钟偏离窗口后连群主也撤不了。
+    return AppController.canActorRecall(
+      message,
+      actorDeviceId: me,
+      group: group,
+      isAdmin: isAdmin,
+      now: now ?? PreviewFixtures.baseTime,
+    );
+  }
 
   @override
   Future<void> recallMessage(ChatMessage message) async {
