@@ -1183,7 +1183,8 @@ class _AuthPageDemoState extends State<_AuthPageDemo> {
       Expanded(
         child: AnimatedBuilder(
           animation: _authController,
-          builder: (_, _) => AuthPage(controller: _authController),
+          builder: (_, _) =>
+              AuthPage(controller: _authController, windowControls: false),
         ),
       ),
     ],

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
-import 'package:multiview_desktop/multiview_desktop.dart';
+import 'package:multiview_desktop/multiview_desktop.dart' hide TitleBarStyle;
 import 'package:window_manager/window_manager.dart';
 
 import '../core/single_instance/single_instance_service.dart';
@@ -134,6 +134,9 @@ class _NekoChatAppState extends State<NekoChatApp> {
   late final SingleInstanceService _singleInstance;
   StreamSubscription<void>? _singleInstanceSubscription;
 
+  /// 已应用的窗口形态：true=登录态无边框紧凑窗口，false=主界面正常窗口。
+  bool? _authWindowApplied;
+
   @override
   void initState() {
     super.initState();
@@ -147,11 +150,49 @@ class _NekoChatAppState extends State<NekoChatApp> {
     controller = AppController(
       onBossKeyVisibilityChanged: _setSecondaryWindowsHidden,
     )..initialize();
+    controller.addListener(_syncWindowToStage);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncWindowToStage());
     _singleInstance = widget.singleInstanceService ?? SingleInstanceService();
     _singleInstanceSubscription = _singleInstance.onAlreadyRunning.listen(
       (_) => _bringWindowToFront(),
     );
     unawaited(_singleInstance.initialize());
+  }
+
+  /// 根据当前阶段切换窗口形态：登录/解锁（含启动）用无边框紧凑窗口，
+  /// 进入主界面后恢复带系统标题栏的正常可缩放窗口。
+  void _syncWindowToStage() {
+    final auth = switch (controller.stage) {
+      AppStage.booting || AppStage.setup || AppStage.locked => true,
+      AppStage.ready || AppStage.error => false,
+    };
+    if (_authWindowApplied == auth) return;
+    _authWindowApplied = auth;
+    unawaited(_applyWindowMode(auth));
+  }
+
+  Future<void> _applyWindowMode(bool auth) async {
+    try {
+      if (auth) {
+        const size = Size(840, 520);
+        await windowManager.setTitleBarStyle(
+          TitleBarStyle.hidden,
+          windowButtonVisibility: false,
+        );
+        await windowManager.setResizable(false);
+        await windowManager.setMinimumSize(size);
+        await windowManager.setSize(size);
+        await windowManager.center();
+      } else {
+        await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+        await windowManager.setResizable(true);
+        await windowManager.setMinimumSize(const Size(720, 640));
+        await windowManager.setSize(const Size(1024, 720));
+        await windowManager.center();
+      }
+    } on Object catch (error, stack) {
+      _log.warning('切换窗口形态失败', error, stack);
+    }
   }
 
   /// 用户重复启动程序时，把已有的窗口置前。
@@ -179,6 +220,7 @@ class _NekoChatAppState extends State<NekoChatApp> {
 
   @override
   void dispose() {
+    controller.removeListener(_syncWindowToStage);
     _singleInstanceSubscription?.cancel();
     unawaited(_singleInstance.dispose());
     controller.dispose();

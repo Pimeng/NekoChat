@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:multiview_desktop/multiview_desktop.dart';
+import 'package:multiview_desktop/multiview_desktop.dart' hide TitleBarStyle;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -21,7 +21,15 @@ Future<void> main() async {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
   await windowManager.ensureInitialized();
-  // 侧边栏可以收起或缩窄，小窗口下仍保留足够的会话操作空间。
-  await windowManager.setMinimumSize(const Size(720, 640));
+  // 启动即进入创建身份/解锁，先按无边框紧凑窗口呈现（贴合登录卡片）；
+  // 进入主界面后由 NekoChatApp 恢复带系统标题栏的正常可缩放窗口。
+  await windowManager.setTitleBarStyle(
+    TitleBarStyle.hidden,
+    windowButtonVisibility: false,
+  );
+  await windowManager.setResizable(false);
+  await windowManager.setMinimumSize(const Size(840, 520));
+  await windowManager.setSize(const Size(840, 520));
+  await windowManager.center();
   runMultiApp(home: (_, _) => const NekoChatApp());
 }
