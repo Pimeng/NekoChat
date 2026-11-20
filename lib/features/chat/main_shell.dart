@@ -3411,15 +3411,34 @@ class _ConversationPaneState extends State<_ConversationPane> {
   ) {
     _removeFallbackMenu();
     final overlay = Overlay.of(context);
-    void dismiss() => _removeFallbackMenu();
+    final menuKey = GlobalKey<_ChatMessageMenuOverlayState>();
+    late final OverlayEntry entry;
+    // 收起动画播完后真正把浮层从 Overlay 移除；重复调用安全。
+    void hardRemove() {
+      if (entry.mounted) entry.remove();
+      if (identical(_fallbackMenu, entry)) _fallbackMenu = null;
+    }
+
+    // 关闭入口：先让浮层反向播放收起动画，动画结束后再移除。
+    void dismiss() {
+      final state = menuKey.currentState;
+      if (state != null) {
+        state.close();
+      } else {
+        hardRemove();
+      }
+    }
+
     final items = buildItems(dismiss);
     if (items.isEmpty) return;
 
-    final entry = OverlayEntry(
+    entry = OverlayEntry(
       builder: (context) => _ChatMessageMenuOverlay(
+        key: menuKey,
         position: position,
         items: items,
         onDismiss: dismiss,
+        onClosed: hardRemove,
       ),
     );
     _fallbackMenu = entry;
@@ -4729,37 +4748,85 @@ class ChatContextMenuItem {
 }
 
 /// 现代桌面风格右键菜单浮层（深色卡片 + 细描边 + 优雅投影 + 紧凑图标文字）。
-class _ChatMessageMenuOverlay extends StatelessWidget {
+///
+/// 弹出时正向播放淡入+缩放，关闭时反向播放收起动画，动画结束后才移除浮层。
+class _ChatMessageMenuOverlay extends StatefulWidget {
   const _ChatMessageMenuOverlay({
+    super.key,
     required this.position,
     required this.items,
     required this.onDismiss,
+    required this.onClosed,
   });
 
   final Offset position;
   final List<ChatContextMenuItem> items;
+
+  /// 请求关闭：会先触发收起动画。
   final VoidCallback onDismiss;
+
+  /// 收起动画播完后的回调：真正把浮层从 Overlay 移除。
+  final VoidCallback onClosed;
+
+  @override
+  State<_ChatMessageMenuOverlay> createState() =>
+      _ChatMessageMenuOverlayState();
+}
+
+class _ChatMessageMenuOverlayState extends State<_ChatMessageMenuOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 140),
+    reverseDuration: const Duration(milliseconds: 120),
+  );
+  late final Animation<double> _anim = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOutCubic,
+    reverseCurve: Curves.easeInCubic,
+  );
+  bool _closing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.forward();
+  }
+
+  /// 反向播放收起动画，结束后移除浮层；重复调用只生效一次。
+  void close() {
+    if (_closing) return;
+    _closing = true;
+    _controller.reverse().whenComplete(widget.onClosed);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     const menuWidth = 146.0;
+    final items = widget.items;
     final dividerCount = items.where((e) => e.hasDividerBefore).length;
     final menuHeight = items.length * 34.0 + dividerCount * 9.0 + 10.0;
 
-    double left = position.dx;
-    double top = position.dy;
+    double left = widget.position.dx;
+    double top = widget.position.dy;
 
     if (left + menuWidth > screenSize.width - 12) {
       left = (screenSize.width - menuWidth - 12).clamp(12.0, double.infinity);
     }
     if (top + menuHeight > screenSize.height - 12) {
-      top = (position.dy - menuHeight).clamp(12.0, double.infinity);
+      top = (widget.position.dy - menuHeight).clamp(12.0, double.infinity);
     }
 
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): onDismiss,
+        const SingleActivator(LogicalKeyboardKey.escape): widget.onDismiss,
       },
       child: Focus(
         autofocus: true,
@@ -4769,8 +4836,8 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
             Positioned.fill(
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTapDown: (_) => onDismiss(),
-                onSecondaryTapDown: (_) => onDismiss(),
+                onTapDown: (_) => widget.onDismiss(),
+                onSecondaryTapDown: (_) => widget.onDismiss(),
                 child: const ColoredBox(color: Colors.transparent),
               ),
             ),
@@ -4778,18 +4845,19 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
             Positioned(
               left: left,
               top: top,
-              child: TweenAnimationBuilder<double>(
-                tween: Tween(begin: 0.0, end: 1.0),
-                duration: const Duration(milliseconds: 140),
-                curve: Curves.easeOutCubic,
-                builder: (context, value, child) => Opacity(
-                  opacity: value,
-                  child: Transform.scale(
-                    scale: 0.94 + 0.06 * value,
-                    alignment: Alignment.topLeft,
-                    child: child,
-                  ),
-                ),
+              child: AnimatedBuilder(
+                animation: _anim,
+                builder: (context, child) {
+                  final value = _anim.value.clamp(0.0, 1.0);
+                  return Opacity(
+                    opacity: value,
+                    child: Transform.scale(
+                      scale: 0.94 + 0.06 * value,
+                      alignment: Alignment.topLeft,
+                      child: child,
+                    ),
+                  );
+                },
                 child: Material(
                   elevation: 12,
                   shadowColor: Colors.black45,
