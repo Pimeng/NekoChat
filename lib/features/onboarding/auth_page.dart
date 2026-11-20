@@ -323,21 +323,6 @@ class _AuthHero extends StatelessWidget {
                     letterSpacing: 0.5,
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  '局域网里的私密聊天',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.82),
-                    fontSize: 14,
-                    height: 1.4,
-                  ),
-                ),
-                const Spacer(),
-                const _HeroPoint(text: '无需服务器，纯本地运行'),
-                const SizedBox(height: 14),
-                const _HeroPoint(text: '身份与消息只存这台电脑'),
-                const SizedBox(height: 14),
-                const _HeroPoint(text: '同一局域网内直接互联'),
               ],
             ),
           ),
@@ -360,36 +345,6 @@ class _Glow extends StatelessWidget {
       shape: BoxShape.circle,
       gradient: RadialGradient(colors: [color, color.withValues(alpha: 0)]),
     ),
-  );
-}
-
-class _HeroPoint extends StatelessWidget {
-  const _HeroPoint({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Container(
-        width: 22,
-        height: 22,
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.16),
-          shape: BoxShape.circle,
-        ),
-        child: const Icon(Icons.check_rounded, color: Colors.white, size: 14),
-      ),
-      const SizedBox(width: 12),
-      Expanded(
-        child: Text(
-          text,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.9),
-            fontSize: 13.5,
-          ),
-        ),
-      ),
-    ],
   );
 }
 
