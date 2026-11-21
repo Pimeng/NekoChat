@@ -80,9 +80,12 @@ flutter:
 
   assets:
     - assets/app.png
-
-  # 字体不再随应用打包：应用改为运行时引用系统已安装字体（见 lib/core/fonts/
-  # installed_fonts.dart 与外观设置），安装了对应字体即生效，否则回退系统默认。
+    # 仓库不含字体文件，但此目录会被打包：编译前把字体 .ttf 放进 assets/font/
+    # 即随应用分发，启动时由 lib/core/fonts/bundled_fonts.dart 按真实族名注册。
+    # 不放则运行时回退到系统已安装字体（lib/core/fonts/installed_fonts.dart），
+    # 再无则系统默认。可识别的文件名前缀：lxgwwenkai / misans / vivosans /
+    # googlesans / jetbrainsmono（如 MiSans-Regular.ttf、LXGWWenKai.ttf）。
+    - assets/font/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

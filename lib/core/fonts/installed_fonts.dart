@@ -48,13 +48,27 @@ class InstalledFonts {
     return names;
   }
 
+  /// 文件名是否以字体族标记 [token] 开头，且其后紧跟分隔符（`-`/`.`/空格/`_`）或恰好等于它。
+  /// 用词边界而非简单包含，以便把相近家族区分开，例如
+  /// `lxgwwenkai` 命中 `LXGWWenKai.ttf`/`LXGWWenKai-Regular.ttf`，但排除 `LXGWWenKaiMono-*`；
+  /// `vivosans` 命中 `vivoSans-*` 但排除 `vivoSansGlobal-*`；`jetbrainsmono` 排除 `JetBrainsMonoNL-*`。
+  static bool fileNameMatchesToken(String fileName, String token) {
+    final name = fileName.toLowerCase();
+    final key = token.toLowerCase();
+    if (!name.startsWith(key)) return false;
+    if (name.length == key.length) return true;
+    final next = name[key.length];
+    return next == '-' || next == '.' || next == ' ' || next == '_';
+  }
+
   /// 在已安装文件名集合中判断是否存在匹配任一 [keys] 的字体文件。
-  /// [keys] 为小写子串，命中其一即视为已安装；[keys] 为空时视为未安装。
+  /// [keys] 为字体族标记（小写），按 [fileNameMatchesToken] 的词边界规则匹配；
+  /// 命中其一即视为已安装；[keys] 为空时视为未安装。
   static bool isInstalled(Set<String> fileNames, List<String> keys) {
     if (keys.isEmpty) return false;
     for (final name in fileNames) {
       for (final key in keys) {
-        if (name.contains(key)) return true;
+        if (fileNameMatchesToken(name, key)) return true;
       }
     }
     return false;

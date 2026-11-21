@@ -19,6 +19,7 @@ import '../core/database/app_database.dart';
 import '../core/files/attachment_path.dart';
 import '../core/files/content_hash.dart';
 import '../core/files/open_path.dart';
+import '../core/fonts/bundled_fonts.dart';
 import '../core/fonts/installed_fonts.dart';
 import '../core/identity/database_key_provider.dart';
 import '../core/identity/identity_service.dart';
@@ -131,35 +132,35 @@ class AppController extends ChangeNotifier {
       label: '霞鹜文楷',
       cjk: true,
       latin: true,
-      matchKeys: ['lxgwwenkai-'],
+      matchKeys: ['lxgwwenkai'],
     ),
     AppFontOption(
       family: 'MiSans',
       label: 'MiSans 小米',
       cjk: true,
       latin: true,
-      matchKeys: ['misans-'],
+      matchKeys: ['misans'],
     ),
     AppFontOption(
       family: 'vivo Sans',
       label: 'vivo Sans',
       cjk: true,
       latin: true,
-      matchKeys: ['vivosans-'],
+      matchKeys: ['vivosans'],
     ),
     AppFontOption(
       family: 'Google Sans',
       label: 'Google Sans',
       cjk: false,
       latin: true,
-      matchKeys: ['googlesans-'],
+      matchKeys: ['googlesans'],
     ),
     AppFontOption(
       family: 'JetBrains Mono',
       label: 'JetBrains Mono',
       cjk: false,
       latin: true,
-      matchKeys: ['jetbrainsmono-'],
+      matchKeys: ['jetbrainsmono'],
     ),
   ];
   final LocalDatabaseKeyProvider _keyProvider;
@@ -412,7 +413,9 @@ class AppController extends ChangeNotifier {
         : (storedLatinFamily.isEmpty
               ? null
               : migrateLegacyFontFamily(storedLatinFamily));
+    final bundledFamilies = await _loadBundledFonts();
     _refreshAvailableFonts();
+    availableFontFamilies = {...availableFontFamilies, ...bundledFamilies};
     boldText = _settingBool(
       await _database.loadSetting(_boldTextSetting),
       fallback: false,
@@ -803,6 +806,29 @@ class AppController extends ChangeNotifier {
     latinFontFamily = value;
     appearanceRevision.value++;
     notifyListeners();
+  }
+
+  /// 注册随包 `assets/font/` 下的字体（若编译时放了字体文件），返回成功注册的族名集合。
+  /// 这些字体优先于系统字体生效；目录为空或加载失败时返回空集合。
+  Future<Set<String>> _loadBundledFonts() async {
+    try {
+      final keys = await BundledFonts.listFontAssetKeys();
+      if (keys.isEmpty) return {};
+      final familyToKeys = <String, List<String>>{
+        for (final option in fontOptions)
+          if (option.family != null && option.matchKeys.isNotEmpty)
+            option.family!: option.matchKeys,
+      };
+      final matched = BundledFonts.matchFamilies(keys, familyToKeys);
+      final loaded = <String>{};
+      for (final entry in matched.entries) {
+        await BundledFonts.registerFamily(entry.key, entry.value);
+        loaded.add(entry.key);
+      }
+      return loaded;
+    } catch (_) {
+      return {};
+    }
   }
 
   /// 扫描系统已安装字体，刷新 [availableFontFamilies]。失败时置空（视为未检测）。

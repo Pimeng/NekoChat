@@ -1,0 +1,10 @@
+# 此目录用于随应用打包字体（已在 pubspec.yaml 的 assets 中登记）。
+#
+# 仓库不携带字体文件（.ttf/.otf/.ttc 已在 .gitignore 中忽略）。
+# 若希望把字体随应用一起分发，编译前把字体文件放进本目录即可，启动时会被
+# 自动注册生效（见 lib/core/fonts/bundled_fonts.dart）。
+#
+# 可识别的文件名前缀：lxgwwenkai / misans / vivosans / googlesans / jetbrainsmono
+# 例如 MiSans-Regular.ttf、JetBrainsMono-Regular.ttf、LXGWWenKai.ttf。
+#
+# 不放字体则运行时回退到系统已安装的同名字体，再无则系统默认。

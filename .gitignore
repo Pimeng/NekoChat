@@ -47,5 +47,7 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-# 字体不随仓库分发：仅保留本机副本，运行时引用系统已安装字体
-/assets/font/
+# 字体不随仓库分发：保留本机副本并作为打包目录，但字体文件不入库
+# （编译者可自行把字体放进 assets/font/ 一起打包）。仅保留 .gitkeep 占位。
+/assets/font/*
+!/assets/font/.gitkeep
