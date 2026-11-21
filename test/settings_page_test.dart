@@ -22,18 +22,23 @@ class _BlacklistTestController extends AppController {
 }
 
 void main() {
-  testWidgets('局域网相互发现开关默认开启', (tester) async {
+  testWidgets('在线探测开关默认开启', (tester) async {
     final controller = AppController();
     await tester.pumpWidget(
       MaterialApp(home: SettingsPage(controller: controller)),
     );
 
-    expect(find.text('局域网相互发现'), findsOneWidget);
-    expect(find.text('允许本机与同一局域网内的 NekoChat 设备相互发现'), findsOneWidget);
+    expect(find.text('在线探测'), findsWidgets);
+    expect(
+      find.text(
+        '开启后与同一局域网内的 NekoChat 设备保持在线探测、互相可见；关闭后将无法收发消息',
+      ),
+      findsOneWidget,
+    );
     expect(
       tester
           .widget<SwitchListTile>(
-            find.widgetWithText(SwitchListTile, '局域网相互发现'),
+            find.widgetWithText(SwitchListTile, '在线探测'),
           )
           .value,
       isTrue,
@@ -115,6 +120,8 @@ void main() {
       MaterialApp(home: SettingsPage(controller: controller)),
     );
 
+    await tester.scrollUntilVisible(find.text('黑名单'), 200);
+    await tester.pumpAndSettle();
     expect(find.text('黑名单'), findsOneWidget);
     expect(find.text('已拉黑 1 人，可随时解除拉黑'), findsOneWidget);
 

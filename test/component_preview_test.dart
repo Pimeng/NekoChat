@@ -90,7 +90,7 @@ void main() {
     await tester.tap(settingsNav);
     await tester.pumpAndSettle();
 
-    final lanSwitch = find.widgetWithText(SwitchListTile, '局域网相互发现');
+    final lanSwitch = find.widgetWithText(SwitchListTile, '在线探测');
     expect(tester.widget<SwitchListTile>(lanSwitch).value, isTrue);
     await tester.tap(lanSwitch);
     await tester.pumpAndSettle();

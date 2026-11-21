@@ -280,7 +280,6 @@ void main() {
       peerDeviceId: 'peer-new',
       displayName: '王五',
       ip: '192.168.1.40',
-      verificationCode: '123 456',
       incoming: true,
     );
     controller.groupInvitations['inv-1'] = const GroupInvitation(
@@ -316,8 +315,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('contacts-nav-friend-requests')));
     await tester.pumpAndSettle();
     expect(find.text('待我审批'), findsOneWidget);
-    expect(find.text('123 456'), findsOneWidget);
-    expect(find.text('确认并接受'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '通过'), findsOneWidget);
 
     // 点击群通知进入审批面板
     await tester.tap(
@@ -332,7 +330,7 @@ void main() {
     await tester.tap(find.text('李四').first);
     await tester.pumpAndSettle();
     expect(find.text('联系人资料'), findsOneWidget);
-    expect(find.text('已确认验证码'), findsOneWidget);
+    expect(find.text('已验证'), findsOneWidget);
     expect(find.text('发消息'), findsOneWidget);
   });
 

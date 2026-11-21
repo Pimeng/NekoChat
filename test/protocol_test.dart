@@ -73,36 +73,4 @@ void main() {
       expect(parseMentions(null), isEmpty);
     });
   });
-
-  group('verificationCode', () {
-    test('同一请求在双方得到相同的六位码', () {
-      final atRequester = verificationCode(
-        requestId: 'request-1',
-        requesterDeviceId: 'device-a',
-        recipientDeviceId: 'device-b',
-      );
-      final atRecipient = verificationCode(
-        requestId: 'request-1',
-        requesterDeviceId: 'device-a',
-        recipientDeviceId: 'device-b',
-      );
-
-      expect(atRequester, atRecipient);
-      expect(atRequester, matches(RegExp(r'^\d{3} \d{3}$')));
-    });
-
-    test('不同请求通常得到不同验证码', () {
-      final first = verificationCode(
-        requestId: 'request-1',
-        requesterDeviceId: 'device-a',
-        recipientDeviceId: 'device-b',
-      );
-      final second = verificationCode(
-        requestId: 'request-2',
-        requesterDeviceId: 'device-a',
-        recipientDeviceId: 'device-b',
-      );
-      expect(first, isNot(second));
-    });
-  });
 }

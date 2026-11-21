@@ -34,6 +34,7 @@ class DiscoveryService {
     NetworkInterfacesProvider? interfacesProvider,
     this.multicastLoopback = false,
     this.avatarHash,
+    this.pairingHash,
   }) : _interfacesProvider =
            interfacesProvider ??
            (() => NetworkInterface.list(
@@ -46,6 +47,10 @@ class DiscoveryService {
 
   /// 本机当前头像的 SHA-256，随发现公告一起广播给局域网内的其他设备。
   String? avatarHash;
+
+  /// 本机口令哈希 `sha256(口令 + deviceId)`，随公告广播供对方本地匹配口令。
+  /// 口令明文不广播。
+  String? pairingHash;
   final TrustLookup trustLookup;
   final void Function(List<DiscoveredPeer> peers) onPeersChanged;
   final NetworkInterfacesProvider _interfacesProvider;
@@ -143,6 +148,8 @@ class DiscoveryService {
             'port': NetworkConfig.chatPort,
             if (avatarHash != null && avatarHash!.isNotEmpty)
               'avatarHash': avatarHash,
+            if (pairingHash != null && pairingHash!.isNotEmpty)
+              'pairingHash': pairingHash,
           },
         ),
       ),
@@ -192,6 +199,7 @@ class DiscoveryService {
         final displayName = payload['displayName'];
         final port = payload['port'];
         final rawAvatarHash = payload['avatarHash'];
+        final rawPairingHash = payload['pairingHash'];
         if (deviceId is! String ||
             deviceId.isEmpty ||
             displayName is! String ||
@@ -203,6 +211,10 @@ class DiscoveryService {
         }
         final avatarHash = rawAvatarHash is String && isSha256Hex(rawAvatarHash)
             ? rawAvatarHash
+            : null;
+        final pairingHash =
+            rawPairingHash is String && isSha256Hex(rawPairingHash)
+            ? rawPairingHash
             : null;
         if (deviceId == identity.deviceId) continue;
         final observedIp = datagram.address.address;
@@ -231,6 +243,7 @@ class DiscoveryService {
               duplicateIdentity ||
               (trusted != null && trusted.lastKnownIp != observedIp),
           avatarHash: avatarHash,
+          pairingHash: pairingHash,
         );
         _peers[deviceId] = peer;
         if (existing == null ||
@@ -281,6 +294,14 @@ class DiscoveryService {
     final normalized = value != null && value.isNotEmpty ? value : null;
     if (avatarHash == normalized) return;
     avatarHash = normalized;
+    _announce();
+  }
+
+  /// 口令（或其哈希）变化后立刻广播，便于其他设备据以匹配口令定位本机。
+  void updatePairingHash(String? value) {
+    final normalized = value != null && value.isNotEmpty ? value : null;
+    if (pairingHash == normalized) return;
+    pairingHash = normalized;
     _announce();
   }
 

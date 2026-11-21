@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -72,6 +73,8 @@ class AppController extends ChangeNotifier {
   static const _notificationModeSetting = 'notification_mode';
   static const _notificationAnchorSetting = 'notification_anchor';
   static const _lanDiscoverySetting = 'lan_discovery_enabled';
+  static const _pairingSecretSetting = 'pairing_secret';
+  static const _blockFriendRequestsSetting = 'block_friend_requests';
   static const _bossKeySetting = 'boss_key_enabled';
   static const _bossKeyShortcutSetting = 'boss_key_shortcut';
   static const _bossKeyNotifyWhenHiddenSetting = 'boss_key_notify_when_hidden';
@@ -192,6 +195,10 @@ class AppController extends ChangeNotifier {
   /// 是否广播本机并监听局域网内其他 NekoChat 设备，默认开启。
   bool lanDiscoveryEnabled = true;
 
+  /// 是否屏蔽陌生人的加好友申请（防骚扰）。开启后忽略普通申请，
+  /// 但用本机口令发起的申请与已验证好友不受影响。默认关闭。
+  bool blockFriendRequests = false;
+
   /// 老板键默认关闭；开启后由 Windows 全局注册 Alt+F。
   bool bossKeyEnabled = false;
   BossKeyShortcut bossKeyShortcut = BossKeyShortcut.altF;
@@ -304,6 +311,19 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_lanDiscoverySetting),
       fallback: true,
     );
+    final storedPairingSecret = await _database.loadSetting(
+      _pairingSecretSetting,
+    );
+    if (storedPairingSecret != null && storedPairingSecret.isNotEmpty) {
+      pairingSecret = storedPairingSecret;
+    } else {
+      pairingSecret = _generatePairingSecret();
+      await _database.saveSetting(_pairingSecretSetting, pairingSecret!);
+    }
+    blockFriendRequests = _settingBool(
+      await _database.loadSetting(_blockFriendRequestsSetting),
+      fallback: false,
+    );
     bossKeyEnabled = _settingBool(
       await _database.loadSetting(_bossKeySetting),
       fallback: false,
@@ -380,6 +400,7 @@ class AppController extends ChangeNotifier {
       onPeersChanged: _handlePeersChanged,
     );
     _discovery!.updateAvatarHash(profileAvatarHash);
+    _discovery!.updatePairingHash(_pairingHash);
     if (lanDiscoveryEnabled) await _discovery!.start();
     errorMessage = null;
     dataDirectory = _database.directoryPath;
@@ -615,6 +636,17 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 开关“屏蔽加好友申请”。开启后忽略陌生人的申请（口令申请与已验证好友不受影响）。
+  Future<void> setBlockFriendRequests(bool value) async {
+    if (blockFriendRequests == value) return;
+    await _database.saveSetting(
+      _blockFriendRequestsSetting,
+      value.toString(),
+    );
+    blockFriendRequests = value;
+    notifyListeners();
+  }
+
   String peerDisplayName(String deviceId, String originalName) =>
       peerRemarks[deviceId] ?? originalName;
 
@@ -773,7 +805,71 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> requestChat(DiscoveredPeer peer) async {
+  /// 口令字符表：去掉易混的 0/O/1/I/L，便于机房里口头报读与手动输入。
+  static const _pairingAlphabet = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+
+  /// 口令长度（字符数）。8 位在“可口头报读”的前提下尽量提高随意猜测的成本。
+  static const _pairingCodeLength = 8;
+
+  /// 本机随机口令（秘密）。首次就绪时生成并持久化，明文仅本地保存，不随公告广播。
+  String? pairingSecret;
+
+  /// 格式化后的本机口令，展示给对方以便互加（形如 `XXXX XXXX`）。
+  String get myPairingCode => formatPairingCode(pairingSecret ?? '');
+
+  /// 把紧凑口令格式化为分组展示；非 8 位时原样返回。
+  static String formatPairingCode(String code) {
+    if (code.length != _pairingCodeLength) return code;
+    return '${code.substring(0, 4)} ${code.substring(4)}';
+  }
+
+  /// 归一化用户输入的口令：去空白并大写，便于与存储的紧凑口令比较。
+  static String normalizePairingCode(String value) =>
+      value.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+
+  /// 口令哈希 `sha256(口令 + deviceId)`，随 deviceId 加盐，随公告广播供对方本地匹配。
+  String? get _pairingHash {
+    final secret = pairingSecret;
+    if (secret == null || secret.isEmpty || identity == null) return null;
+    return sha256String(secret + identity!.deviceId);
+  }
+
+  /// 判断某个已发现设备的口令哈希是否与输入口令一致。
+  bool pairingCodeMatches(DiscoveredPeer peer, String input) {
+    final normalized = normalizePairingCode(input);
+    if (normalized.isEmpty || peer.pairingHash == null) return false;
+    return sha256String(normalized + peer.deviceId) == peer.pairingHash;
+  }
+
+  static String _generatePairingSecret() {
+    final random = Random.secure();
+    return List.generate(
+      _pairingCodeLength,
+      (_) => _pairingAlphabet[random.nextInt(_pairingAlphabet.length)],
+    ).join();
+  }
+
+  /// 重新生成本机口令并广播新的口令哈希；旧口令随即失效。
+  Future<void> regeneratePairingCode() async {
+    final secret = _generatePairingSecret();
+    await _database.saveSetting(_pairingSecretSetting, secret);
+    pairingSecret = secret;
+    _discovery?.updatePairingHash(_pairingHash);
+    notifyListeners();
+  }
+
+  /// 可手动添加的陌生在线设备：已被底层发现、在线、且尚未建立信任。
+  /// “添加好友”对话框从这里取候选，陌生设备不再自动出现在联系人列表。
+  List<DiscoveredPeer> get discoverableCandidates => peers
+      .where((peer) => peer.online && trustedPeers[peer.deviceId] == null)
+      .toList();
+
+  /// 发起聊天/添加好友。[viaPairingCode] 为真时携带口令证明，可穿透对方的“屏蔽加好友申请”。
+  Future<void> requestChat(
+    DiscoveredPeer peer, {
+    bool viaPairingCode = false,
+    String? code,
+  }) async {
     final existing = chats
         .where(
           (chat) =>
@@ -797,17 +893,22 @@ class AppController extends ChangeNotifier {
       return;
     }
     final requestId = _uuid.v4();
+    // 口令路径：对入站口令归一化后，连同 requestId 与接收方 deviceId 生成证明；
+    // 对方用自己的口令秘密重算比对，相符即视为口令申请（可穿透对方的屏蔽开关）。
+    final normalizedCode = viaPairingCode && code != null
+        ? normalizePairingCode(code)
+        : null;
+    final paired = normalizedCode != null && normalizedCode.isNotEmpty;
+    final pairingProof = paired
+        ? sha256String('$normalizedCode|$requestId|${peer.deviceId}')
+        : null;
     final request = ChatRequest(
       requestId: requestId,
       peerDeviceId: peer.deviceId,
       displayName: peer.displayName,
       ip: peer.ip,
-      verificationCode: verificationCode(
-        requestId: requestId,
-        requesterDeviceId: identity!.deviceId,
-        recipientDeviceId: peer.deviceId,
-      ),
       incoming: false,
+      viaPairingCode: paired,
     );
     chatRequests[requestId] = request;
     _scheduleRequestTimeout(request);
@@ -827,6 +928,8 @@ class AppController extends ChangeNotifier {
             'requestId': requestId,
             'deviceId': identity!.deviceId,
             'displayName': identity!.displayName,
+            if (paired) 'viaPairingCode': true,
+            'pairingProof': ?pairingProof,
           },
         ),
       );
@@ -2324,17 +2427,20 @@ class AppController extends ChangeNotifier {
       return;
     }
 
+    final viaPaired = _verifyPairingProof(payload, requestId);
+    // 屏蔽加好友申请：开启后忽略陌生人的申请；但“用你口令来加你的人”仍放行
+    // （口令本就是你给出的），已验证好友的自动恢复在上面已处理。
+    if (blockFriendRequests && !viaPaired) {
+      _log.info('已屏蔽来自 $deviceId 的加好友申请');
+      return;
+    }
     final request = ChatRequest(
       requestId: requestId,
       peerDeviceId: deviceId,
       displayName: displayName,
       ip: packet.remoteAddress,
-      verificationCode: verificationCode(
-        requestId: requestId,
-        requesterDeviceId: deviceId,
-        recipientDeviceId: identity!.deviceId,
-      ),
       incoming: true,
+      viaPairingCode: viaPaired,
     );
     chatRequests[requestId] = request;
     _scheduleRequestTimeout(request);
@@ -2343,13 +2449,23 @@ class AppController extends ChangeNotifier {
     if (_systemNotificationsAllowed && !_notifications.appIsFocused) {
       await _notifications.show(
         identifier: 'chat-request:$requestId',
-        title: '新的聊天邀请',
-        body:
-            '${peerDisplayName(deviceId, displayName)} 请求与你聊天，'
-            '验证码 ${request.verificationCode}',
+        title: '新的好友申请',
+        body: viaPaired
+            ? '${peerDisplayName(deviceId, displayName)} 通过口令请求加你为好友'
+            : '${peerDisplayName(deviceId, displayName)} 请求与你聊天',
         onClick: () {},
       );
     }
+  }
+
+  /// 校验入站聊天邀请携带的口令证明：相符返回 true（标记为口令申请，可穿透屏蔽）。
+  bool _verifyPairingProof(Map<String, dynamic> payload, String requestId) {
+    if (payload['viaPairingCode'] != true) return false;
+    final proof = payload['pairingProof'];
+    final secret = pairingSecret;
+    if (proof is! String || secret == null || secret.isEmpty) return false;
+    final expected = sha256String('$secret|$requestId|${identity!.deviceId}');
+    return proof == expected;
   }
 
   Future<void> _receiveChatAccept(IncomingPacket packet) async {

@@ -4,7 +4,7 @@ import 'package:neko_chat/features/chat/chat_state_machine.dart';
 
 void main() {
   group('ChatStateMachine', () {
-    test('同一设备已有待处理请求时不允许重复发送验证码', () {
+    test('同一设备已有待处理请求时不允许重复发送好友申请', () {
       expect(
         ChatStateMachine.canStartRequest(
           online: true,
@@ -25,7 +25,7 @@ void main() {
       );
     });
 
-    test('已验证且未拉黑的设备可以免验证码恢复会话', () {
+    test('已验证且未拉黑的设备可以免申请直接恢复会话', () {
       expect(
         ChatStateMachine.canRestoreTrustedSession(
           trusted: true,

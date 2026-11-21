@@ -6,6 +6,7 @@ import 'package:neko_chat/app/app_controller.dart';
 import 'package:neko_chat/core/boss_key/boss_key_service.dart';
 import 'package:neko_chat/core/config/network_config.dart';
 import 'package:neko_chat/core/database/app_database.dart';
+import 'package:neko_chat/core/files/content_hash.dart';
 import 'package:neko_chat/core/identity/database_key_provider.dart';
 import 'package:neko_chat/core/models/models.dart';
 import 'package:neko_chat/core/networking/chat_transport.dart';
@@ -188,6 +189,75 @@ void main() {
           setup.controller.chats.single.state == ChatSessionState.none,
     );
     expect(setup.controller.topRightMessage, contains('超时'));
+  });
+
+  test('带正确口令证明的聊天邀请标记为口令申请，错误证明则为普通申请', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-pairing-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 30),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    expect(setup.controller.stage, AppStage.ready);
+
+    final secret = setup.controller.pairingSecret!;
+    final myDeviceId = setup.controller.identity!.deviceId;
+
+    setup.transport.emit(
+      IncomingPacket(
+        envelope: ProtocolEnvelope(
+          type: MessageType.chatRequest,
+          payload: {
+            'requestId': 'req-pair-ok',
+            'deviceId': 'peer-device',
+            'displayName': '李四',
+            'viaPairingCode': true,
+            'pairingProof': sha256String('$secret|req-pair-ok|$myDeviceId'),
+          },
+        ),
+        remoteAddress: '192.168.1.20',
+      ),
+    );
+    await _waitUntil(
+      () => setup.controller.chatRequests.containsKey('req-pair-ok'),
+    );
+    expect(
+      setup.controller.chatRequests['req-pair-ok']!.viaPairingCode,
+      isTrue,
+    );
+
+    setup.transport.emit(
+      const IncomingPacket(
+        envelope: ProtocolEnvelope(
+          type: MessageType.chatRequest,
+          payload: {
+            'requestId': 'req-pair-bad',
+            'deviceId': 'peer-device-2',
+            'displayName': '王五',
+            'viaPairingCode': true,
+            'pairingProof': 'deadbeef',
+          },
+        ),
+        remoteAddress: '192.168.1.21',
+      ),
+    );
+    await _waitUntil(
+      () => setup.controller.chatRequests.containsKey('req-pair-bad'),
+    );
+    expect(
+      setup.controller.chatRequests['req-pair-bad']!.viaPairingCode,
+      isFalse,
+    );
   });
 
   test('已接受的邀请不会被超时清除', () async {
@@ -856,7 +926,7 @@ void main() {
     expect(setup.bossKey.enabledValues, [true]);
   });
 
-  test('局域网相互发现默认开启，并可即时停止、清空设备和恢复', () async {
+  test('在线探测默认开启，并可即时停止、清空设备和恢复', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-discovery-setting-',
     );

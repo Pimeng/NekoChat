@@ -40,6 +40,7 @@ abstract final class PreviewFixtures {
       lastSeen: baseTime,
       trusted: true,
       online: true,
+      pairingHash: 'a' * 64,
     ),
     DiscoveredPeer(
       deviceId: bobDeviceId,
@@ -49,6 +50,7 @@ abstract final class PreviewFixtures {
       lastSeen: baseTime,
       trusted: false,
       online: true,
+      pairingHash: 'b' * 64,
     ),
     DiscoveredPeer(
       deviceId: carolDeviceId,
@@ -143,8 +145,8 @@ abstract final class PreviewFixtures {
     peerDeviceId: 'neko-newpeer-88aa77bb-5555',
     displayName: '布偶设计师',
     ip: '192.168.10.62',
-    verificationCode: '482 915',
     incoming: true,
+    viaPairingCode: true,
   );
 
   static ChatRequest outgoingRequest() => const ChatRequest(
@@ -152,7 +154,6 @@ abstract final class PreviewFixtures {
     peerDeviceId: bobDeviceId,
     displayName: '三花开发机',
     ip: '192.168.10.35',
-    verificationCode: '731 049',
     incoming: false,
   );
 
@@ -440,6 +441,8 @@ class PreviewAppController extends AppController {
     autoReceiveFileLimitBytes = 10 * 1024 * 1024;
     windowsNotificationsEnabled = true;
     lanDiscoveryEnabled = true;
+    blockFriendRequests = false;
+    pairingSecret = 'ABCD2345';
     bossKeyEnabled = true;
     bossKeyShortcut = BossKeyShortcut.altF;
     bossKeyNotifyWhenHidden = false;
@@ -616,6 +619,23 @@ class PreviewAppController extends AppController {
   Future<void> setLanDiscoveryEnabled(bool value) async {
     lanDiscoveryEnabled = value;
     notifyListeners();
+  }
+
+  @override
+  Future<void> setBlockFriendRequests(bool value) async {
+    blockFriendRequests = value;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> regeneratePairingCode() async {
+    const alphabet = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+    final seed = DateTime.now().microsecondsSinceEpoch;
+    pairingSecret = List.generate(
+      8,
+      (i) => alphabet[(seed >> (i * 3)) % alphabet.length],
+    ).join();
+    showPreviewToast('预览模式：已重新生成口令 $myPairingCode', icon: Icons.vpn_key);
   }
 
   @override
@@ -828,8 +848,16 @@ class PreviewAppController extends AppController {
   }
 
   @override
-  Future<void> requestChat(DiscoveredPeer peer) async {
-    showPreviewToast('预览模式：已向 ${peer.displayName} 发送聊天邀请');
+  Future<void> requestChat(
+    DiscoveredPeer peer, {
+    bool viaPairingCode = false,
+    String? code,
+  }) async {
+    showPreviewToast(
+      viaPairingCode
+          ? '预览模式：已通过口令向 ${peer.displayName} 发送好友请求'
+          : '预览模式：已向 ${peer.displayName} 发送聊天邀请',
+    );
   }
 
   @override
@@ -898,7 +926,7 @@ class PreviewAppController extends AppController {
     ];
     final name = peerDisplayName(deviceId, removed.displayName);
     showPreviewToast(
-      '预览模式：已取消对 $name 的验证，下次聊天需重新核对验证码',
+      '预览模式：已取消对 $name 的验证，下次聊天需重新发起好友申请',
       icon: Icons.gpp_bad_outlined,
     );
   }

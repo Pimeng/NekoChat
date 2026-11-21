@@ -131,7 +131,6 @@ class _MainShellState extends State<MainShell> {
   SettingsSection _settingsSection = SettingsSection.lan;
   String? _selectedContactDeviceId;
   bool _verifiedExpanded = true;
-  bool _lanNewExpanded = true;
   bool _blockedExpanded = false;
   bool _groupDrawerOpen = false;
   String? _groupDrawerGroupId;
@@ -652,7 +651,10 @@ class _MainShellState extends State<MainShell> {
       padding: const EdgeInsets.symmetric(vertical: 6),
       children: [
         if (items.isEmpty)
-          const EmptyHint(icon: Icons.radar, text: '正在寻找局域网设备…')
+          const EmptyHint(
+            icon: Icons.person_add_alt_1,
+            text: '还没有会话\n到“联系人”里点“添加好友”开始聊天',
+          )
         else
           for (final item in items) item.tile,
       ],
@@ -684,13 +686,6 @@ class _MainShellState extends State<MainShell> {
     final onlineVerifiedCount = verifiedContacts
         .where((trusted) => peersById[trusted.deviceId]?.online == true)
         .length;
-
-    final unverifiedOnlinePeers = controller.peers
-        .where(
-          (peer) =>
-              peer.online && controller.trustedPeers[peer.deviceId] == null,
-        )
-        .toList();
 
     final blockedPeers = controller.blockedPeers;
 
@@ -764,6 +759,17 @@ class _MainShellState extends State<MainShell> {
                   key: const ValueKey('contacts-friends-list'),
                   padding: const EdgeInsets.only(bottom: 16),
                   children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.tonalIcon(
+                          onPressed: () => _showAddFriendDialog(controller),
+                          icon: const Icon(Icons.person_add_alt_1, size: 18),
+                          label: const Text('添加好友'),
+                        ),
+                      ),
+                    ),
                     _ContactGroupHeader(
                       title: '已验证联系人',
                       countLabel:
@@ -786,49 +792,6 @@ class _MainShellState extends State<MainShell> {
                             trusted: trusted,
                             peer: peersById[trusted.deviceId],
                             chat: chatsByPeer[trusted.deviceId],
-                          ),
-                    ],
-                    if (unverifiedOnlinePeers.isNotEmpty) ...[
-                      _ContactGroupHeader(
-                        title: '局域网发现',
-                        countLabel: '${unverifiedOnlinePeers.length}',
-                        expanded: _lanNewExpanded,
-                        onTap: () =>
-                            setState(() => _lanNewExpanded = !_lanNewExpanded),
-                      ),
-                      if (_lanNewExpanded)
-                        for (final peer in unverifiedOnlinePeers)
-                          ListTile(
-                            dense: true,
-                            leading: NamedAvatar(
-                              imagePath: controller.peerAvatarPath(
-                                peer.deviceId,
-                              ),
-                              name: peer.displayName,
-                              radius: 18,
-                            ),
-                            title: Text(
-                              peer.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              '未验证 · ${peer.ip}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: TextButton(
-                              onPressed: () async {
-                                await controller.requestChat(peer);
-                                if (!mounted) return;
-                                setState(() {
-                                  _contactDetailMode =
-                                      _ContactDetailMode.friendRequests;
-                                  _selectedContactDeviceId = null;
-                                });
-                              },
-                              child: const Text('加好友'),
-                            ),
                           ),
                     ],
                     if (blockedPeers.isNotEmpty) ...[
@@ -898,6 +861,26 @@ class _MainShellState extends State<MainShell> {
         ),
       ],
     );
+  }
+
+  Future<void> _showAddFriendDialog(AppController controller) async {
+    final result = await showNekoDialog<_AddFriendResult>(
+      context: context,
+      builder: (dialogContext) => _AddFriendDialog(controller: controller),
+    );
+    if (result == null) return;
+    await controller.requestChat(
+      result.peer,
+      viaPairingCode: result.viaPairingCode,
+      code: result.code,
+    );
+    if (!mounted) return;
+    setState(() {
+      _navTab = _MainNavTab.contacts;
+      _contactsSubTab = _ContactsSubTab.friends;
+      _contactDetailMode = _ContactDetailMode.friendRequests;
+      _selectedContactDeviceId = null;
+    });
   }
 
   Widget _buildVerifiedContactTile(
@@ -2161,7 +2144,7 @@ class _MainShellState extends State<MainShell> {
         context: context,
         builder: (dialogContext) => AlertDialog(
           title: const Text('取消验证？'),
-          content: Text('取消对“$displayName”的验证后，对方将移出已验证联系人，下次聊天需重新核对 6 位验证码。'),
+          content: Text('取消对“$displayName”的验证后，对方将移出已验证联系人，下次聊天需重新发起好友申请并通过。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
@@ -2463,6 +2446,244 @@ class ProfileAvatar extends StatelessWidget {
   }
 }
 
+/// “添加好友”的选择结果：选中的设备、是否走口令路径、口令原文（口令路径才有）。
+class _AddFriendResult {
+  const _AddFriendResult({
+    required this.peer,
+    required this.viaPairingCode,
+    this.code,
+  });
+  final DiscoveredPeer peer;
+  final bool viaPairingCode;
+  final String? code;
+}
+
+/// “添加好友”对话框：底层仍自动发现设备，但陌生设备不再自动出现在联系人列表。
+/// 可输入对方的口令精确匹配设备后添加，或直接从已发现设备列表挑选；
+/// 两种方式都只需对方“通过/拒绝”。
+class _AddFriendDialog extends StatefulWidget {
+  const _AddFriendDialog({required this.controller});
+
+  final AppController controller;
+
+  @override
+  State<_AddFriendDialog> createState() => _AddFriendDialogState();
+}
+
+class _AddFriendDialogState extends State<_AddFriendDialog> {
+  final _codeController = TextEditingController();
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final theme = Theme.of(context);
+    return AlertDialog(
+      title: const Text('添加好友'),
+      content: SizedBox(
+        width: 380,
+        child: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) {
+            final rawInput = _codeController.text.trim();
+            final candidates = controller.discoverableCandidates;
+            // 口令路径：输入非空时，在已发现设备里找口令哈希相符的那一台。
+            final matched = rawInput.isEmpty
+                ? null
+                : candidates
+                      .where((peer) => controller.pairingCodeMatches(
+                            peer,
+                            rawInput,
+                          ))
+                      .firstOrNull;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.vpn_key_outlined, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('我的口令', style: theme.textTheme.labelMedium),
+                            const SizedBox(height: 2),
+                            Text(
+                              controller.myPairingCode,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures(),
+                                ],
+                                letterSpacing: 2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: controller.regeneratePairingCode,
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('重新生成'),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    '把口令告诉对方，对方用它加你时可穿透你的“屏蔽加好友申请”。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _codeController,
+                  autofocus: true,
+                  textCapitalization: TextCapitalization.characters,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    labelText: '输入对方口令（通过口令添加）',
+                    prefixIcon: const Icon(Icons.vpn_key),
+                    border: const OutlineInputBorder(),
+                    suffixIcon: _codeController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () =>
+                                setState(() => _codeController.clear()),
+                          ),
+                  ),
+                ),
+                if (rawInput.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  if (matched != null)
+                    Card(
+                      margin: EdgeInsets.zero,
+                      color: theme.colorScheme.primaryContainer,
+                      child: ListTile(
+                        dense: true,
+                        leading: NamedAvatar(
+                          imagePath: controller.peerAvatarPath(
+                            matched.deviceId,
+                          ),
+                          name: matched.displayName,
+                          radius: 18,
+                        ),
+                        title: Text(
+                          matched.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text('口令匹配 · ${matched.ip}'),
+                        trailing: FilledButton(
+                          onPressed: () => Navigator.of(context).pop(
+                            _AddFriendResult(
+                              peer: matched,
+                              viaPairingCode: true,
+                              code: rawInput,
+                            ),
+                          ),
+                          child: const Text('加好友'),
+                        ),
+                      ),
+                    )
+                  else
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        '没有在线设备匹配该口令，确认口令正确且对方在线。',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ),
+                ],
+                const Divider(height: 24),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '附近设备（直接添加，等对方通过）',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: candidates.isEmpty
+                      ? const EmptyHint(
+                          icon: Icons.wifi_find_outlined,
+                          text: '附近暂无可添加的设备\n确认对方已打开 NekoChat 且在同一局域网',
+                        )
+                      : ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: candidates.length,
+                          itemBuilder: (context, index) {
+                            final peer = candidates[index];
+                            return ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: NamedAvatar(
+                                imagePath: controller.peerAvatarPath(
+                                  peer.deviceId,
+                                ),
+                                name: peer.displayName,
+                                radius: 18,
+                              ),
+                              title: Text(
+                                peer.displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                peer.ip,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: FilledButton.tonal(
+                                onPressed: () => Navigator.of(context).pop(
+                                  _AddFriendResult(
+                                    peer: peer,
+                                    viaPairingCode: false,
+                                  ),
+                                ),
+                                child: const Text('加好友'),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
+}
+
 /// 对端头像：同步到本地就显示图片，否则回退到昵称首字母。
 class NamedAvatar extends StatelessWidget {
   const NamedAvatar({
@@ -2623,7 +2844,9 @@ class EmptyHint extends StatelessWidget {
       children: [
         Icon(icon, size: 18, color: Colors.grey),
         const SizedBox(width: 8),
-        Text(text, style: const TextStyle(color: Colors.grey)),
+        Expanded(
+          child: Text(text, style: const TextStyle(color: Colors.grey)),
+        ),
       ],
     ),
   );
@@ -2777,21 +3000,20 @@ class ChatRequestCard extends StatelessWidget {
           const SizedBox(height: 5),
           Text('设备：${request.peerDeviceId.substring(0, 8)}…'),
           Text('网络：${request.ip}'),
-          const SizedBox(height: 8),
-          Text(
-            request.verificationCode,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 25,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 3,
+          if (request.viaPairingCode) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(
+                  Icons.vpn_key,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                const Text('通过口令添加', style: TextStyle(fontSize: 13)),
+              ],
             ),
-          ),
-          const Text(
-            '请与对方口头核对验证码',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12),
-          ),
+          ],
           if (request.incoming) ...[
             const SizedBox(height: 10),
             Row(
@@ -2806,7 +3028,7 @@ class ChatRequestCard extends StatelessWidget {
                 Expanded(
                   child: FilledButton(
                     onPressed: () => controller.acceptChatRequest(request),
-                    child: const Text('确认并接受'),
+                    child: const Text('通过'),
                   ),
                 ),
               ],
@@ -5330,7 +5552,7 @@ class _ContactGroupHeader extends StatelessWidget {
   );
 }
 
-/// 联系人 -> 新朋友：右侧审批面板，集中处理收发中的 6 位验证码好友请求。
+/// 联系人 -> 新朋友：右侧审批面板，集中处理收发中的好友申请。
 class FriendRequestsPane extends StatelessWidget {
   const FriendRequestsPane({
     super.key,
@@ -5349,7 +5571,7 @@ class FriendRequestsPane extends StatelessWidget {
       children: [
         _PaneHeader(
           title: '新朋友',
-          subtitle: '核对 6 位验证码并通过后，对方将加入已验证联系人',
+          subtitle: '通过好友申请后，对方将加入已验证联系人',
         ),
         const Divider(height: 1),
         Expanded(
@@ -5498,7 +5720,7 @@ class ContactDetailPane extends StatelessWidget {
       (
         Icons.verified_user_outlined,
         '验证状态',
-        blocked ? '已拉黑' : '已确认验证码',
+        blocked ? '已拉黑' : '已验证',
       ),
     ];
 
@@ -5995,7 +6217,7 @@ class WelcomePane extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             const Text(
-              'NekoChat 正在局域网中寻找其他设备。选择左侧在线设备，发送聊天请求并与对方口头核对 6 位验证码。',
+              '到“联系人”里点“添加好友”，输入对方口令或从附近设备里挑选，发起好友申请，对方通过后即可聊天。',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 22),
@@ -6086,9 +6308,9 @@ String _groupListSubtitle(AppController controller, ChatGroup group) {
 String _unifiedPeerSubtitle(UnifiedPeerEntry entry) {
   if (entry.trustedPeer?.blocked == true) return '已拉黑';
   final chat = entry.chat;
-  if (chat?.state == ChatSessionState.pendingIncoming) return '等待你确认验证码';
+  if (chat?.state == ChatSessionState.pendingIncoming) return '等待你确认';
   if (chat?.state == ChatSessionState.pendingOutgoing) {
-    return entry.trustedPeer == null ? '等待对方确认验证码' : '正在恢复已验证会话…';
+    return entry.trustedPeer == null ? '等待对方确认' : '正在恢复已验证会话…';
   }
   final peer = entry.peer;
   if (peer?.online == true) {

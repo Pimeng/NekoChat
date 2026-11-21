@@ -122,18 +122,3 @@ List<String> parseMentions(Object? value) {
   }
   return mentions;
 }
-
-String verificationCode({
-  required String requestId,
-  required String requesterDeviceId,
-  required String recipientDeviceId,
-}) {
-  final input = '$requestId|$requesterDeviceId|$recipientDeviceId';
-  var hash = 0x811c9dc5;
-  for (final byte in utf8.encode(input)) {
-    hash ^= byte;
-    hash = (hash * 0x01000193) & 0xffffffff;
-  }
-  final digits = (hash % 1000000).toString().padLeft(6, '0');
-  return '${digits.substring(0, 3)} ${digits.substring(3)}';
-}

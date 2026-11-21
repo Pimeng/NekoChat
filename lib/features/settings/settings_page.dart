@@ -8,7 +8,7 @@ import '../../core/notifications/notification_window_channel.dart';
 import '../common/smooth_dialog.dart';
 
 enum SettingsSection {
-  lan('局域网', '局域网设备相互发现', Icons.wifi_find_outlined),
+  lan('在线探测', '保持在线并与同一局域网设备互相可见', Icons.wifi_find_outlined),
   appearance('外观', '字体大小、字体与字重', Icons.text_fields_outlined),
   privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
   files('文件接收', '自动接收与大小上限', Icons.download_outlined),
@@ -38,14 +38,30 @@ class SettingsPage extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
             children: [
-              const SettingsSectionTitle('局域网'),
+              const SettingsSectionTitle('在线探测'),
               Card(
                 child: SwitchListTile(
                   secondary: const Icon(Icons.wifi_find_outlined),
-                  title: const Text('局域网相互发现'),
-                  subtitle: const Text('允许本机与同一局域网内的 NekoChat 设备相互发现'),
+                  title: const Text('在线探测'),
+                  subtitle: const Text(
+                    '开启后与同一局域网内的 NekoChat 设备保持在线探测、互相可见；关闭后将无法收发消息',
+                  ),
                   value: controller.lanDiscoveryEnabled,
                   onChanged: controller.setLanDiscoveryEnabled,
+                ),
+              ),
+              const SizedBox(height: 12),
+              PairingCodeCard(controller: controller),
+              const SizedBox(height: 12),
+              Card(
+                child: SwitchListTile(
+                  secondary: const Icon(Icons.person_off_outlined),
+                  title: const Text('屏蔽加好友申请'),
+                  subtitle: const Text(
+                    '开启后忽略陌生人的加好友申请；用你口令来加你的人、以及已验证好友不受影响',
+                  ),
+                  value: controller.blockFriendRequests,
+                  onChanged: controller.setBlockFriendRequests,
                 ),
               ),
               const SizedBox(height: 24),
@@ -286,6 +302,74 @@ class SettingsSectionTitle extends StatelessWidget {
 }
 
 int _formatMegabytes(int bytes) => bytes ~/ (1024 * 1024);
+
+/// “我的口令”卡片：展示本机口令并提供“重新生成”。别人用此口令加你可穿透“屏蔽加好友申请”。
+class PairingCodeCard extends StatelessWidget {
+  const PairingCodeCard({super.key, required this.controller});
+
+  final AppController controller;
+
+  Future<void> _regenerate(BuildContext context) async {
+    final confirmed = await showNekoDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('重新生成口令'),
+        content: const Text('生成新口令后，旧口令立即失效，用旧口令添加你的操作将失败。确定继续吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('重新生成'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await controller.regeneratePairingCode();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) => ListTile(
+          leading: const Icon(Icons.vpn_key_outlined),
+          title: const Text('我的口令'),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 4),
+              Text(
+                controller.myPairingCode,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '把口令告诉对方即可用它加你（可穿透“屏蔽加好友申请”）；怀疑泄露可重新生成。',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          isThreeLine: true,
+          trailing: TextButton.icon(
+            onPressed: () => _regenerate(context),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('重新生成'),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// 外观设置卡片组：实时预览 + 字体大小、字体、加粗，供嵌入式面板与独立设置页共用。
 class AppearanceSettingsCards extends StatelessWidget {
@@ -955,10 +1039,26 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
         Card(
           child: SwitchListTile(
             secondary: const Icon(Icons.wifi_find_outlined),
-            title: const Text('局域网相互发现'),
-            subtitle: const Text('允许本机与同一局域网内的 NekoChat 设备相互发现'),
+            title: const Text('在线探测'),
+            subtitle: const Text(
+              '开启后与同一局域网内的 NekoChat 设备保持在线探测、互相可见；关闭后将无法收发消息',
+            ),
             value: controller.lanDiscoveryEnabled,
             onChanged: controller.setLanDiscoveryEnabled,
+          ),
+        ),
+        const SizedBox(height: 12),
+        PairingCodeCard(controller: controller),
+        const SizedBox(height: 12),
+        Card(
+          child: SwitchListTile(
+            secondary: const Icon(Icons.person_off_outlined),
+            title: const Text('屏蔽加好友申请'),
+            subtitle: const Text(
+              '开启后忽略陌生人的加好友申请；用你口令来加你的人、以及已验证好友不受影响',
+            ),
+            value: controller.blockFriendRequests,
+            onChanged: controller.setBlockFriendRequests,
           ),
         ),
       ],

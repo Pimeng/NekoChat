@@ -319,9 +319,12 @@ List<PreviewEntry> buildPreviewCatalog(
             ),
           ),
           const Divider(),
-          const SettingsSectionTitle('设置页分组标题（局域网 / 隐私 / 存储）'),
+          const SettingsSectionTitle('设置页分组标题（在线探测 / 隐私 / 存储）'),
           const Divider(),
-          const EmptyHint(icon: Icons.radar, text: '正在寻找局域网设备…'),
+          const EmptyHint(
+            icon: Icons.person_add_alt_1,
+            text: '还没有会话\n到“联系人”里点“添加好友”开始聊天',
+          ),
           const EmptyHint(icon: Icons.groups_outlined, text: '还没有群聊'),
           const Divider(),
           const SettingsVersionFooter(),
@@ -463,7 +466,7 @@ List<PreviewEntry> buildPreviewCatalog(
       id: 'chat-request-card',
       name: '聊天邀请卡片',
       widgetType: 'ChatRequestCard',
-      description: '展示 6 位人工核对验证码，支持“收到的邀请”和“发出的等待确认”两种形态。',
+      description: '好友申请卡片，支持“收到的申请”和“发出的等待确认”两种形态；通过/拒绝即可。',
       category: PreviewCategory.sidebar,
       builder: (_) => Wrap(
         spacing: 16,
@@ -880,7 +883,7 @@ List<PreviewEntry> buildPreviewCatalog(
       id: 'friend-requests-pane',
       name: '新朋友审批面板',
       widgetType: 'FriendRequestsPane',
-      description: '联系人页“新朋友”右侧审批区，集中展示收发中的 6 位验证码请求。',
+      description: '联系人页“新朋友”右侧审批区，集中展示收发中的好友申请。',
       category: PreviewCategory.pages,
       isFullPage: true,
       builder: (_) => AnimatedBuilder(

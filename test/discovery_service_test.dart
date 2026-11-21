@@ -109,5 +109,24 @@ void main() {
       ),
       isTrue,
     );
+
+    final pairingHash = 'c' * 64;
+    a.updatePairingHash(pairingHash);
+    final pairingDeadline = DateTime.now().add(const Duration(seconds: 3));
+    while (!foundB.any(
+          (peer) =>
+              peer.deviceId == 'discovery-a' &&
+              peer.pairingHash == pairingHash,
+        ) &&
+        DateTime.now().isBefore(pairingDeadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(
+      foundB.any(
+        (peer) =>
+            peer.deviceId == 'discovery-a' && peer.pairingHash == pairingHash,
+      ),
+      isTrue,
+    );
   });
 }

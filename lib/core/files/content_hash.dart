@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
@@ -14,6 +15,12 @@ Future<String> sha256File(File file) async {
 
 Future<String> sha256Bytes(List<int> bytes) async {
   final hash = await Sha256().hash(bytes);
+  return _toHex(hash.bytes);
+}
+
+/// 同步计算 UTF-8 字符串的 SHA-256（小写十六进制），用于口令哈希等短输入场景。
+String sha256String(String value) {
+  final hash = Sha256().toSync().hashSync(utf8.encode(value));
   return _toHex(hash.bytes);
 }
 

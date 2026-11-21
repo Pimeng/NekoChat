@@ -475,7 +475,7 @@ class _PeerInfoDrawerState extends State<PeerInfoDrawer> {
                           '取消验证',
                           style: TextStyle(color: colorScheme.error),
                         ),
-                        subtitle: const Text('撤销已验证身份，下次聊天需重新核对验证码'),
+                        subtitle: const Text('撤销已验证身份，下次聊天需重新发起好友申请'),
                         trailing: Icon(
                           _confirmAction ==
                                   _PeerConfirmAction.revokeVerification
@@ -573,7 +573,7 @@ class _PeerInfoDrawerState extends State<PeerInfoDrawer> {
     };
     final message = switch (_confirmAction) {
       _PeerConfirmAction.revokeVerification =>
-        '取消对“$displayName”的验证后，再次聊天需要重新发起请求并核对 6 位验证码。',
+        '取消对“$displayName”的验证后，再次聊天需要重新发起好友申请并由对方通过。',
       _PeerConfirmAction.block => '拉黑“$displayName”后，将不再接收此人的聊天请求和消息。',
       _PeerConfirmAction.unblock => '解除对“$displayName”的拉黑后，将重新接受此人的聊天请求和消息。',
       _PeerConfirmAction.none => '',

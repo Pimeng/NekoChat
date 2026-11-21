@@ -67,6 +67,7 @@ class DiscoveredPeer {
     required this.online,
     this.locationChanged = false,
     this.avatarHash,
+    this.pairingHash,
   });
   final String deviceId;
   final String displayName;
@@ -80,6 +81,10 @@ class DiscoveredPeer {
   /// 对端当前头像的 SHA-256；为空表示对端没有设置头像。
   final String? avatarHash;
 
+  /// 对端口令的哈希 `sha256(口令 + deviceId)`，用于本地匹配“输入口令→定位设备”。
+  /// 口令明文不随公告传输，仅广播此哈希。
+  final String? pairingHash;
+
   DiscoveredPeer copyWith({bool? online, bool? trusted}) => DiscoveredPeer(
     deviceId: deviceId,
     displayName: displayName,
@@ -90,6 +95,7 @@ class DiscoveredPeer {
     online: online ?? this.online,
     locationChanged: locationChanged,
     avatarHash: avatarHash,
+    pairingHash: pairingHash,
   );
 }
 
@@ -99,15 +105,17 @@ class ChatRequest {
     required this.peerDeviceId,
     required this.displayName,
     required this.ip,
-    required this.verificationCode,
     required this.incoming,
+    this.viaPairingCode = false,
   });
   final String requestId;
   final String peerDeviceId;
   final String displayName;
   final String ip;
-  final String verificationCode;
   final bool incoming;
+
+  /// 该请求是否通过“口令”建立。为真表示对方用你的口令发起（口令本就是你给的）。
+  final bool viaPairingCode;
 }
 
 class ChatSummary {
