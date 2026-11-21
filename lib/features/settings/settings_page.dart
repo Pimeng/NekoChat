@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
 import '../../core/models/models.dart';
+import '../../core/notifications/notification_window_channel.dart';
 import '../common/smooth_dialog.dart';
 
 enum SettingsSection {
@@ -11,7 +12,7 @@ enum SettingsSection {
   appearance('外观', '字体大小、字体与字重', Icons.text_fields_outlined),
   privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
   files('文件接收', '自动接收与大小上限', Icons.download_outlined),
-  notifications('通知', 'Windows 系统通知与测试', Icons.notifications_outlined),
+  notifications('通知', '独立弹窗、系统通知与测试', Icons.notifications_outlined),
   storage('存储与关于', '数据文件夹与版本信息', Icons.folder_outlined);
 
   const SettingsSection(this.title, this.subtitle, this.icon);
@@ -163,34 +164,7 @@ class SettingsPage extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               const SettingsSectionTitle('通知'),
-              Card(
-                child: Column(
-                  children: [
-                    SwitchListTile(
-                      secondary: const Icon(Icons.notifications_outlined),
-                      title: const Text('开启 Windows 通知'),
-                      subtitle: const Text('在后台或查看其他会话时提醒新消息'),
-                      value: controller.windowsNotificationsEnabled,
-                      onChanged: controller.setWindowsNotificationsEnabled,
-                    ),
-                    const Divider(height: 1, indent: 56),
-                    ListTile(
-                      enabled: controller.windowsNotificationsEnabled,
-                      leading: const Icon(Icons.notification_add_outlined),
-                      title: const Text('发送测试通知'),
-                      subtitle: Text(
-                        controller.windowsNotificationsEnabled
-                            ? '验证 Windows 系统通知是否正常'
-                            : '开启通知后可用',
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: controller.windowsNotificationsEnabled
-                          ? controller.showTestNotification
-                          : null,
-                    ),
-                  ],
-                ),
-              ),
+              _NotificationSettingsCard(controller: controller),
               const SizedBox(height: 24),
               const SettingsSectionTitle('存储'),
               Card(
@@ -1101,34 +1075,7 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
         ),
       ],
       SettingsSection.notifications => [
-        Card(
-          child: Column(
-            children: [
-              SwitchListTile(
-                secondary: const Icon(Icons.notifications_outlined),
-                title: const Text('开启 Windows 通知'),
-                subtitle: const Text('在后台或查看其他会话时提醒新消息'),
-                value: controller.windowsNotificationsEnabled,
-                onChanged: controller.setWindowsNotificationsEnabled,
-              ),
-              const Divider(height: 1, indent: 56),
-              ListTile(
-                enabled: controller.windowsNotificationsEnabled,
-                leading: const Icon(Icons.notification_add_outlined),
-                title: const Text('发送测试通知'),
-                subtitle: Text(
-                  controller.windowsNotificationsEnabled
-                      ? '验证 Windows 系统通知是否正常'
-                      : '开启通知后可用',
-                ),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: controller.windowsNotificationsEnabled
-                    ? controller.showTestNotification
-                    : null,
-              ),
-            ],
-          ),
-        ),
+        _NotificationSettingsCard(controller: controller),
       ],
       SettingsSection.storage => [
         Card(
@@ -1157,5 +1104,127 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
         const SettingsVersionFooter(),
       ],
     };
+  }
+}
+
+class _NotificationSettingsCard extends StatelessWidget {
+  const _NotificationSettingsCard({required this.controller});
+
+  final AppController controller;
+
+  Widget _styledDropdown<T>({
+    required BuildContext context,
+    required T value,
+    required bool enabled,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T?> onChanged,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      decoration: BoxDecoration(
+        color: enabled
+            ? colorScheme.surfaceContainerLow
+            : colorScheme.surfaceContainerLowest,
+        border: Border.all(
+          color: enabled
+              ? colorScheme.outlineVariant
+              : colorScheme.outlineVariant.withValues(alpha: 0.45),
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          isDense: true,
+          borderRadius: BorderRadius.circular(8),
+          focusColor: Colors.transparent,
+          items: items,
+          onChanged: enabled ? onChanged : null,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = controller.windowsNotificationsEnabled;
+    final isStandalone =
+        controller.notificationMode == NotificationMode.standalone;
+    return Card(
+      child: Column(
+        children: [
+          SwitchListTile(
+            secondary: const Icon(Icons.notifications_outlined),
+            title: const Text('开启消息通知'),
+            subtitle: const Text('在后台或查看其他会话时提醒新消息'),
+            value: enabled,
+            onChanged: controller.setWindowsNotificationsEnabled,
+          ),
+          const Divider(height: 1, indent: 56),
+          ListTile(
+            enabled: enabled,
+            leading: const Icon(Icons.picture_in_picture_alt_outlined),
+            title: const Text('通知样式'),
+            subtitle: Text(controller.notificationMode.description),
+            trailing: _styledDropdown<NotificationMode>(
+              context: context,
+              value: controller.notificationMode,
+              enabled: enabled,
+              onChanged: (value) {
+                if (value != null) {
+                  controller.setNotificationMode(value);
+                }
+              },
+              items: [
+                for (final mode in NotificationMode.values)
+                  DropdownMenuItem(value: mode, child: Text(mode.label)),
+              ],
+            ),
+          ),
+          if (isStandalone) ...[
+            const Divider(height: 1, indent: 56),
+            ListTile(
+              enabled: enabled,
+              leading: const Icon(Icons.crop_free_outlined),
+              title: const Text('弹窗位置'),
+              subtitle: const Text('独立通知浮窗在屏幕上的停靠角落'),
+              trailing: _styledDropdown<NotificationAnchor>(
+                context: context,
+                value: controller.notificationAnchor,
+                enabled: enabled,
+                onChanged: (value) {
+                  if (value != null) {
+                    controller.setNotificationAnchor(value);
+                  }
+                },
+                items: [
+                  for (final anchor in NotificationAnchor.values)
+                    DropdownMenuItem(
+                      value: anchor,
+                      child: Text(anchor.label),
+                    ),
+                ],
+              ),
+            ),
+          ],
+          const Divider(height: 1, indent: 56),
+          ListTile(
+            enabled: enabled,
+            leading: const Icon(Icons.notification_add_outlined),
+            title: const Text('发送测试通知'),
+            subtitle: Text(
+              !enabled
+                  ? '开启通知后可用'
+                  : isStandalone
+                  ? '在屏幕${controller.notificationAnchor.label}弹出独立通知预览'
+                  : '验证 Windows 系统通知是否正常',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: enabled ? controller.showTestNotification : null,
+          ),
+        ],
+      ),
+    );
   }
 }

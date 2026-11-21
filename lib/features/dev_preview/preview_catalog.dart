@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import '../../app/app_controller.dart';
 import '../../app/neko_chat_app.dart';
 import '../../core/models/models.dart';
+import '../../core/notifications/notification_window_channel.dart';
+import '../../core/notifications/standalone_notification_controller.dart';
+import '../../core/notifications/windows_toast_card.dart';
 import '../chat/group_info_drawer.dart';
 import '../chat/main_shell.dart';
 import '../chat/mention_autocomplete.dart';
@@ -119,6 +122,137 @@ List<PreviewEntry> buildPreviewCatalog(
             child: RoleTag(role: GroupRole.member),
           ),
         ],
+      ),
+    ),
+    PreviewEntry(
+      id: 'windows-toast',
+      name: '独立 Windows 通知弹窗',
+      widgetType: 'WindowsNotificationSurface',
+      description: '默认停靠在屏幕右下角的仿 Windows 11 样式独立通知组件，支持浅色、深色、多条堆叠与实时弹窗测试。',
+      category: PreviewCategory.primitives,
+      builder: (_) => AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: () {
+                    controller.showTestNotification();
+                    onAction('已触发独立测试通知（${controller.notificationAnchor.label}）');
+                  },
+                  icon: const Icon(Icons.notifications_active_outlined, size: 18),
+                  label: Text('弹出测试通知（${controller.notificationAnchor.label}）'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    controller.showStackedTestNotifications();
+                    onAction('已触发多条堆叠测试通知');
+                  },
+                  icon: const Icon(Icons.layers_outlined, size: 18),
+                  label: const Text('弹出多条堆叠'),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    controller.clearPreviewNotifications();
+                    onAction('已关闭全部预览通知弹窗');
+                  },
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                  label: const Text('关闭弹窗'),
+                ),
+                const SizedBox(width: 8),
+                SegmentedButton<NotificationAnchor>(
+                  showSelectedIcon: false,
+                  segments: [
+                    for (final anchor in NotificationAnchor.values)
+                      ButtonSegment<NotificationAnchor>(
+                        value: anchor,
+                        label: Text(anchor.label),
+                      ),
+                  ],
+                  selected: {controller.notificationAnchor},
+                  onSelectionChanged: (selection) {
+                    controller.setNotificationAnchor(selection.first);
+                    onAction('已切换弹窗位置为：${selection.first.label}');
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            Wrap(
+              spacing: 24,
+              runSpacing: 20,
+              children: [
+                _LabeledSample(
+                  label: '浅色 · 单条通知',
+                  child: WindowsNotificationSurface(
+                    showShadow: true,
+                    items: [
+                      StandaloneNotificationItem(
+                        identifier: 'preview-light-1',
+                        title: '林晓猫',
+                        body: '刚把设计稿发到群里了，有空帮我看看右下角弹窗样式～',
+                        timestamp: DateTime(2026, 11, 22, 10, 30),
+                        onClick: () {},
+                      ),
+                    ],
+                    onItemTap: (id) => onAction('点击通知: $id'),
+                    onItemDismiss: (id) => onAction('关闭通知: $id'),
+                    onDismissAll: () => onAction('关闭全部通知'),
+                  ),
+                ),
+                _LabeledSample(
+                  label: '深色 · 单条通知',
+                  child: WindowsNotificationSurface(
+                    darkMode: true,
+                    showShadow: true,
+                    items: [
+                      StandaloneNotificationItem(
+                        identifier: 'preview-dark-1',
+                        title: '产品研发交流群',
+                        body: '阿橙：新版本构建已经通过，准备打包发布。',
+                        timestamp: DateTime(2026, 11, 22, 10, 31),
+                        onClick: () {},
+                      ),
+                    ],
+                    onItemTap: (id) => onAction('点击通知: $id'),
+                    onItemDismiss: (id) => onAction('关闭通知: $id'),
+                    onDismissAll: () => onAction('关闭全部通知'),
+                  ),
+                ),
+                _LabeledSample(
+                  label: '浅色 · 多条堆叠',
+                  child: WindowsNotificationSurface(
+                    showShadow: true,
+                    items: [
+                      StandaloneNotificationItem(
+                        identifier: 'preview-stack-1',
+                        title: '林晓猫',
+                        body: '收到，我马上去看！',
+                        timestamp: DateTime(2026, 11, 22, 10, 32),
+                        onClick: () {},
+                      ),
+                      StandaloneNotificationItem(
+                        identifier: 'preview-stack-2',
+                        title: 'NekoChat 群聊邀请',
+                        body: '阿橙 邀请你加入「周末桌游小队」',
+                        timestamp: DateTime(2026, 11, 22, 10, 31),
+                        onClick: () {},
+                      ),
+                    ],
+                    onItemTap: (id) => onAction('点击通知: $id'),
+                    onItemDismiss: (id) => onAction('关闭通知: $id'),
+                    onDismissAll: () => onAction('全部清除'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     ),
     PreviewEntry(

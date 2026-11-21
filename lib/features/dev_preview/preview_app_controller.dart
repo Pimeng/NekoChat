@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
 import '../../core/models/models.dart';
+import '../../core/notifications/notification_window_channel.dart';
+import '../../core/notifications/standalone_notification_service.dart';
 import '../chat/mention_autocomplete.dart';
 
 /// 组件预览模式共用的模拟数据工厂。
@@ -650,6 +654,41 @@ class PreviewAppController extends AppController {
   @override
   Future<void> setWindowsNotificationsEnabled(bool value) async {
     windowsNotificationsEnabled = value;
+    if (!value) {
+      unawaited(clearPreviewNotifications());
+    }
+    notifyListeners();
+  }
+
+  StandaloneNotificationService? _previewStandaloneNotifications;
+  int _previewNotificationSeq = 0;
+
+  bool get _canLaunchRealStandaloneWindow =>
+      WidgetsBinding.instance is WidgetsFlutterBinding;
+
+  StandaloneNotificationService _ensurePreviewNotifications() {
+    final existing = _previewStandaloneNotifications;
+    if (existing != null) {
+      existing.anchor = notificationAnchor;
+      return existing;
+    }
+    final service = StandaloneNotificationService(anchor: notificationAnchor);
+    _previewStandaloneNotifications = service;
+    return service;
+  }
+
+  @override
+  Future<void> setNotificationMode(NotificationMode value) async {
+    if (notificationMode == value) return;
+    notificationMode = value;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setNotificationAnchor(NotificationAnchor value) async {
+    if (notificationAnchor == value) return;
+    notificationAnchor = value;
+    _previewStandaloneNotifications?.anchor = value;
     notifyListeners();
   }
 
@@ -690,10 +729,66 @@ class PreviewAppController extends AppController {
 
   @override
   Future<void> showTestNotification() async {
+    if (!windowsNotificationsEnabled) {
+      showPreviewToast('请先开启消息通知', icon: Icons.notifications_off_outlined);
+      return;
+    }
+    if (notificationMode == NotificationMode.standalone &&
+        _canLaunchRealStandaloneWindow) {
+      final seq = ++_previewNotificationSeq;
+      final service = _ensurePreviewNotifications();
+      await service.show(
+        identifier: 'preview-toast:$seq',
+        title: '林晓猫',
+        body: '这是一条来自组件预览模式的独立 Windows 通知（#${seq}）。',
+        onClick: () {
+          showPreviewToast(
+            '已点击独立通知 #$seq',
+            icon: Icons.notifications_active_outlined,
+          );
+        },
+      );
+      return;
+    }
     showPreviewToast(
-      '预览模式：已模拟发送 Windows 测试通知',
+      '预览模式：已模拟发送${notificationMode.label}（${notificationAnchor.label}）',
       icon: Icons.notifications_active_outlined,
     );
+  }
+
+  /// 组件预览专用：连续弹出 2 条通知以演示堆叠样式。
+  Future<void> showStackedTestNotifications() async {
+    if (_canLaunchRealStandaloneWindow) {
+      final service = _ensurePreviewNotifications();
+      final seq1 = ++_previewNotificationSeq;
+      final seq2 = ++_previewNotificationSeq;
+      await service.show(
+        identifier: 'preview-toast:$seq1',
+        title: '机房联调群',
+        body: '林晓猫：@橘猫工程师 麻烦看一下右下角通知堆叠效果',
+        onClick: () {
+          showPreviewToast('已点击群聊通知 #$seq1');
+        },
+      );
+      await service.show(
+        identifier: 'preview-toast:$seq2',
+        title: '三花开发机',
+        body: '新的局域网聊天邀请已到达，点击可快速查看。',
+        onClick: () {
+          showPreviewToast('已点击私聊通知 #$seq2');
+        },
+      );
+      return;
+    }
+    showPreviewToast(
+      '预览模式：已模拟弹出 2 条堆叠通知',
+      icon: Icons.notifications_active_outlined,
+    );
+  }
+
+  /// 组件预览专用：关闭全部预览独立通知弹窗。
+  Future<void> clearPreviewNotifications() async {
+    await _previewStandaloneNotifications?.clearAll();
   }
 
   @override
@@ -998,5 +1093,15 @@ class PreviewAppController extends AppController {
   Future<void> removeProfileAvatar() async {
     profileAvatarPath = null;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    final service = _previewStandaloneNotifications;
+    _previewStandaloneNotifications = null;
+    if (service != null) {
+      unawaited(service.dispose());
+    }
+    super.dispose();
   }
 }

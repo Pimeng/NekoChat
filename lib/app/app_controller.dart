@@ -23,6 +23,8 @@ import '../core/identity/identity_service.dart';
 import '../core/models/models.dart';
 import '../core/networking/chat_transport.dart';
 import '../core/networking/discovery_service.dart';
+import '../core/notifications/notification_window_channel.dart';
+import '../core/notifications/standalone_notification_service.dart';
 import '../core/notifications/system_notification_service.dart';
 import '../core/protocol/protocol.dart';
 import '../features/chat/chat_state_machine.dart';
@@ -58,7 +60,7 @@ class AppController extends ChangeNotifier {
   }) : _keyProvider = keyProvider ?? EncryptedFileDatabaseKeyProvider(),
        _database = database ?? AppDatabase(),
        _transport = transport ?? WebSocketChatTransport(),
-       _notifications = notifications ?? DesktopSystemNotificationService(),
+       _notifications = notifications ?? AdaptiveDesktopNotificationService(),
        _bossKey = bossKey ?? WindowsBossKeyService(),
        _discoveryFactory = discoveryFactory ?? _defaultDiscoveryFactory;
 
@@ -67,6 +69,8 @@ class AppController extends ChangeNotifier {
   static const _autoReceiveFileLimitSetting = 'auto_receive_file_limit_bytes';
   static const _profileAvatarSetting = 'profile_avatar_path';
   static const _windowsNotificationsSetting = 'windows_notifications';
+  static const _notificationModeSetting = 'notification_mode';
+  static const _notificationAnchorSetting = 'notification_anchor';
   static const _lanDiscoverySetting = 'lan_discovery_enabled';
   static const _bossKeySetting = 'boss_key_enabled';
   static const _bossKeyShortcutSetting = 'boss_key_shortcut';
@@ -174,8 +178,16 @@ class AppController extends ChangeNotifier {
   /// 小于该大小的附件可自动下载；达到上限后由接收方手动确认。
   int autoReceiveFileLimitBytes = NetworkConfig.defaultAutoReceiveLimitBytes;
 
-  /// 是否允许应用发送 Windows 系统通知。
+  /// 是否允许应用发送通知。
   bool windowsNotificationsEnabled = true;
+
+  /// 通知展示方式：默认使用仿 Windows 样式的独立桌面浮窗。
+  NotificationMode notificationMode = NotificationMode.standalone;
+
+  /// 独立通知弹窗停靠位置，默认右下角。
+  NotificationAnchor notificationAnchor = NotificationAnchor.bottomRight;
+
+  int _testNotificationSeq = 0;
 
   /// 是否广播本机并监听局域网内其他 NekoChat 设备，默认开启。
   bool lanDiscoveryEnabled = true;
@@ -278,6 +290,16 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_windowsNotificationsSetting),
       fallback: true,
     );
+    notificationMode = NotificationMode.decode(
+      await _database.loadSetting(_notificationModeSetting),
+    );
+    notificationAnchor = NotificationAnchor.decode(
+      await _database.loadSetting(_notificationAnchorSetting),
+    );
+    if (_notifications case final AdaptiveDesktopNotificationService adaptive) {
+      adaptive.setAnchor(notificationAnchor);
+      await adaptive.setMode(notificationMode);
+    }
     lanDiscoveryEnabled = _settingBool(
       await _database.loadSetting(_lanDiscoverySetting),
       fallback: true,
@@ -550,6 +572,29 @@ class AppController extends ChangeNotifier {
     if (windowsNotificationsEnabled == value) return;
     await _database.saveSetting(_windowsNotificationsSetting, value.toString());
     windowsNotificationsEnabled = value;
+    if (!value) {
+      unawaited(_notifications.clearAll());
+    }
+    notifyListeners();
+  }
+
+  Future<void> setNotificationMode(NotificationMode value) async {
+    if (notificationMode == value) return;
+    await _database.saveSetting(_notificationModeSetting, value.wireName);
+    notificationMode = value;
+    if (_notifications case final AdaptiveDesktopNotificationService adaptive) {
+      await adaptive.setMode(value);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setNotificationAnchor(NotificationAnchor value) async {
+    if (notificationAnchor == value) return;
+    await _database.saveSetting(_notificationAnchorSetting, value.wireName);
+    notificationAnchor = value;
+    if (_notifications case final AdaptiveDesktopNotificationService adaptive) {
+      adaptive.setAnchor(value);
+    }
     notifyListeners();
   }
 
@@ -3674,12 +3719,17 @@ class AppController extends ChangeNotifier {
 
   Future<void> showTestNotification() async {
     if (!_systemNotificationsAllowed) {
-      _showTopRightMessage('请先开启 Windows 通知', icon: Icons.notifications_off);
+      _showTopRightMessage('请先开启通知提醒', icon: Icons.notifications_off);
       return;
     }
+    final seq = ++_testNotificationSeq;
     await _notifications.show(
-      identifier: 'neko-chat:test',
-      title: 'NekoChat 系统通知已启用',
+      identifier: notificationMode == NotificationMode.standalone
+          ? 'neko-chat:test:$seq'
+          : 'neko-chat:test',
+      title: notificationMode == NotificationMode.standalone
+          ? 'NekoChat 独立通知已启用'
+          : 'NekoChat 系统通知已启用',
       body: '新的聊天邀请和消息会通过这里提醒你。',
       onClick: () {},
     );

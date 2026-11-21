@@ -7,6 +7,7 @@
 #include "flutter/generated_plugin_registrant.h"
 #include <multiview_desktop/multi_view_desktop_plugin.h>
 #include "single_instance.h"
+#include "notification_window.h"
 #include "view_drop_target.h"
 
 namespace {
@@ -43,6 +44,7 @@ bool FlutterWindow::OnCreate() {
   // Independent conversation windows are not covered by the desktop_drop
   // plugin, so register our own per-view drop targets on demand.
   neko_chat::ViewDropTargetManager::Register(messenger_.get());
+  neko_chat::NotificationWindowManager::Register(messenger_.get());
 
   // Used by the runner to notify Dart about duplicate launches.
   single_instance_channel_ =

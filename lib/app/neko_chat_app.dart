@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'package:multiview_desktop/multiview_desktop.dart' hide TitleBarStyle;
 import 'package:window_manager/window_manager.dart';
 
+import '../core/notifications/standalone_notification_service.dart';
 import '../core/single_instance/single_instance_service.dart';
 import '../features/chat/main_shell.dart';
 import '../features/onboarding/auth_page.dart';
@@ -209,12 +210,18 @@ class _NekoChatAppState extends State<NekoChatApp> {
   }
 
   /// 老板键隐藏主窗口时同步隐藏所有独立会话窗口，避免内容残留在桌面。
+  /// 独立通知窗口由通知服务自身控制显隐，恢复时不强制弹出空窗口。
   Future<void> _setSecondaryWindowsHidden(bool hidden) async {
     await Future.wait(
-      MultiViewDesktop.allWindowViewIds.map((viewId) {
-        final window = MultiViewDesktop.fromId(viewId);
-        return hidden ? window.hide() : window.show();
-      }),
+      MultiViewDesktop.allWindowViewIds
+          .where(
+            (viewId) =>
+                !StandaloneNotificationService.isNotificationViewId(viewId),
+          )
+          .map((viewId) {
+            final window = MultiViewDesktop.fromId(viewId);
+            return hidden ? window.hide() : window.show();
+          }),
     );
   }
 
