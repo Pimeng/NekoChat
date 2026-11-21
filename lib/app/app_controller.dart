@@ -19,6 +19,7 @@ import '../core/database/app_database.dart';
 import '../core/files/attachment_path.dart';
 import '../core/files/content_hash.dart';
 import '../core/files/open_path.dart';
+import '../core/fonts/installed_fonts.dart';
 import '../core/identity/database_key_provider.dart';
 import '../core/identity/identity_service.dart';
 import '../core/models/models.dart';
@@ -34,18 +35,25 @@ enum AppStage { booting, setup, locked, ready, error }
 
 /// 外观设置里的一个可选字体。[family] 为 null 表示系统默认字体；
 /// [cjk]/[latin] 标记它适合用作中文/英文字体。
+/// [family] 使用字体在系统里的真实族名（含空格，如 `vivo Sans`），
+/// 应用不再打包字体，运行时直接引用该名，系统已安装则生效、否则回退默认。
 class AppFontOption {
   const AppFontOption({
     required this.family,
     required this.label,
     required this.cjk,
     required this.latin,
+    this.matchKeys = const [],
   });
 
   final String? family;
   final String label;
   final bool cjk;
   final bool latin;
+
+  /// 判断该字体是否已安装时，用来匹配系统字体文件名的小写关键字；命中其一即视为可用。
+  /// [family] 为 null（系统默认）时为空、始终可用。
+  final List<String> matchKeys;
 }
 
 class AppController extends ChangeNotifier {
@@ -92,25 +100,66 @@ class AppController extends ChangeNotifier {
     '特大': 1.3,
   };
 
-  /// 内置字体族名；选「系统默认」时存空串、运行时用 null。
-  static const bundledFontFamily = 'LXGWWenKai';
+  /// 品牌标题（侧栏 Logo 文案）使用的字体族名；未安装时自动回退系统默认。
+  static const brandFontFamily = 'LXGW WenKai';
 
   /// 未设置过字体时的默认统一/中文字体。
   static const defaultFontFamily = 'MiSans';
 
-  /// 可选字体注册表：预置新字体时在此加一行、并在 pubspec 登记资源即可。
-  /// [cjk]/[latin] 标记该字体适合中文/英文,决定它出现在哪个下拉里。
+  /// 分开设置英文字体时的默认英文字体。
+  static const defaultLatinFontFamily = 'Google Sans';
+
+  /// 旧版本保存过的字体设置用的是不带空格的别名，迁移到系统真实族名。
+  static const _legacyFontFamilyAliases = <String, String>{
+    'LXGWWenKai': 'LXGW WenKai',
+    'vivoSans': 'vivo Sans',
+    'GoogleSans': 'Google Sans',
+    'JetBrainsMono': 'JetBrains Mono',
+  };
+
+  /// 把可能来自旧版本的字体族名迁移成系统真实族名；未知值原样返回。
+  static String? migrateLegacyFontFamily(String? family) =>
+      family == null ? null : (_legacyFontFamilyAliases[family] ?? family);
+
+  /// 可选字体注册表：[family] 为系统真实族名，[matchKeys] 用于按字体文件名判断是否已安装。
+  /// 新增字体只需在此加一行（无需再在 pubspec 登记资源）。
+  /// [cjk]/[latin] 标记该字体适合中文/英文，决定它出现在哪个下拉里。
   static const fontOptions = <AppFontOption>[
     AppFontOption(family: null, label: '系统默认', cjk: true, latin: true),
-    AppFontOption(family: bundledFontFamily, label: '霞鹜文楷', cjk: true, latin: true),
-    AppFontOption(family: 'MiSans', label: 'MiSans 小米', cjk: true, latin: true),
-    AppFontOption(family: 'vivoSans', label: 'vivo Sans', cjk: true, latin: true),
-    AppFontOption(family: 'GoogleSans', label: 'Google Sans', cjk: false, latin: true),
     AppFontOption(
-      family: 'JetBrainsMono',
+      family: brandFontFamily,
+      label: '霞鹜文楷',
+      cjk: true,
+      latin: true,
+      matchKeys: ['lxgwwenkai-'],
+    ),
+    AppFontOption(
+      family: 'MiSans',
+      label: 'MiSans 小米',
+      cjk: true,
+      latin: true,
+      matchKeys: ['misans-'],
+    ),
+    AppFontOption(
+      family: 'vivo Sans',
+      label: 'vivo Sans',
+      cjk: true,
+      latin: true,
+      matchKeys: ['vivosans-'],
+    ),
+    AppFontOption(
+      family: 'Google Sans',
+      label: 'Google Sans',
+      cjk: false,
+      latin: true,
+      matchKeys: ['googlesans-'],
+    ),
+    AppFontOption(
+      family: 'JetBrains Mono',
       label: 'JetBrains Mono',
       cjk: false,
       latin: true,
+      matchKeys: ['jetbrainsmono-'],
     ),
   ];
   final LocalDatabaseKeyProvider _keyProvider;
@@ -218,7 +267,11 @@ class AppController extends ChangeNotifier {
   bool separateFonts = false;
 
   /// 分开设置时的英文字体；null 表示系统默认。
-  String? latinFontFamily = 'GoogleSans';
+  String? latinFontFamily = defaultLatinFontFamily;
+
+  /// 已安装、可供选用的内置字体族名集合（不含“系统默认”）。
+  /// 空集合表示未检测到安装信息（非 Windows 或扫描失败），此时设置页展示全部内置选项。
+  Set<String> availableFontFamilies = {};
 
   /// 是否整体加粗（主题各字号字重上调一档）。
   bool boldText = false;
@@ -344,7 +397,9 @@ class AppController extends ChangeNotifier {
     final storedFontFamily = await _database.loadSetting(_fontFamilySetting);
     appFontFamily = storedFontFamily == null
         ? defaultFontFamily
-        : (storedFontFamily.isEmpty ? null : storedFontFamily);
+        : (storedFontFamily.isEmpty
+              ? null
+              : migrateLegacyFontFamily(storedFontFamily));
     separateFonts = _settingBool(
       await _database.loadSetting(_fontSeparateSetting),
       fallback: false,
@@ -353,8 +408,11 @@ class AppController extends ChangeNotifier {
       _fontFamilyLatinSetting,
     );
     latinFontFamily = storedLatinFamily == null
-        ? 'GoogleSans'
-        : (storedLatinFamily.isEmpty ? null : storedLatinFamily);
+        ? defaultLatinFontFamily
+        : (storedLatinFamily.isEmpty
+              ? null
+              : migrateLegacyFontFamily(storedLatinFamily));
+    _refreshAvailableFonts();
     boldText = _settingBool(
       await _database.loadSetting(_boldTextSetting),
       fallback: false,
@@ -747,16 +805,63 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 扫描系统已安装字体，刷新 [availableFontFamilies]。失败时置空（视为未检测）。
+  void _refreshAvailableFonts() {
+    try {
+      final files = InstalledFonts.scanFileNames();
+      if (files.isEmpty) {
+        availableFontFamilies = {};
+        return;
+      }
+      availableFontFamilies = {
+        for (final option in fontOptions)
+          if (option.family != null &&
+              InstalledFonts.isInstalled(files, option.matchKeys))
+            option.family!,
+      };
+    } catch (_) {
+      availableFontFamilies = {};
+    }
+  }
+
+  /// 设置页可展示的字体选项：检测到安装信息时仅保留已安装字体（“系统默认”恒在），
+  /// 未检测到安装信息（空集合）时展示全部，避免误伤。
+  List<AppFontOption> availableFontOptions({required bool wantCjk}) {
+    final base = fontOptions.where((o) => wantCjk ? o.cjk : o.latin);
+    if (availableFontFamilies.isEmpty) return base.toList();
+    return base
+        .where(
+          (o) => o.family == null || availableFontFamilies.contains(o.family),
+        )
+        .toList();
+  }
+
+  /// 把设置里选的字体收敛为“实际可用”的字体：已检测且该字体未安装时回退系统默认（null）。
+  /// 未检测（空集合）时原样返回，交给引擎自行回退。
+  String? _effectiveFontFamily(String? family) {
+    if (family == null) return null;
+    if (availableFontFamilies.isEmpty) return family;
+    return availableFontFamilies.contains(family) ? family : null;
+  }
+
   /// 解析出主题要用的主字体与回退字体。分开模式下英文字体作主、
   /// 中文字体作回退（拉丁字形走英文字体，中文字形回退到中文字体）。
+  /// 选中的字体若未安装会回退系统默认。
   ({String? family, List<String>? fallback}) resolveFontStack() {
-    if (!separateFonts) return (family: appFontFamily, fallback: null);
-    final cjk = appFontFamily;
+    final primaryCjk = _effectiveFontFamily(appFontFamily);
+    if (!separateFonts) return (family: primaryCjk, fallback: null);
+    final latin = _effectiveFontFamily(latinFontFamily);
     return (
-      family: latinFontFamily,
-      fallback: cjk == null ? null : <String>[cjk],
+      family: latin,
+      fallback: primaryCjk == null ? null : <String>[primaryCjk],
     );
   }
+
+  /// 设置页中文/统一字体下拉应显示的选中值；选中字体被过滤掉时显示“系统默认”。
+  String? get selectedCjkFontFamily => _effectiveFontFamily(appFontFamily);
+
+  /// 设置页英文字体下拉应显示的选中值；同上。
+  String? get selectedLatinFontFamily => _effectiveFontFamily(latinFontFamily);
 
   /// 设置整体加粗开关。
   Future<void> setBoldText(bool value) async {

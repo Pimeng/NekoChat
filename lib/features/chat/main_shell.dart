@@ -5172,7 +5172,7 @@ class _ContextMenuItemTileState extends State<_ContextMenuItemTile> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontFamily: 'LXGWWenKai',
+                      fontFamily: AppController.brandFontFamily,
                       fontSize: 13,
                       fontWeight: FontWeight.w400,
                       color: Colors.white.withValues(alpha: 0.94),

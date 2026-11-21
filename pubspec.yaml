@@ -81,22 +81,8 @@ flutter:
   assets:
     - assets/app.png
 
-  fonts:
-    - family: LXGWWenKai
-      fonts:
-        - asset: assets/font/LXGWWenKai.ttf
-    - family: MiSans
-      fonts:
-        - asset: assets/font/MiSans-Regular.ttf
-    - family: vivoSans
-      fonts:
-        - asset: assets/font/vivoSans-Regular.ttf
-    - family: GoogleSans
-      fonts:
-        - asset: assets/font/GoogleSans-Regular.ttf
-    - family: JetBrainsMono
-      fonts:
-        - asset: assets/font/JetBrainsMono-Regular.ttf
+  # 字体不再随应用打包：应用改为运行时引用系统已安装字体（见 lib/core/fonts/
+  # installed_fonts.dart 与外观设置），安装了对应字体即生效，否则回退系统默认。
 
   # To add assets to your application, add an assets section, like this:
   # assets:

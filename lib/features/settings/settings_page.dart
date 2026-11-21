@@ -471,30 +471,24 @@ class AppearanceSettingsCards extends StatelessWidget {
                 if (!controller.separateFonts)
                   _fontDropdown(
                     context,
-                    value: controller.appFontFamily,
-                    options: AppController.fontOptions.where(
-                      (option) => option.cjk,
-                    ),
+                    value: controller.selectedCjkFontFamily,
+                    options: controller.availableFontOptions(wantCjk: true),
                     onChanged: controller.setAppFontFamily,
                   )
                 else ...[
                   _fontDropdown(
                     context,
                     label: '中文字体',
-                    value: controller.appFontFamily,
-                    options: AppController.fontOptions.where(
-                      (option) => option.cjk,
-                    ),
+                    value: controller.selectedCjkFontFamily,
+                    options: controller.availableFontOptions(wantCjk: true),
                     onChanged: controller.setAppFontFamily,
                   ),
                   const SizedBox(height: 12),
                   _fontDropdown(
                     context,
                     label: '英文字体',
-                    value: controller.latinFontFamily,
-                    options: AppController.fontOptions.where(
-                      (option) => option.latin,
-                    ),
+                    value: controller.selectedLatinFontFamily,
+                    options: controller.availableFontOptions(wantCjk: false),
                     onChanged: controller.setLatinFontFamily,
                   ),
                 ],

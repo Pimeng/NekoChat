@@ -61,6 +61,7 @@ lib/
 │  │  ├─ attachment_path.dart      # 附件相对/绝对路径解析
 │  │  ├─ content_hash.dart         # SHA-256 内容哈希
 │  │  └─ open_path.dart            # 打开文件/所在目录
+│  ├─ fonts/installed_fonts.dart   # 运行时检测系统已安装字体（不打包字体）
 │  ├─ identity/
 │  │  ├─ database_key_provider.dart  # 口令派生 KEK、封装数据库密钥
 │  │  └─ identity_service.dart       # 身份创建与解锁
@@ -197,4 +198,4 @@ flutter run -d windows --dart-define=COMPONENT_PREVIEW=true
 
 这意味着你可以自由使用、修改和分发本软件，但任何基于本项目的衍生作品在分发时也必须以 GPLv3 开源，并附带对应的源代码。
 
-> 注意：`assets/font/` 下内置的第三方字体（LXGWWenKai、MiSans、vivoSans、Google Sans、JetBrains Mono 等）各自适用其原始授权，不在本项目 GPLv3 的覆盖范围内。其中部分字体为厂商专有授权，若要重新分发请先确认其许可是否允许，必要时自行替换为可自由分发的字体。
+> 字体说明：应用**不打包**任何第三方字体，仓库也不包含字体文件。外观设置里的霞鹜文楷、MiSans、vivo Sans、Google Sans、JetBrains Mono 等仅在**本机已安装**该字体时才可选用并生效（运行时按系统 Fonts 目录检测，未安装则自动回退系统默认）。因此这些字体各自的授权与本项目 GPLv3 无关，发行版里也不会夹带它们。

@@ -8,13 +8,13 @@ void main() {
 
   test('可指定字体与中文回退字体', () {
     final theme = buildNekoChatTheme(
-      fontFamily: 'GoogleSans',
-      fontFamilyFallback: const ['LXGWWenKai'],
+      fontFamily: 'Google Sans',
+      fontFamilyFallback: const ['LXGW WenKai'],
     );
-    expect(theme.textTheme.bodyMedium?.fontFamily, 'GoogleSans');
+    expect(theme.textTheme.bodyMedium?.fontFamily, 'Google Sans');
     expect(
       theme.textTheme.bodyMedium?.fontFamilyFallback,
-      const ['LXGWWenKai'],
+      const ['LXGW WenKai'],
     );
   });
 }
