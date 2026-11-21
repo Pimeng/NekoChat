@@ -1,12 +1,12 @@
 # NekoChat 设计与实现说明
 
-本文面向开发者，记录 NekoChat 的架构、网络协议、数据库结构与数据存储细节。面向使用者的介绍见仓库根目录的 [README](../README.md)。
+本文面向开发者，记录 NekoChat 的架构、网络协议、数据库结构与数据存储细节。
 
 ## 架构概览
 
 UI 仅调用 `AppController`，Socket 与数据库不会从 Widget 直接访问。侧栏把在线设备和历史私聊合并为“会话与设备”，同一个 `deviceId` 只显示一次。“关闭对话”仅关闭聊天面板，不会结束 session 或撤销信任。
 
-SQLite 由 `DatabaseBackend` 接口打开。当前使用 `PlainSqliteBackend`，随机数据库密钥用于本地密码校验和未来加密后端的稳定接口；数据库文件本身尚未由 SQLCipher 加密。后续接入 SQLCipher 时只需替换 Backend，不需要改动 Repository、Service 或 UI。**不要把这一阶段误认为“SQLite 文件已加密”。**
+SQLite 由 `DatabaseBackend` 接口打开。当前使用 `PlainSqliteBackend`，随机数据库密钥用于本地密码校验和未来加密后端的稳定接口；数据库文件本身尚未由 SQLCipher 加密。后续接入 SQLCipher 时只需替换 Backend，不需要改动 Repository、Service 或 UI。
 
 ## 目录结构
 
