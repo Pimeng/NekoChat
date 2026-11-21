@@ -49,23 +49,43 @@ SQLite 由 `DatabaseBackend` 接口打开。当前 MVP 使用 `PlainSqliteBacken
 ```text
 lib/
 ├─ app/
-│  ├─ app_controller.dart
-│  └─ neko_chat_app.dart
+│  ├─ app_controller.dart          # 应用级状态与业务编排（UI 唯一入口）
+│  └─ neko_chat_app.dart           # 根 Widget、主题、窗口生命周期
 ├─ core/
-│  ├─ config/network_config.dart
-│  ├─ database/app_database.dart
+│  ├─ boss_key/boss_key_service.dart          # 老板键隐藏/恢复
+│  ├─ config/
+│  │  ├─ app_paths.dart            # 数据目录解析与回退
+│  │  └─ network_config.dart       # 端口、超时等网络常量
+│  ├─ database/app_database.dart   # SQLite 打开与 Backend 抽象
+│  ├─ files/
+│  │  ├─ attachment_path.dart      # 附件相对/绝对路径解析
+│  │  ├─ content_hash.dart         # SHA-256 内容哈希
+│  │  └─ open_path.dart            # 打开文件/所在目录
 │  ├─ identity/
-│  ├─ models/models.dart
+│  │  ├─ database_key_provider.dart  # 口令派生 KEK、封装数据库密钥
+│  │  └─ identity_service.dart       # 身份创建与解锁
+│  ├─ models/models.dart           # 领域模型
 │  ├─ networking/
-│  │  ├─ discovery_service.dart
-│  │  └─ chat_transport.dart
-│  └─ protocol/protocol.dart
+│  │  ├─ discovery_service.dart    # UDP 组播/广播在线探测
+│  │  └─ chat_transport.dart       # WebSocket 聊天 + HTTP 文件流
+│  ├─ notifications/               # 独立窗口通知与系统通知
+│  ├─ protocol/protocol.dart       # 统一信封编解码、口令配对证明
+│  └─ single_instance/single_instance_service.dart  # 单实例/多实例控制
 ├─ features/
-│  ├─ chat/
-│  │  ├─ chat_state_machine.dart
-│  │  └─ main_shell.dart
-│  └─ onboarding/auth_page.dart
-└─ main.dart
+│  ├─ chat/                        # 会话外壳、群信息、@提及、消息编辑器、拖放
+│  │  ├─ chat_state_machine.dart   # 邀请/会话状态机
+│  │  └─ main_shell.dart           # 侧栏 + 聊天主界面
+│  ├─ common/smooth_dialog.dart    # 通用对话框动画
+│  ├─ dev_preview/                 # 组件预览开发模式
+│  ├─ onboarding/auth_page.dart    # 首次创建身份 / 解锁
+│  └─ settings/settings_page.dart  # 设置页（在线探测、口令、接收上限等）
+├─ main.dart                       # 正式入口
+└─ main_preview.dart               # 组件预览入口
+
+windows/runner/                    # Windows 原生 runner（C++）
+├─ notification_window.*           # 独立通知弹窗
+├─ single_instance.*               # 单实例互斥
+└─ view_drop_target.*              # 每个视图单独的 OLE 拖放目标
 ```
 
 UI 仅调用 `AppController`；Socket 与数据库不会从 Widget 直接访问。侧栏把在线设备和历史私聊合并为“会话与设备”，同一个 deviceId 只显示一次。“关闭对话”仅关闭聊天面板，不会结束 session 或撤销信任。
@@ -170,3 +190,11 @@ flutter run -d windows --dart-define=COMPONENT_PREVIEW=true
 ## 明确边界
 
 当前版本是纯实时 LAN Chat：对方离线时消息标记失败，不做离线队列。附件也只在发送方在线且邀请有效时可接收，不提供断点续传。未实现公网服务器、账号系统、TLS、E2EE、云同步、NAT 穿透、语音和视频。
+
+## 开源协议
+
+本项目采用 **GNU General Public License v3.0**（GPLv3）发布，完整条款见 [LICENSE](LICENSE)。
+
+这意味着你可以自由使用、修改和分发本软件，但任何基于本项目的衍生作品在分发时也必须以 GPLv3 开源，并附带对应的源代码。
+
+> 注意：`assets/font/` 下内置的第三方字体（LXGWWenKai、MiSans、vivoSans、Google Sans、JetBrains Mono 等）各自适用其原始授权，不在本项目 GPLv3 的覆盖范围内。其中部分字体为厂商专有授权，若要重新分发请先确认其许可是否允许，必要时自行替换为可自由分发的字体。
