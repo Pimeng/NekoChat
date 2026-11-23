@@ -56,7 +56,7 @@ void main() {
     expect(find.text('王五'), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tester.pump();
+    await tester.pumpAndSettle();
 
     expect(controller.text, '@王五 ');
     expect(sendCount, 0);
