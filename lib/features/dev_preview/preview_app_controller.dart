@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
@@ -760,7 +760,7 @@ class PreviewAppController extends AppController {
       await service.show(
         identifier: 'preview-toast:$seq',
         title: '林晓猫',
-        body: '这是一条来自组件预览模式的独立 Windows 通知（#${seq}）。',
+        body: '这是一条来自组件预览模式的独立 Windows 通知（#$seq）。',
         onClick: () {
           showPreviewToast(
             '已点击独立通知 #$seq',

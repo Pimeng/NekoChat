@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 统一的居中对话框弹出辅助函数：
 /// 替代默认生硬的线性淡入淡出，提供柔和的微缩放 + 轻上浮淡入，以及即刻响应的平滑退场。

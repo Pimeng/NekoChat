@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:logging/logging.dart';
 import 'package:multiview_desktop/multiview_desktop.dart' as mvd;
 import 'package:window_manager/window_manager.dart';

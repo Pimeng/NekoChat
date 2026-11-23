@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:neko_chat/features/dev_preview/component_preview_app.dart';
 import 'package:neko_chat/features/dev_preview/preview_app_controller.dart';

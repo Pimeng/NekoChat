@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../app/neko_chat_app.dart';
 import 'preview_app_controller.dart';

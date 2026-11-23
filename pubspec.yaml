@@ -31,6 +31,10 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # Material 组件库自 Flutter 3.47 起从 SDK 拆分为独立包，
+  # package:flutter/material.dart 已弃用，改用 material_ui。
+  material_ui: ^1.11.1
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^2.0.0

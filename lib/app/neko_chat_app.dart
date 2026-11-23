@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:logging/logging.dart';
 import 'package:multiview_desktop/multiview_desktop.dart' hide TitleBarStyle;
 import 'package:window_manager/window_manager.dart';
