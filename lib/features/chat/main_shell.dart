@@ -4115,98 +4115,135 @@ class _ConversationPaneState extends State<_ConversationPane> {
                   ),
                 )
               : RepaintBoundary(
-                  child: ListView.builder(
-                  key: PageStorageKey(widget.conversationId),
-                  controller: _scroll,
-                  reverse: true,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  itemCount: messages.length,
-                  itemBuilder: (context, reverseIndex) {
-                    final message =
-                        messages[messages.length - 1 - reverseIndex];
-                    final mine = message.senderDeviceId == widget.localDeviceId;
-                    final mentioned = message.mentionsDevice(
-                      widget.localDeviceId,
-                    );
-                    if (message.isRecalled) {
-                      return RecallNotice(
-                        key: _keyFor(message.messageId),
-                        text:
-                            widget.recallNoticeFor?.call(message) ?? '一条消息已撤回',
-                        highlighted: _highlightedMessageId == message.messageId,
+                  child: Builder(
+                    builder: (context) {
+                      final timeHeaderIndices = computeMessageTimeHeaderIndices(
+                        messages,
                       );
-                    }
-                    final bubble = MessageBubble(
-                      key: _keyFor(message.messageId),
-                      message: message,
-                      mine: mine,
-                      senderName: widget.peerName(message.senderDeviceId),
-                      headerName:
-                          widget.senderHeaderFor?.call(message.senderDeviceId) ??
-                          widget.peerName(message.senderDeviceId),
-                      senderRole: widget.isGroup
-                          ? widget.senderRoleFor?.call(message.senderDeviceId)
-                          : null,
-                      avatarPath: widget.avatarPathFor?.call(
-                        message.senderDeviceId,
-                      ),
-                      showHeader: widget.isGroup || !mine,
-                      mentioned: mentioned,
-                      highlighted: _highlightedMessageId == message.messageId,
-                      replySenderName: message.replyToSenderId == null
-                          ? null
-                          : widget.peerName(message.replyToSenderId!),
-                      resolveMessage: (id) => messagesById[id],
-                      onJumpToReply: (id) => unawaited(_jumpToMessage(id)),
-                      missingHint: widget.missingHintFor(message),
-                      onOpen: widget.onOpenAttachment,
-                      onOpenFolder: widget.onOpenAttachmentFolder,
-                      onAccept: widget.onAcceptFile,
-                      onReject: widget.onRejectFile,
-                      onRetry: widget.onRetryFile,
-                      onRelocate: widget.onRelocateFile,
-                      onReply: widget.onReplyMessage == null
-                          ? null
-                          : () => _handleReply(message),
-                      onCopy: widget.onCopyMessage == null
-                          ? null
-                          : () => widget.onCopyMessage!(message),
-                      onMention: message.senderDeviceId == widget.localDeviceId
-                          ? null
-                          : widget.onMention == null
-                          ? null
-                          : () => widget.onMention!(
-                              widget.peerName(message.senderDeviceId),
-                            ),
-                      onRecall:
-                          widget.canRecallMessage?.call(message) == true &&
-                              widget.onRecallMessage != null
-                          ? () => widget.onRecallMessage!(message)
-                          : null,
-                      onAddToStickers:
-                          message.kind == MessageKind.image &&
-                              widget.onAddMessageToStickers != null
-                          ? () => widget.onAddMessageToStickers!(message)
-                          : null,
-                      onShowFallbackMenu: _showFallbackMenu,
-                      onSelectionChanged: (text) =>
-                          _selectedTexts[message.messageId] = text,
-                      selectedText: () => _selectedTexts[message.messageId],
-                    );
-                    if (_enteringMessageIds.contains(message.messageId)) {
-                      return _AnimatedMessageEntrance(
-                        key: ValueKey('enter-${message.messageId}'),
-                        mine: mine,
-                        onCompleted: () =>
-                            _enteringMessageIds.remove(message.messageId),
-                        child: bubble,
+                      return ListView.builder(
+                        key: PageStorageKey(widget.conversationId),
+                        controller: _scroll,
+                        reverse: true,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        itemCount: messages.length,
+                        itemBuilder: (context, reverseIndex) {
+                          final messageIndex =
+                              messages.length - 1 - reverseIndex;
+                          final message = messages[messageIndex];
+                          final showTimeDivider = timeHeaderIndices.contains(
+                            messageIndex,
+                          );
+                          final mine =
+                              message.senderDeviceId == widget.localDeviceId;
+                          final mentioned = message.mentionsDevice(
+                            widget.localDeviceId,
+                          );
+                          final Widget itemWidget;
+                          if (message.isRecalled) {
+                            itemWidget = RecallNotice(
+                              key: _keyFor(message.messageId),
+                              text:
+                                  widget.recallNoticeFor?.call(message) ??
+                                  '一条消息已撤回',
+                              highlighted:
+                                  _highlightedMessageId == message.messageId,
+                            );
+                          } else {
+                            final bubble = MessageBubble(
+                              key: _keyFor(message.messageId),
+                              message: message,
+                              mine: mine,
+                              senderName: widget.peerName(
+                                message.senderDeviceId,
+                              ),
+                              headerName:
+                                  widget.senderHeaderFor?.call(
+                                    message.senderDeviceId,
+                                  ) ??
+                                  widget.peerName(message.senderDeviceId),
+                              senderRole: widget.isGroup
+                                  ? widget.senderRoleFor?.call(
+                                      message.senderDeviceId,
+                                    )
+                                  : null,
+                              avatarPath: widget.avatarPathFor?.call(
+                                message.senderDeviceId,
+                              ),
+                              showHeader: widget.isGroup || !mine,
+                              mentioned: mentioned,
+                              highlighted:
+                                  _highlightedMessageId == message.messageId,
+                              replySenderName: message.replyToSenderId == null
+                                  ? null
+                                  : widget.peerName(message.replyToSenderId!),
+                              resolveMessage: (id) => messagesById[id],
+                              onJumpToReply: (id) =>
+                                  unawaited(_jumpToMessage(id)),
+                              missingHint: widget.missingHintFor(message),
+                              onOpen: widget.onOpenAttachment,
+                              onOpenFolder: widget.onOpenAttachmentFolder,
+                              onAccept: widget.onAcceptFile,
+                              onReject: widget.onRejectFile,
+                              onRetry: widget.onRetryFile,
+                              onRelocate: widget.onRelocateFile,
+                              onReply: widget.onReplyMessage == null
+                                  ? null
+                                  : () => _handleReply(message),
+                              onCopy: widget.onCopyMessage == null
+                                  ? null
+                                  : () => widget.onCopyMessage!(message),
+                              onMention:
+                                  message.senderDeviceId == widget.localDeviceId
+                                  ? null
+                                  : widget.onMention == null
+                                  ? null
+                                  : () => widget.onMention!(
+                                      widget.peerName(message.senderDeviceId),
+                                    ),
+                              onRecall:
+                                  widget.canRecallMessage?.call(message) ==
+                                          true &&
+                                      widget.onRecallMessage != null
+                                  ? () => widget.onRecallMessage!(message)
+                                  : null,
+                              onAddToStickers:
+                                  message.kind == MessageKind.image &&
+                                      widget.onAddMessageToStickers != null
+                                  ? () => widget.onAddMessageToStickers!(
+                                      message,
+                                    )
+                                  : null,
+                              onShowFallbackMenu: _showFallbackMenu,
+                              onSelectionChanged: (text) =>
+                                  _selectedTexts[message.messageId] = text,
+                              selectedText: () =>
+                                  _selectedTexts[message.messageId],
+                            );
+                            itemWidget =
+                                _enteringMessageIds.contains(message.messageId)
+                                ? _AnimatedMessageEntrance(
+                                    key: ValueKey('enter-${message.messageId}'),
+                                    mine: mine,
+                                    onCompleted: () => _enteringMessageIds
+                                        .remove(message.messageId),
+                                    child: bubble,
+                                  )
+                                : bubble;
+                          }
+                          if (!showTimeDivider) return itemWidget;
+                          return Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              MessageTimeDivider(timestamp: message.timestamp),
+                              itemWidget,
+                            ],
+                          );
+                        },
                       );
-                    }
-                    return bubble;
-                  },
+                    },
                   ),
                 ),
         ),
@@ -4706,7 +4743,11 @@ class MessageBubble extends StatelessWidget {
     this.onShowFallbackMenu,
     this.onSelectionChanged,
     this.selectedText,
+    this.hoverTimeDelay = const Duration(seconds: 2),
   });
+
+  /// 悬停在消息上多久后在头衔旁显示精确发送时间。
+  final Duration hoverTimeDelay;
 
   /// 气泡内文本选区变化时回调，便于右键菜单「复制」只复制选中的片段。
   final ValueChanged<String?>? onSelectionChanged;
@@ -4776,70 +4817,93 @@ class MessageBubble extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => Listener(
-    behavior: HitTestBehavior.translucent,
-    onPointerDown: (event) {
-      if ((event.buttons & kSecondaryMouseButton) != 0) {
-        _showOwnMenu(context, event.position);
-      }
-    },
-    child: GestureDetector(
+  Widget build(BuildContext context) => _HoverDelayTrigger(
+    delay: hoverTimeDelay,
+    builder: (context, showExactTime) => Listener(
       behavior: HitTestBehavior.translucent,
-      onSecondaryTapDown: (details) =>
-          _showOwnMenu(context, details.globalPosition),
-      child: _buildRow(context),
+      onPointerDown: (event) {
+        if ((event.buttons & kSecondaryMouseButton) != 0) {
+          _showOwnMenu(context, event.position);
+        }
+      },
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onSecondaryTapDown: (details) =>
+            _showOwnMenu(context, details.globalPosition),
+        child: _buildRow(context, showExactTime: showExactTime),
+      ),
     ),
   );
 
-  Widget _buildRow(BuildContext context) => AnimatedContainer(
-    // 整行高亮：从引用跳转过来时给这一行铺底色，比只描气泡边框更容易定位。
-    duration: const Duration(milliseconds: 220),
-    width: double.infinity,
-    margin: const EdgeInsets.only(bottom: 10),
-    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-    decoration: BoxDecoration(
-      color: highlighted
-          ? Theme.of(context).colorScheme.primary.withValues(alpha: .12)
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(12),
-    ),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisAlignment: mine
-          ? MainAxisAlignment.end
-          : MainAxisAlignment.start,
-      children: [
-        if (!mine) ...[
-          _headerAvatar(context),
-          const SizedBox(width: 8),
-        ],
-        Flexible(
-          child: Column(
-            crossAxisAlignment: mine
-                ? CrossAxisAlignment.end
-                : CrossAxisAlignment.start,
-            children: [
-              if (showHeader) _header(context),
-              _hasSelectableContent
-                  // 文字气泡保留拖选文本的能力；框架自带的选择工具栏不再弹出，
-                  // 右键统一由整行的监听弹出同一套自绘菜单。
-                  ? SelectionArea(
-                      contextMenuBuilder: (_, _) => const SizedBox.shrink(),
-                      onSelectionChanged: (content) =>
-                          onSelectionChanged?.call(content?.plainText),
-                      child: _buildBubble(context),
-                    )
-                  : _buildBubble(context),
-            ],
-          ),
+  Widget _buildRow(BuildContext context, {required bool showExactTime}) =>
+      AnimatedContainer(
+        // 整行高亮：从引用跳转过来时给这一行铺底色，比只描气泡边框更容易定位。
+        duration: const Duration(milliseconds: 220),
+        width: double.infinity,
+        margin: EdgeInsets.only(top: showHeader ? 0 : 6, bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        decoration: BoxDecoration(
+          color: highlighted
+              ? Theme.of(context).colorScheme.primary.withValues(alpha: .12)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
         ),
-        if (mine) ...[
-          const SizedBox(width: 8),
-          _headerAvatar(context),
-        ],
-      ],
-    ),
-  );
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: mine
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            if (!mine) ...[
+              _headerAvatar(context),
+              const SizedBox(width: 8),
+            ],
+            Flexible(
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Column(
+                    crossAxisAlignment: mine
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    children: [
+                      if (showHeader)
+                        _header(context, showExactTime: showExactTime),
+                      _hasSelectableContent
+                          // 文字气泡保留拖选文本的能力；框架自带的选择工具栏不再弹出，
+                          // 右键统一由整行的监听弹出同一套自绘菜单。
+                          ? SelectionArea(
+                              contextMenuBuilder: (_, _) =>
+                                  const SizedBox.shrink(),
+                              onSelectionChanged: (content) =>
+                                  onSelectionChanged?.call(content?.plainText),
+                              child: _buildBubble(context),
+                            )
+                          : _buildBubble(context),
+                    ],
+                  ),
+                  if (!showHeader)
+                    Positioned(
+                      top: -17,
+                      right: mine ? 2 : null,
+                      left: mine ? null : 2,
+                      child: IgnorePointer(
+                        child: _hoverExactTimeBadge(
+                          context,
+                          showExactTime: showExactTime,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (mine) ...[
+              const SizedBox(width: 8),
+              _headerAvatar(context),
+            ],
+          ],
+        ),
+      );
 
   /// 头像列。使用 [avatarPath] 渲染同步到的头像，缺失时回退到昵称首字母。
   Widget _headerAvatar(BuildContext context) => NamedAvatar(
@@ -4848,12 +4912,48 @@ class MessageBubble extends StatelessWidget {
     radius: 16,
   );
 
-  /// 气泡上方的昵称与角色标签。
-  Widget _header(BuildContext context) => Padding(
+  /// 悬停约 2 秒后在头衔左侧（自己）或右侧（对方）淡入显示的精确发送时间。
+  Widget _hoverExactTimeBadge(
+    BuildContext context, {
+    required bool showExactTime,
+    bool leadingGap = false,
+    bool trailingGap = false,
+  }) => AnimatedSwitcher(
+    duration: const Duration(milliseconds: 180),
+    switchInCurve: Curves.easeOutCubic,
+    switchOutCurve: Curves.easeInCubic,
+    child: showExactTime
+        ? Padding(
+            key: ValueKey('hover-time-${message.messageId}'),
+            padding: EdgeInsets.only(
+              left: leadingGap ? 8 : 0,
+              right: trailingGap ? 8 : 0,
+            ),
+            child: Text(
+              formatMessageExactTime(message.timestamp),
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurfaceVariant.withValues(alpha: 0.72),
+              ),
+            ),
+          )
+        : const SizedBox.shrink(),
+  );
+
+  /// 气泡上方的昵称与角色标签；悬停约 2 秒后在头衔外侧空白处显示具体发送时间。
+  Widget _header(BuildContext context, {required bool showExactTime}) => Padding(
     padding: const EdgeInsets.only(left: 2, right: 2, bottom: 2),
     child: Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (mine)
+          _hoverExactTimeBadge(
+            context,
+            showExactTime: showExactTime,
+            trailingGap: true,
+          ),
         if (senderRole != null) ...[
           RoleTag(role: senderRole!),
           const SizedBox(width: 6),
@@ -4886,47 +4986,39 @@ class MessageBubble extends StatelessWidget {
             ),
           ),
         ],
+        if (!mine)
+          _hoverExactTimeBadge(
+            context,
+            showExactTime: showExactTime,
+            leadingGap: true,
+          ),
       ],
     ),
   );
 
-  /// 气泡本体。昵称与角色已经渲染在气泡上方，这里只放内容与时间。
-  Widget _buildBubble(BuildContext context) => Container(
-    constraints: const BoxConstraints(maxWidth: 560),
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-    decoration: BoxDecoration(
-      color: mine
-          ? Theme.of(context).colorScheme.primaryContainer
-          : Theme.of(context).colorScheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(14),
-      border: mentioned
-          ? Border.all(color: Theme.of(context).colorScheme.error, width: 1.6)
-          : null,
-    ),
-    child: Column(
-      crossAxisAlignment: mine
-          ? CrossAxisAlignment.end
+  /// 气泡本体。常规时间已挪到居中时间条与悬停展示，这里仅在需要时显示发送状态。
+  Widget _buildBubble(BuildContext context) {
+    final showStatusRow =
+        mine &&
+        (message.status != MessageStatus.sent ||
+            message.kind == MessageKind.file);
+    final body = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: message.isReply
+          ? CrossAxisAlignment.stretch
           : CrossAxisAlignment.start,
       children: [
         if (message.isReply) _unselectable(_buildQuoted(context)),
         if (message.kind == MessageKind.text)
-          Text(
-            message.content,
-            textAlign: mine ? TextAlign.right : TextAlign.left,
-          )
+          Text(message.content, textAlign: TextAlign.left)
         else
           _buildAttachment(context),
-        const SizedBox(height: 4),
-        _unselectable(
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _time(message.timestamp),
-                style: Theme.of(context).textTheme.labelSmall,
-              ),
-              if (mine) ...[
-                const SizedBox(width: 5),
+        if (showStatusRow) ...[
+          const SizedBox(height: 4),
+          _unselectable(
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
                 Icon(
                   _statusIcon(message.status),
                   size: 13,
@@ -4934,7 +5026,7 @@ class MessageBubble extends StatelessWidget {
                       message.status == MessageStatus.failed ||
                           message.status == MessageStatus.rejected
                       ? Theme.of(context).colorScheme.error
-                      : null,
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
                 if (message.kind != MessageKind.text) ...[
                   const SizedBox(width: 4),
@@ -4944,12 +5036,26 @@ class MessageBubble extends StatelessWidget {
                   ),
                 ],
               ],
-            ],
+            ),
           ),
-        ),
+        ],
       ],
-    ),
-  );
+    );
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 560),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: mine
+            ? Theme.of(context).colorScheme.primaryContainer
+            : Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+        border: mentioned
+            ? Border.all(color: Theme.of(context).colorScheme.error, width: 1.6)
+            : null,
+      ),
+      child: message.isReply ? IntrinsicWidth(child: body) : body,
+    );
+  }
 
   Widget _buildAttachment(BuildContext context) {
     final path = message.filePath;
@@ -5261,6 +5367,133 @@ class ChatContextMenuItem {
   final IconData icon;
   final VoidCallback onTap;
   final bool hasDividerBefore;
+}
+
+class _HoverDelayTrigger extends StatefulWidget {
+  const _HoverDelayTrigger({required this.delay, required this.builder});
+
+  final Duration delay;
+  final Widget Function(BuildContext context, bool active) builder;
+
+  @override
+  State<_HoverDelayTrigger> createState() => _HoverDelayTriggerState();
+}
+
+class _HoverDelayTriggerState extends State<_HoverDelayTrigger> {
+  Timer? _timer;
+  bool _active = false;
+
+  void _handleEnter(PointerEnterEvent _) {
+    _timer?.cancel();
+    _timer = Timer(widget.delay, () {
+      if (mounted && !_active) {
+        setState(() => _active = true);
+      }
+    });
+  }
+
+  void _handleExit(PointerExitEvent _) {
+    _timer?.cancel();
+    _timer = null;
+    if (_active) {
+      setState(() => _active = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+    onEnter: _handleEnter,
+    onExit: _handleExit,
+    child: widget.builder(context, _active),
+  );
+}
+
+/// 消息列表中的居中时间分隔条（相邻 5 分钟内的消息共用一条）。
+class MessageTimeDivider extends StatelessWidget {
+  const MessageTimeDivider({super.key, required this.timestamp});
+
+  final DateTime timestamp;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 12),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.65),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            formatMessageGroupTime(timestamp),
+            style: TextStyle(
+              fontSize: 11.5,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 计算哪些消息上方需要显示居中时间分隔条：
+/// 第一条消息始终显示；后续消息距离上一次显示的时间超过 [threshold] 或跨天时再次显示。
+Set<int> computeMessageTimeHeaderIndices(
+  List<ChatMessage> messages, {
+  Duration threshold = const Duration(minutes: 5),
+}) {
+  final indices = <int>{};
+  DateTime? lastShown;
+  for (var i = 0; i < messages.length; i++) {
+    final ts = messages[i].timestamp;
+    final sameDay =
+        lastShown != null &&
+        ts.year == lastShown.year &&
+        ts.month == lastShown.month &&
+        ts.day == lastShown.day;
+    if (lastShown == null ||
+        !sameDay ||
+        ts.difference(lastShown).abs() >= threshold) {
+      indices.add(i);
+      lastShown = ts;
+    }
+  }
+  return indices;
+}
+
+String _twoDigits(int value) => value.toString().padLeft(2, '0');
+
+/// 居中时间条文案：今天 `HH:mm`，昨天 `昨天 HH:mm`，今年 `MM-dd HH:mm`，跨年 `yyyy-MM-dd HH:mm`。
+String formatMessageGroupTime(DateTime value, {DateTime? now}) {
+  final current = now ?? DateTime.now();
+  final today = DateTime(current.year, current.month, current.day);
+  final targetDay = DateTime(value.year, value.month, value.day);
+  final dayDiff = today.difference(targetDay).inDays;
+  final hm = '${_twoDigits(value.hour)}:${_twoDigits(value.minute)}';
+  if (dayDiff == 0) return hm;
+  if (dayDiff == 1) return '昨天 $hm';
+  final md = '${_twoDigits(value.month)}-${_twoDigits(value.day)}';
+  if (value.year == current.year) return '$md $hm';
+  return '${value.year}-$md $hm';
+}
+
+/// 悬停后在头衔旁展示的精确发送时间：今年 `MM-dd HH:mm:ss`，跨年 `yyyy-MM-dd HH:mm:ss`。
+String formatMessageExactTime(DateTime value, {DateTime? now}) {
+  final current = now ?? DateTime.now();
+  final md = '${_twoDigits(value.month)}-${_twoDigits(value.day)}';
+  final hms =
+      '${_twoDigits(value.hour)}:${_twoDigits(value.minute)}:${_twoDigits(value.second)}';
+  if (value.year == current.year) return '$md $hms';
+  return '${value.year}-$md $hms';
 }
 
 class RecallNotice extends StatelessWidget {

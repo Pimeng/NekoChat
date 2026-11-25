@@ -198,4 +198,100 @@ void main() {
     expect(find.text('引用回复'), findsNothing);
     expect(find.byType(SelectionArea), findsNothing);
   });
+
+  test('居中时间条按 5 分钟窗口与跨天自动聚合', () {
+    ChatMessage msg(String id, DateTime ts) => ChatMessage(
+      messageId: id,
+      chatId: 'chat-1',
+      senderDeviceId: 'peer-a',
+      kind: MessageKind.text,
+      content: id,
+      timestamp: ts,
+      status: MessageStatus.sent,
+    );
+
+    final messages = [
+      msg('m1', DateTime(2026, 11, 25, 19, 35, 10)),
+      msg('m2', DateTime(2026, 11, 25, 19, 37, 00)),
+      msg('m3', DateTime(2026, 11, 25, 19, 40, 10)),
+      msg('m4', DateTime(2026, 11, 26, 0, 1, 0)),
+    ];
+
+    expect(computeMessageTimeHeaderIndices(messages), {0, 2, 3});
+    expect(
+      formatMessageGroupTime(
+        DateTime(2026, 11, 25, 19, 35),
+        now: DateTime(2026, 11, 26, 10, 0),
+      ),
+      '昨天 19:35',
+    );
+    expect(
+      formatMessageGroupTime(
+        DateTime(2026, 11, 26, 9, 5),
+        now: DateTime(2026, 11, 26, 10, 0),
+      ),
+      '09:05',
+    );
+    expect(
+      formatMessageExactTime(
+        DateTime(2026, 11, 25, 20, 12, 26),
+        now: DateTime(2026, 11, 26, 10, 0),
+      ),
+      '11-25 20:12:26',
+    );
+  });
+
+  testWidgets('相邻消息共用居中时间条，悬停约 2 秒后在头衔旁显示精确时间', (tester) async {
+    final t1 = DateTime(2026, 11, 25, 20, 12, 26);
+    final t2 = DateTime(2026, 11, 25, 20, 14, 5);
+    final controller = renderOnlyController(
+      messages: [
+        ChatMessage(
+          messageId: 'msg-t1',
+          chatId: 'chat-1',
+          senderDeviceId: 'peer-device',
+          kind: MessageKind.text,
+          content: '第一条消息',
+          timestamp: t1,
+          status: MessageStatus.sent,
+        ),
+        ChatMessage(
+          messageId: 'msg-t2',
+          chatId: 'chat-1',
+          senderDeviceId: 'peer-device',
+          kind: MessageKind.text,
+          content: '两分钟后的第二条消息',
+          timestamp: t2,
+          status: MessageStatus.sent,
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      MaterialApp(home: MainShell(controller: controller)),
+    );
+
+    // 两条消息在 5 分钟内，只显示 1 条居中时间分隔条
+    expect(find.byType(MessageTimeDivider), findsOneWidget);
+    final exactTimeText = formatMessageExactTime(t1);
+    expect(find.text(exactTimeText), findsNothing);
+
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer(location: Offset.zero);
+    addTearDown(gesture.removePointer);
+
+    // 悬停在第一条消息上 1 秒时还不显示，满 2 秒后淡入显示精确时间
+    await gesture.moveTo(tester.getCenter(find.text('第一条消息')));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text(exactTimeText), findsNothing);
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(find.text(exactTimeText), findsOneWidget);
+
+    // 鼠标移出后精确时间隐藏
+    await gesture.moveTo(Offset.zero);
+    await tester.pumpAndSettle();
+    expect(find.text(exactTimeText), findsNothing);
+  });
 }
