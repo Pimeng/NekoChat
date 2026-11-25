@@ -11,6 +11,7 @@ import 'package:neko_chat/app/app_controller.dart';
 import 'package:neko_chat/core/database/app_database.dart';
 import 'package:neko_chat/core/models/models.dart';
 import 'package:neko_chat/features/chat/main_shell.dart';
+import 'package:neko_chat/features/settings/settings_page.dart';
 
 /// 1×1 透明 PNG。
 const _tinyPngBase64 =
@@ -159,6 +160,38 @@ void main() {
     await controller.removeFavoriteSticker(toRemove);
     expect(controller.favoriteStickers, hasLength(2));
     expect(await File(toRemove.filePath).exists(), isFalse);
+
+    // 调整排序并验证持久化到数据库
+    final beforeIds = controller.favoriteStickers
+        .map((s) => s.stickerId)
+        .toList();
+    await controller.reorderFavoriteStickers(1, 0);
+    final afterIds = controller.favoriteStickers
+        .map((s) => s.stickerId)
+        .toList();
+    expect(afterIds, [beforeIds[1], beforeIds[0]]);
+
+    final persistedIds = (await db.loadFavoriteStickers())
+        .map((s) => s.stickerId)
+        .toList();
+    expect(persistedIds, afterIds);
+
+    // 设置与清除备注，并验证持久化到数据库
+    await controller.setFavoriteStickerRemark(
+      controller.favoriteStickers.first,
+      '开心 哈哈',
+    );
+    expect(controller.favoriteStickers.first.remark, '开心 哈哈');
+    final reloadedWithRemark = await db.loadFavoriteStickers();
+    expect(reloadedWithRemark.first.remark, '开心 哈哈');
+
+    await controller.setFavoriteStickerRemark(
+      controller.favoriteStickers.first,
+      '   ',
+    );
+    expect(controller.favoriteStickers.first.remark, isNull);
+    final reloadedCleared = await db.loadFavoriteStickers();
+    expect(reloadedCleared.first.remark, isNull);
   });
 
   testWidgets('图片气泡右键显示“添加到表情”，纯文字气泡不显示', (tester) async {
@@ -199,7 +232,12 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (_, _) => MainShell(controller: controller),
+        ),
+      ),
     );
     await tester.pump();
 
@@ -251,7 +289,12 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (_, _) => MainShell(controller: controller),
+        ),
+      ),
     );
     await tester.pump();
 
@@ -276,5 +319,207 @@ void main() {
     await tester.tapAt(const Offset(5, 5));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('sticker-picker-panel')), findsNothing);
+  });
+
+  testWidgets('收藏表情面板支持右键“移到最前”排序', (tester) async {
+    final directory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('neko-sticker-reorder-'),
+    ))!;
+    addTearDown(() => directory.delete(recursive: true));
+    final img1 = File(p.join(directory.path, 's1.png'));
+    final img2 = File(p.join(directory.path, 's2.png'));
+    await tester.runAsync(() async {
+      await img1.writeAsBytes(base64Decode(_tinyPngBase64));
+      await img2.writeAsBytes(base64Decode(_redPngBase64));
+    });
+
+    final controller = _renderController(
+      messages: const [],
+      stickers: [
+        FavoriteSticker(
+          stickerId: 'fav-1',
+          filePath: img1.path,
+          fileHash: 'hash-1',
+          fileName: 's1.png',
+          mimeType: 'image/png',
+          fileSize: 68,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(2000),
+          sortOrder: 0,
+        ),
+        FavoriteSticker(
+          stickerId: 'fav-2',
+          filePath: img2.path,
+          fileHash: 'hash-2',
+          fileName: 's2.png',
+          mimeType: 'image/png',
+          fileSize: 68,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+          sortOrder: 1,
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (_, _) => MainShell(controller: controller),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('表情与收藏'));
+    await tester.pumpAndSettle();
+
+    // 右键第二个表情，点击“移到最前”
+    await tester.tap(
+      find.byKey(const ValueKey('sticker-tile-fav-2')),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('移到最前'), findsOneWidget);
+
+    await tester.tap(find.text('移到最前'));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.favoriteStickers.map((s) => s.stickerId).toList(),
+      ['fav-2', 'fav-1'],
+    );
+  });
+
+  testWidgets('支持给表情设置备注，输入备注时快捷弹出候选栏并可点击发送', (tester) async {
+    final directory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('neko-sticker-remark-'),
+    ))!;
+    addTearDown(() => directory.delete(recursive: true));
+    final img = File(p.join(directory.path, 'cirno.png'));
+    await tester.runAsync(
+      () => img.writeAsBytes(base64Decode(_tinyPngBase64)),
+    );
+
+    final controller = _renderController(
+      messages: const [],
+      stickers: [
+        FavoriteSticker(
+          stickerId: 'fav-cirno',
+          filePath: img.path,
+          fileHash: 'hash-cirno',
+          fileName: 'cirno.png',
+          mimeType: 'image/png',
+          fileSize: 68,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        ),
+      ],
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (_, _) => MainShell(controller: controller),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // 打开表情面板，右键表情 -> 设置备注
+    await tester.tap(find.byTooltip('表情与收藏'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('sticker-tile-fav-cirno')),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('设置备注'), findsOneWidget);
+
+    await tester.tap(find.text('设置备注'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('sticker-remark-field')),
+      '琪露诺 开心',
+    );
+    await tester.tap(find.byKey(const ValueKey('sticker-remark-save')));
+    await tester.pumpAndSettle();
+
+    expect(controller.favoriteStickers.first.remark, '琪露诺 开心');
+
+    // 在聊天输入框输入备注关键词“开心”，快捷候选栏应弹出对应表情
+    await tester.enterText(find.byType(TextField), '开心');
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('quick-sticker-suggestion-bar')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('quick-sticker-fav-cirno')),
+      findsOneWidget,
+    );
+
+    // 点击关闭按钮可临时收起当前词的联想
+    await tester.tap(find.byKey(const ValueKey('quick-sticker-dismiss')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('quick-sticker-suggestion-bar')),
+      findsNothing,
+    );
+
+    // 换个关键词再次弹出，点击候选表情会清空输入框
+    await tester.enterText(find.byType(TextField), '琪露诺');
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('quick-sticker-fav-cirno')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('quick-sticker-fav-cirno')));
+    await tester.pumpAndSettle();
+
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    expect(textField.controller?.text, isEmpty);
+
+    // 关闭表情联想开关后，再输入备注关键词不再弹出候选栏
+    await controller.setStickerSuggestionsEnabled(false);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '琪露诺');
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('quick-sticker-suggestion-bar')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('外观设置页可切换表情联想开关', (tester) async {
+    final controller = _renderController(messages: const []);
+    addTearDown(controller.dispose);
+    expect(controller.stickerSuggestionsEnabled, isTrue);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: AnimatedBuilder(
+              animation: controller,
+              builder: (_, _) =>
+                  AppearanceSettingsCards(controller: controller),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final switchFinder = find.byKey(const ValueKey('sticker-suggestions-switch'));
+    expect(switchFinder, findsOneWidget);
+    await tester.ensureVisible(switchFinder);
+    await tester.tap(switchFinder);
+    await tester.pumpAndSettle();
+
+    expect(controller.stickerSuggestionsEnabled, isFalse);
   });
 }

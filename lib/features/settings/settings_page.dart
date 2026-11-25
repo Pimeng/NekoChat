@@ -506,6 +506,17 @@ class AppearanceSettingsCards extends StatelessWidget {
             onChanged: controller.setBoldText,
           ),
         ),
+        const SizedBox(height: 16),
+        Card(
+          child: SwitchListTile(
+            key: const ValueKey('sticker-suggestions-switch'),
+            secondary: const Icon(Icons.sentiment_satisfied_alt_outlined),
+            title: const Text('表情联想'),
+            subtitle: const Text('输入与收藏表情备注匹配的文字时，在输入框上方快捷弹出对应表情'),
+            value: controller.stickerSuggestionsEnabled,
+            onChanged: controller.setStickerSuggestionsEnabled,
+          ),
+        ),
       ],
     );
   }

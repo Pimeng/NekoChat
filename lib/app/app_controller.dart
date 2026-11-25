@@ -90,6 +90,8 @@ class AppController extends ChangeNotifier {
   static const _fontScaleSetting = 'font_scale';
   static const _fontFamilySetting = 'font_family';
   static const _boldTextSetting = 'bold_text';
+  static const _stickerSuggestionsEnabledSetting =
+      'sticker_suggestions_enabled';
   static const _fontSeparateSetting = 'font_separate';
   static const _fontFamilyLatinSetting = 'font_family_latin';
 
@@ -280,6 +282,9 @@ class AppController extends ChangeNotifier {
   /// 是否整体加粗（主题各字号字重上调一档）。
   bool boldText = false;
 
+  /// 是否在聊天输入框中启用收藏表情备注联想。
+  bool stickerSuggestionsEnabled = true;
+
   /// 仅当外观（字体）设置变化时自增，供根部重建主题/缩放；
   /// 避免高频 [notifyListeners] 都触发 MaterialApp 重建。
   final ValueNotifier<int> appearanceRevision = ValueNotifier<int>(0);
@@ -422,6 +427,10 @@ class AppController extends ChangeNotifier {
     boldText = _settingBool(
       await _database.loadSetting(_boldTextSetting),
       fallback: false,
+    );
+    stickerSuggestionsEnabled = _settingBool(
+      await _database.loadSetting(_stickerSuggestionsEnabledSetting),
+      fallback: true,
     );
     appearanceRevision.value++;
     peerRemarks = await _database.loadPeerRemarks();
@@ -899,6 +908,18 @@ class AppController extends ChangeNotifier {
     await _database.saveSetting(_boldTextSetting, value.toString());
     boldText = value;
     appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  Future<void> setStickerSuggestionsEnabled(bool value) async {
+    if (stickerSuggestionsEnabled == value) return;
+    if (_database.directoryPath != null) {
+      await _database.saveSetting(
+        _stickerSuggestionsEnabledSetting,
+        value.toString(),
+      );
+    }
+    stickerSuggestionsEnabled = value;
     notifyListeners();
   }
 
@@ -1738,6 +1759,9 @@ class AppController extends ChangeNotifier {
         await partial.rename(target.path);
       }
 
+      final nextOrder = favoriteStickers.isEmpty
+          ? 0
+          : favoriteStickers.first.sortOrder - 1;
       final sticker = FavoriteSticker(
         stickerId: _uuid.v4(),
         filePath: target.path,
@@ -1746,6 +1770,7 @@ class AppController extends ChangeNotifier {
         mimeType: mimeType,
         fileSize: size,
         createdAt: DateTime.now(),
+        sortOrder: nextOrder,
       );
       await _database.saveFavoriteSticker(sticker);
       favoriteStickers = [sticker, ...favoriteStickers];
@@ -1772,6 +1797,57 @@ class AppController extends ChangeNotifier {
     }
     _showTopRightMessage('已移除收藏表情', icon: Icons.delete_outline_rounded);
     notifyListeners();
+  }
+
+  /// 调整收藏表情顺序（拖动排序或移到最前），并持久化到数据库。
+  Future<void> reorderFavoriteStickers(int oldIndex, int newIndex) async {
+    if (oldIndex == newIndex ||
+        oldIndex < 0 ||
+        newIndex < 0 ||
+        oldIndex >= favoriteStickers.length ||
+        newIndex >= favoriteStickers.length) {
+      return;
+    }
+    final reordered = List<FavoriteSticker>.of(favoriteStickers);
+    final moved = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, moved);
+    favoriteStickers = [
+      for (var i = 0; i < reordered.length; i++)
+        reordered[i].copyWith(sortOrder: i),
+    ];
+    notifyListeners();
+    if (_database.directoryPath != null) {
+      await _database.updateFavoriteStickerOrder(
+        favoriteStickers.map((item) => item.stickerId).toList(),
+      );
+    }
+  }
+
+  /// 为收藏表情设置或清除快捷备注（关键词），并持久化到数据库。
+  Future<void> setFavoriteStickerRemark(
+    FavoriteSticker sticker,
+    String? remark,
+  ) async {
+    final trimmed = remark?.trim();
+    final normalized = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+    favoriteStickers = [
+      for (final item in favoriteStickers)
+        if (item.stickerId == sticker.stickerId)
+          item.copyWith(remark: normalized, clearRemark: normalized == null)
+        else
+          item,
+    ];
+    notifyListeners();
+    if (_database.directoryPath != null) {
+      await _database.updateFavoriteStickerRemark(
+        sticker.stickerId,
+        normalized,
+      );
+    }
+    _showTopRightMessage(
+      normalized == null ? '已清除表情备注' : '已更新表情备注',
+      icon: Icons.edit_note_rounded,
+    );
   }
 
   /// 直接把收藏的表情作为图片发送到指定会话（或当前选中的会话）。
@@ -2137,6 +2213,7 @@ class AppController extends ChangeNotifier {
   /// 引用框里展示的摘要文本。
   static String replyPreview(ChatMessage message) {
     if (message.isRecalled) return '消息已撤回';
+    if (message.kind == MessageKind.image) return '[图片]';
     final raw = message.kind == MessageKind.text
         ? message.content
         : (message.fileName ?? message.content);

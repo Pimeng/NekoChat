@@ -1173,6 +1173,9 @@ class _MainShellState extends State<MainShell> {
             conversationId: conversationId,
           ),
           onRemoveFavoriteSticker: controller.removeFavoriteSticker,
+          onReorderFavoriteStickers: controller.reorderFavoriteStickers,
+          onSetFavoriteStickerRemark: controller.setFavoriteStickerRemark,
+          stickerSuggestionsEnabled: controller.stickerSuggestionsEnabled,
           onAddMessageToStickers: controller.addMessageToFavoriteStickers,
           actions: [
             IconButton(
@@ -1285,6 +1288,9 @@ class _MainShellState extends State<MainShell> {
             conversationId: conversationId,
           ),
           onRemoveFavoriteSticker: controller.removeFavoriteSticker,
+          onReorderFavoriteStickers: controller.reorderFavoriteStickers,
+          onSetFavoriteStickerRemark: controller.setFavoriteStickerRemark,
+          stickerSuggestionsEnabled: controller.stickerSuggestionsEnabled,
           onAddMessageToStickers: controller.addMessageToFavoriteStickers,
           onMention: (name) => _insertMention(composer, name),
           loadMentionCandidates: () async {
@@ -3325,6 +3331,9 @@ class _DetachedConversationWindowState
               );
             },
             onRemoveFavoriteSticker: controller.removeFavoriteSticker,
+            onReorderFavoriteStickers: controller.reorderFavoriteStickers,
+            onSetFavoriteStickerRemark: controller.setFavoriteStickerRemark,
+            stickerSuggestionsEnabled: controller.stickerSuggestionsEnabled,
             onAddMessageToStickers: controller.addMessageToFavoriteStickers,
             onMention: isGroup
                 ? (name) => _MainShellState._insertMention(_composer, name)
@@ -3539,6 +3548,9 @@ class _ConversationPane extends StatefulWidget {
     this.onPickFavoriteStickers,
     this.onSendFavoriteSticker,
     this.onRemoveFavoriteSticker,
+    this.onReorderFavoriteStickers,
+    this.onSetFavoriteStickerRemark,
+    this.stickerSuggestionsEnabled = true,
     this.onAddMessageToStickers,
   });
   final String conversationId;
@@ -3596,6 +3608,11 @@ class _ConversationPane extends StatefulWidget {
   final Future<int> Function()? onPickFavoriteStickers;
   final Future<void> Function(FavoriteSticker sticker)? onSendFavoriteSticker;
   final Future<void> Function(FavoriteSticker sticker)? onRemoveFavoriteSticker;
+  final Future<void> Function(int oldIndex, int newIndex)?
+  onReorderFavoriteStickers;
+  final Future<void> Function(FavoriteSticker sticker, String? remark)?
+  onSetFavoriteStickerRemark;
+  final bool stickerSuggestionsEnabled;
   final Future<bool> Function(ChatMessage message)? onAddMessageToStickers;
 
   @override
@@ -3618,8 +3635,10 @@ class _ConversationPaneState extends State<_ConversationPane> {
 
   /// 表情与收藏表情弹出面板。
   final GlobalKey _stickerButtonKey = GlobalKey();
+  GlobalKey<StickerPickerOverlayState>? _stickerPickerKey;
   OverlayEntry? _stickerPickerOverlay;
   StickerPickerTab _stickerPickerTab = StickerPickerTab.favorites;
+  String? _dismissedStickerQuery;
 
   /// 各气泡当前的文本选区，右键「复制选中」时读取。
   final Map<String, String?> _selectedTexts = {};
@@ -3675,18 +3694,50 @@ class _ConversationPaneState extends State<_ConversationPane> {
   }
 
   void _removeStickerPicker() {
-    _stickerPickerOverlay?.remove();
+    final entry = _stickerPickerOverlay;
     _stickerPickerOverlay = null;
+    _stickerPickerKey = null;
+    if (entry != null && entry.mounted) {
+      entry.remove();
+    }
+  }
+
+  void _dismissStickerPicker() {
+    final state = _stickerPickerKey?.currentState;
+    if (state != null) {
+      state.close();
+    } else {
+      _removeStickerPicker();
+    }
   }
 
   void _toggleStickerPicker() {
     if (_stickerPickerOverlay != null) {
-      _removeStickerPicker();
+      _dismissStickerPicker();
       return;
     }
     _removeFallbackMenu();
     final overlay = Overlay.of(context);
+    final overlayKey = GlobalKey<StickerPickerOverlayState>();
     late final OverlayEntry entry;
+
+    void hardRemove() {
+      if (entry.mounted) entry.remove();
+      if (identical(_stickerPickerOverlay, entry)) {
+        _stickerPickerOverlay = null;
+        _stickerPickerKey = null;
+      }
+    }
+
+    void dismiss() {
+      final state = overlayKey.currentState;
+      if (state != null) {
+        state.close();
+      } else {
+        hardRemove();
+      }
+    }
+
     entry = OverlayEntry(
       builder: (overlayContext) {
         final screen = MediaQuery.sizeOf(overlayContext);
@@ -3695,58 +3746,45 @@ class _ConversationPaneState extends State<_ConversationPane> {
         final anchor = renderBox == null
             ? Offset(20, screen.height - 72)
             : renderBox.localToGlobal(Offset.zero);
-        const margin = 12.0;
-        final panelWidth =
-            StickerPickerPanel.preferredWidth.clamp(240.0, screen.width - margin * 2);
-        final panelHeight =
-            StickerPickerPanel.preferredHeight.clamp(200.0, screen.height - margin * 2);
-        final left = anchor.dx.clamp(
-          margin,
-          (screen.width - panelWidth - margin).clamp(margin, double.infinity),
-        );
-        final top = (anchor.dy - panelHeight - 10).clamp(
-          margin,
-          (screen.height - panelHeight - margin).clamp(margin, double.infinity),
-        );
-        return Stack(
-          children: [
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: _removeStickerPicker,
-                onSecondaryTapDown: (_) => _removeStickerPicker(),
-              ),
-            ),
-            Positioned(
-              left: left,
-              top: top,
-              child: Semantics(
-                container: true,
-                explicitChildNodes: true,
-                child: SizedBox(
-                  width: panelWidth,
-                  height: panelHeight,
-                  child: StickerPickerPanel(
-                    stickers: widget.favoriteStickers,
-                    initialTab: _stickerPickerTab,
-                    onTabChanged: (tab) => _stickerPickerTab = tab,
-                    onPickStickers: () async =>
-                        await widget.onPickFavoriteStickers?.call() ?? 0,
-                    onRemoveSticker: (sticker) async =>
-                        await widget.onRemoveFavoriteSticker?.call(sticker),
-                    onSelectSticker: (sticker) async {
-                      _removeStickerPicker();
-                      await widget.onSendFavoriteSticker?.call(sticker);
-                    },
-                    onSelectEmoji: _insertEmoji,
-                  ),
-                ),
-              ),
-            ),
-          ],
+        return StickerPickerOverlay(
+          key: overlayKey,
+          anchor: anchor,
+          onDismiss: dismiss,
+          onClosed: hardRemove,
+          child: StickerPickerPanel(
+            stickers: widget.favoriteStickers,
+            initialTab: _stickerPickerTab,
+            onTabChanged: (tab) => _stickerPickerTab = tab,
+            onPickStickers: () async =>
+                await widget.onPickFavoriteStickers?.call() ?? 0,
+            onRemoveSticker: (sticker) async =>
+                await widget.onRemoveFavoriteSticker?.call(sticker),
+            onReorderStickers: widget.onReorderFavoriteStickers,
+            onEditStickerRemark: widget.onSetFavoriteStickerRemark == null
+                ? null
+                : (sticker) async {
+                    dismiss();
+                    final result = await showStickerRemarkDialog(
+                      context,
+                      sticker,
+                    );
+                    if (result != null) {
+                      await widget.onSetFavoriteStickerRemark!(
+                        sticker,
+                        result.remark,
+                      );
+                    }
+                  },
+            onSelectSticker: (sticker) async {
+              dismiss();
+              await widget.onSendFavoriteSticker?.call(sticker);
+            },
+            onSelectEmoji: _insertEmoji,
+          ),
         );
       },
     );
+    _stickerPickerKey = overlayKey;
     _stickerPickerOverlay = entry;
     overlay.insert(entry);
   }
@@ -4196,6 +4234,47 @@ class _ConversationPaneState extends State<_ConversationPane> {
                         )
                       : const SizedBox.shrink(),
                 ),
+              ),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: widget.composer,
+                builder: (context, value, _) {
+                  final query = value.text.trim();
+                  final matches =
+                      widget.enabled &&
+                          widget.stickerSuggestionsEnabled &&
+                          widget.pendingAttachments.isEmpty &&
+                          query != _dismissedStickerQuery
+                      ? matchStickersByRemark(widget.favoriteStickers, query)
+                      : const <FavoriteSticker>[];
+                  return AnimatedSize(
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOutCubic,
+                    alignment: Alignment.bottomCenter,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 150),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      child: matches.isNotEmpty
+                          ? QuickStickerSuggestionBar(
+                              key: const ValueKey('quick-stickers-bar'),
+                              stickers: matches,
+                              onSelect: (sticker) async {
+                                widget.composer.clear();
+                                if (mounted) {
+                                  setState(() => _dismissedStickerQuery = null);
+                                }
+                                await widget.onSendFavoriteSticker?.call(
+                                  sticker,
+                                );
+                              },
+                              onDismiss: () => setState(
+                                () => _dismissedStickerQuery = query,
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  );
+                },
               ),
               Row(
                 children: [

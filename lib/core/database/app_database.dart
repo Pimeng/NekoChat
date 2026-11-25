@@ -31,7 +31,7 @@ class PlainSqliteBackend implements DatabaseBackend {
     return databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 7,
+        version: 9,
         onCreate: onCreate,
         onUpgrade: onUpgrade,
       ),
@@ -197,7 +197,9 @@ class AppDatabase {
         file_name TEXT NOT NULL,
         mime_type TEXT NOT NULL,
         file_size INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        remark TEXT
       )
     ''');
     _log.info('数据库 Schema v$version 已创建');
@@ -278,9 +280,19 @@ class AppDatabase {
           file_name TEXT NOT NULL,
           mime_type TEXT NOT NULL,
           file_size INTEGER NOT NULL,
-          created_at INTEGER NOT NULL
+          created_at INTEGER NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          remark TEXT
         )
       ''');
+    }
+    if (oldVersion >= 7 && oldVersion < 8) {
+      await db.execute(
+        'ALTER TABLE favorite_stickers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (oldVersion >= 7 && oldVersion < 9) {
+      await db.execute('ALTER TABLE favorite_stickers ADD COLUMN remark TEXT');
     }
     _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
@@ -870,7 +882,7 @@ class AppDatabase {
   Future<List<FavoriteSticker>> loadFavoriteStickers() async {
     final rows = await database.query(
       'favorite_stickers',
-      orderBy: 'created_at DESC',
+      orderBy: 'sort_order ASC, created_at DESC',
     );
     return rows
         .map(
@@ -884,6 +896,8 @@ class AppDatabase {
             createdAt: DateTime.fromMillisecondsSinceEpoch(
               row['created_at'] as int,
             ),
+            sortOrder: (row['sort_order'] as int?) ?? 0,
+            remark: row['remark'] as String?,
           ),
         )
         .toList();
@@ -899,9 +913,32 @@ class AppDatabase {
       'mime_type': sticker.mimeType,
       'file_size': sticker.fileSize,
       'created_at': sticker.createdAt.millisecondsSinceEpoch,
+      'sort_order': sticker.sortOrder,
+      'remark': sticker.remark,
     },
     conflictAlgorithm: ConflictAlgorithm.replace,
   );
+
+  Future<void> updateFavoriteStickerRemark(String stickerId, String? remark) =>
+      database.update(
+        'favorite_stickers',
+        {'remark': remark},
+        where: 'sticker_id = ?',
+        whereArgs: [stickerId],
+      );
+
+  Future<void> updateFavoriteStickerOrder(List<String> orderedStickerIds) async {
+    await database.transaction((txn) async {
+      for (var index = 0; index < orderedStickerIds.length; index++) {
+        await txn.update(
+          'favorite_stickers',
+          {'sort_order': index},
+          where: 'sticker_id = ?',
+          whereArgs: [orderedStickerIds[index]],
+        );
+      }
+    });
+  }
 
   Future<void> deleteFavoriteSticker(String stickerId) => database.delete(
     'favorite_stickers',

@@ -364,6 +364,8 @@ class FavoriteSticker {
     required this.mimeType,
     required this.fileSize,
     required this.createdAt,
+    this.sortOrder = 0,
+    this.remark,
   });
   final String stickerId;
   final String filePath;
@@ -372,4 +374,24 @@ class FavoriteSticker {
   final String mimeType;
   final int fileSize;
   final DateTime createdAt;
+  final int sortOrder;
+
+  /// 用户为该表情设置的快捷备注（关键词），在输入框键入时可快捷弹出匹配表情。
+  final String? remark;
+
+  FavoriteSticker copyWith({
+    int? sortOrder,
+    String? remark,
+    bool clearRemark = false,
+  }) => FavoriteSticker(
+    stickerId: stickerId,
+    filePath: filePath,
+    fileHash: fileHash,
+    fileName: fileName,
+    mimeType: mimeType,
+    fileSize: fileSize,
+    createdAt: createdAt,
+    sortOrder: sortOrder ?? this.sortOrder,
+    remark: clearRemark ? null : (remark ?? this.remark),
+  );
 }

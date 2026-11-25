@@ -1581,7 +1581,7 @@ void main() {
       AppController.replyPreview(
         message(kind: MessageKind.image, content: '照片.png', fileName: '照片.png'),
       ),
-      '照片.png',
+      '[图片]',
     );
     expect(
       AppController.replyPreview(

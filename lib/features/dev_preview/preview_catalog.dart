@@ -11,6 +11,7 @@ import '../chat/main_shell.dart';
 import '../chat/mention_autocomplete.dart';
 import '../chat/message_composer.dart';
 import '../chat/peer_info_drawer.dart';
+import '../chat/sticker_picker.dart';
 import '../onboarding/auth_page.dart';
 import '../settings/settings_page.dart';
 import 'preview_app_controller.dart';
@@ -798,6 +799,45 @@ List<PreviewEntry> buildPreviewCatalog(
       description: '支持 Enter 发送、Ctrl+Enter 换行，同时展示在线启用与离线禁用态。',
       category: PreviewCategory.chat,
       builder: (_) => _MessageComposerDemo(onAction: onAction),
+    ),
+    PreviewEntry(
+      id: 'sticker-picker',
+      name: '表情与收藏面板',
+      widgetType: 'StickerPickerPanel',
+      description: '支持常用 Emoji、收藏表情网格、拖动排序与右键管理。',
+      category: PreviewCategory.chat,
+      builder: (_) => ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) => StickerPickerPanel(
+          stickers: controller.favoriteStickers,
+          onSelectSticker: (sticker) async =>
+              onAction('发送收藏表情：${sticker.fileName}'),
+          onPickStickers: () async {
+            onAction('点击添加本地表情');
+            return 0;
+          },
+          onRemoveSticker: (sticker) async {
+            await controller.removeFavoriteSticker(sticker);
+            onAction('移出收藏表情：${sticker.fileName}');
+          },
+          onReorderStickers: (oldIndex, newIndex) async {
+            await controller.reorderFavoriteStickers(oldIndex, newIndex);
+            onAction('调整表情顺序：$oldIndex -> $newIndex');
+          },
+          onEditStickerRemark: (sticker) async {
+            final result = await showStickerRemarkDialog(context, sticker);
+            if (result != null) {
+              await controller.setFavoriteStickerRemark(sticker, result.remark);
+              onAction(
+                result.remark == null
+                    ? '清除表情备注：${sticker.fileName}'
+                    : '设置表情备注：${result.remark}',
+              );
+            }
+          },
+          onSelectEmoji: (emoji) => onAction('插入 Emoji：$emoji'),
+        ),
+      ),
     ),
     PreviewEntry(
       id: 'mention-autocomplete',

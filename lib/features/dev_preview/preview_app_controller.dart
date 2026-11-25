@@ -24,6 +24,31 @@ abstract final class PreviewFixtures {
   static const primaryGroupId = 'group-preview-lab';
   static const secondaryGroupId = 'group-preview-lunch';
 
+  static List<FavoriteSticker> favoriteStickers() => [
+    FavoriteSticker(
+      stickerId: 'preview-sticker-1',
+      filePath: 'assets/preview/sticker_demo.gif',
+      fileHash: '8dde8a88078ea068abf1fde4b94b98e0',
+      fileName: 'sticker_demo.gif',
+      mimeType: 'image/gif',
+      fileSize: 188517,
+      createdAt: baseTime,
+      sortOrder: 0,
+      remark: '琪露诺',
+    ),
+    FavoriteSticker(
+      stickerId: 'preview-sticker-2',
+      filePath: 'assets/app.png',
+      fileHash: 'preview-app-icon-hash',
+      fileName: 'neko_icon.png',
+      mimeType: 'image/png',
+      fileSize: 32768,
+      createdAt: baseTime.subtract(const Duration(minutes: 5)),
+      sortOrder: 1,
+      remark: '猫猫',
+    ),
+  ];
+
   static LocalIdentity localIdentity() => LocalIdentity(
     deviceId: localDeviceId,
     displayName: '橘猫工程师',
@@ -358,6 +383,9 @@ class PreviewAppController extends AppController {
     peers = List<DiscoveredPeer>.from(PreviewFixtures.peers());
     chats = List<ChatSummary>.from(PreviewFixtures.chats());
     groups = List<ChatGroup>.from(PreviewFixtures.groups());
+    favoriteStickers = List<FavoriteSticker>.from(
+      PreviewFixtures.favoriteStickers(),
+    );
     peerRemarks = {PreviewFixtures.aliceDeviceId: '晓猫（前端）'};
     groupRemarks = {PreviewFixtures.secondaryGroupId: '干饭群'};
     chatRequests
@@ -730,6 +758,12 @@ class PreviewAppController extends AppController {
   Future<void> setBoldText(bool value) async {
     boldText = value;
     appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setStickerSuggestionsEnabled(bool value) async {
+    stickerSuggestionsEnabled = value;
     notifyListeners();
   }
 
@@ -1145,12 +1179,64 @@ class PreviewAppController extends AppController {
   }
 
   @override
+  Future<void> reorderFavoriteStickers(int oldIndex, int newIndex) async {
+    if (oldIndex == newIndex ||
+        oldIndex < 0 ||
+        newIndex < 0 ||
+        oldIndex >= favoriteStickers.length ||
+        newIndex >= favoriteStickers.length) {
+      return;
+    }
+    final reordered = List<FavoriteSticker>.of(favoriteStickers);
+    final moved = reordered.removeAt(oldIndex);
+    reordered.insert(newIndex, moved);
+    favoriteStickers = [
+      for (var i = 0; i < reordered.length; i++)
+        reordered[i].copyWith(sortOrder: i),
+    ];
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setFavoriteStickerRemark(
+    FavoriteSticker sticker,
+    String? remark,
+  ) async {
+    final trimmed = remark?.trim();
+    final normalized = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+    favoriteStickers = [
+      for (final item in favoriteStickers)
+        if (item.stickerId == sticker.stickerId)
+          item.copyWith(remark: normalized, clearRemark: normalized == null)
+        else
+          item,
+    ];
+    showPreviewToast(normalized == null ? '已清除表情备注' : '已更新表情备注：$normalized');
+    notifyListeners();
+  }
+
+  @override
   Future<void> sendFavoriteSticker(
     FavoriteSticker sticker, {
     String? conversationId,
     ChatMessage? reply,
   }) async {
-    showPreviewToast('预览模式：发送收藏表情 ${sticker.fileName}');
+    await sendMessageWithAttachmentsTo(
+      conversationId:
+          conversationId ??
+          (selectedGroupId == null ? selectedChatId : 'group:$selectedGroupId'),
+      content: '',
+      attachments: [
+        PendingAttachment(
+          path: sticker.filePath,
+          fileName: sticker.fileName,
+          fileSize: sticker.fileSize,
+          mimeType: sticker.mimeType,
+          isImage: true,
+        ),
+      ],
+      reply: reply ?? replyingTo,
+    );
   }
 
   @override
