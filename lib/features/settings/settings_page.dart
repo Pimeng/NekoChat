@@ -343,12 +343,22 @@ class PairingCodeCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 4),
-              Text(
-                controller.myPairingCode,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                  letterSpacing: 2,
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      controller.myPairingCode,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '复制口令',
+                    onPressed: controller.copyPairingCode,
+                    icon: const Icon(Icons.copy, size: 18),
+                  ),
+                ],
               ),
               const SizedBox(height: 4),
               Text(

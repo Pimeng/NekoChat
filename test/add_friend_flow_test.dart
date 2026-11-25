@@ -12,6 +12,12 @@ class _AddFriendController extends AppController {
   String? lastCode;
   int requestChatCalls = 0;
 
+  /// 测试里直接指定冷却剩余时长，避免真的等待。
+  Duration friendRequestCooldownValue = Duration.zero;
+
+  @override
+  Duration friendRequestCooldown(String deviceId) => friendRequestCooldownValue;
+
   @override
   Future<void> requestChat(
     DiscoveredPeer peer, {
@@ -132,5 +138,30 @@ void main() {
     expect(find.text('联系人'), findsOneWidget);
     expect(find.text('陌生设备'), findsNothing);
     expect(controller.requestChatCalls, 0);
+  });
+
+  testWidgets('加好友限频：冷却中的设备显示倒计时且无法点击加好友', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _controller();
+    controller.friendRequestCooldownValue = const Duration(seconds: 5);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(_app(controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('nav-rail-contacts')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(FilledButton, '添加好友'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('5 秒后可重试'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, '加好友'), findsNothing);
+    expect(controller.requestChatCalls, 0);
+
+    // 关闭对话框，让倒计时定时器随 dispose 一起停掉。
+    await tester.tap(find.widgetWithText(TextButton, '关闭'));
+    await tester.pump(const Duration(milliseconds: 400));
   });
 }

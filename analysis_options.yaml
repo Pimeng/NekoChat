@@ -12,6 +12,8 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   exclude:
     - build/**
+    # 词表生成/校验等开发脚本，不属于应用代码。
+    - tool/**
     - android/**
     - ios/**
     - web/**

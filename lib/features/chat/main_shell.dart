@@ -2466,10 +2466,33 @@ class _AddFriendDialog extends StatefulWidget {
 class _AddFriendDialogState extends State<_AddFriendDialog> {
   final _codeController = TextEditingController();
 
+  /// 冷却倒计时期间每秒重建一次，让“X 秒后可重试”及时解除。
+  Timer? _cooldownTicker;
+
   @override
   void dispose() {
+    _cooldownTicker?.cancel();
     _codeController.dispose();
     super.dispose();
+  }
+
+  /// 只有存在冷却中的设备时才跑定时器，避免无谓重建（也避免测试里 pumpAndSettle 卡住）。
+  void _syncCooldownTicker(bool active) {
+    if (active) {
+      _cooldownTicker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else {
+      _cooldownTicker?.cancel();
+      _cooldownTicker = null;
+    }
+  }
+
+  String _cooldownLabel(Duration duration) {
+    final seconds = (duration.inMilliseconds / 1000).ceil();
+    return seconds >= 60
+        ? '${(seconds / 60).ceil()} 分钟后可重试'
+        : '$seconds 秒后可重试';
   }
 
   @override
@@ -2494,6 +2517,17 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                             rawInput,
                           ))
                       .firstOrNull;
+            // 加好友限频：对冷却中的设备禁用按钮并显示倒计时。
+            final cooldowns = <String, Duration>{
+              for (final peer in candidates)
+                peer.deviceId: controller.friendRequestCooldown(peer.deviceId),
+            };
+            final matchedCooldown = matched == null
+                ? Duration.zero
+                : (cooldowns[matched.deviceId] ?? Duration.zero);
+            _syncCooldownTicker(
+              cooldowns.values.any((duration) => duration > Duration.zero),
+            );
             return Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2517,14 +2551,16 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                             Text(
                               controller.myPairingCode,
                               style: theme.textTheme.titleMedium?.copyWith(
-                                fontFeatures: const [
-                                  FontFeature.tabularFigures(),
-                                ],
-                                letterSpacing: 2,
+                                letterSpacing: 1,
                               ),
                             ),
                           ],
                         ),
+                      ),
+                      IconButton(
+                        tooltip: '复制口令',
+                        onPressed: controller.copyPairingCode,
+                        icon: const Icon(Icons.copy, size: 18),
                       ),
                       TextButton.icon(
                         onPressed: controller.regeneratePairingCode,
@@ -2537,7 +2573,7 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
-                    '把口令告诉对方，对方用它加你时可穿透你的“屏蔽加好友申请”。',
+                    '把口令告诉对方（共 ${AppController.pairingWordCount} 个词，可点左侧按钮复制），对方用它加你时可穿透你的“屏蔽加好友申请”。',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -2547,10 +2583,10 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                 TextField(
                   controller: _codeController,
                   autofocus: true,
-                  textCapitalization: TextCapitalization.characters,
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
-                    labelText: '输入对方口令（通过口令添加）',
+                    labelText:
+                        '输入对方口令（${AppController.pairingWordCount} 个词，空格可不输）',
                     prefixIcon: const Icon(Icons.vpn_key),
                     border: const OutlineInputBorder(),
                     suffixIcon: _codeController.text.isEmpty
@@ -2583,16 +2619,21 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         subtitle: Text('口令匹配 · ${matched.ip}'),
-                        trailing: FilledButton(
-                          onPressed: () => Navigator.of(context).pop(
-                            _AddFriendResult(
-                              peer: matched,
-                              viaPairingCode: true,
-                              code: rawInput,
-                            ),
-                          ),
-                          child: const Text('加好友'),
-                        ),
+                        trailing: matchedCooldown > Duration.zero
+                            ? Text(
+                                _cooldownLabel(matchedCooldown),
+                                style: theme.textTheme.labelSmall,
+                              )
+                            : FilledButton(
+                                onPressed: () => Navigator.of(context).pop(
+                                  _AddFriendResult(
+                                    peer: matched,
+                                    viaPairingCode: true,
+                                    code: rawInput,
+                                  ),
+                                ),
+                                child: const Text('加好友'),
+                              ),
                       ),
                     )
                   else
@@ -2649,15 +2690,25 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
-                              trailing: FilledButton.tonal(
-                                onPressed: () => Navigator.of(context).pop(
-                                  _AddFriendResult(
-                                    peer: peer,
-                                    viaPairingCode: false,
-                                  ),
-                                ),
-                                child: const Text('加好友'),
-                              ),
+                              trailing:
+                                  (cooldowns[peer.deviceId] ?? Duration.zero) >
+                                      Duration.zero
+                                  ? Text(
+                                      _cooldownLabel(
+                                        cooldowns[peer.deviceId]!,
+                                      ),
+                                      style: theme.textTheme.labelSmall,
+                                    )
+                                  : FilledButton.tonal(
+                                      onPressed: () =>
+                                          Navigator.of(context).pop(
+                                            _AddFriendResult(
+                                              peer: peer,
+                                              viaPairingCode: false,
+                                            ),
+                                          ),
+                                      child: const Text('加好友'),
+                                    ),
                             );
                           },
                         ),
@@ -3293,7 +3344,9 @@ class _DetachedConversationWindowState
             onPickFavoriteStickers: controller.pickAndAddFavoriteStickers,
             onSendFavoriteSticker: (sticker) async {
               final reply = _replyingTo;
-              if (reply != null && mounted) setState(() => _replyingTo = null);
+              if (reply != null && mounted) {
+                setState(() => _replyingTo = null);
+              }
               await controller.sendFavoriteSticker(
                 sticker,
                 conversationId: widget.conversationId,

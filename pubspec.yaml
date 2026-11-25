@@ -85,6 +85,8 @@ flutter:
 
   assets:
     - assets/app.png
+    # 加好友口令的中文词表（JSON，运行时加载一次）
+    - assets/pairing_words.json
     # 仓库不含字体文件，但此目录会被打包：编译前把字体 .ttf 放进 assets/font/
     # 即随应用分发，启动时由 lib/core/fonts/bundled_fonts.dart 按真实族名注册。
     # 不放则运行时回退到系统已安装字体（lib/core/fonts/installed_fonts.dart），

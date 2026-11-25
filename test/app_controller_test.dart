@@ -11,6 +11,7 @@ import 'package:neko_chat/core/identity/database_key_provider.dart';
 import 'package:neko_chat/core/models/models.dart';
 import 'package:neko_chat/core/networking/chat_transport.dart';
 import 'package:neko_chat/core/networking/discovery_service.dart';
+import 'package:neko_chat/core/networking/friend_request_limiter.dart';
 import 'package:neko_chat/core/notifications/system_notification_service.dart';
 import 'package:neko_chat/core/protocol/protocol.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -33,6 +34,8 @@ class _Setup {
 }
 
 void main() {
+  // 控制器启动时会从 assets 加载口令词表，需要初始化测试 binding。
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(sqfliteFfiInit);
 
   _Setup createController(
@@ -40,6 +43,7 @@ void main() {
     required Duration requestTimeout,
     SystemNotificationService? notifications,
     bool hasExistingKey = false,
+    FriendRequestLimiter? friendRequestLimiter,
   }) {
     final database = AppDatabase(directory: () async => directory);
     final transport = _FakeTransport();
@@ -51,6 +55,7 @@ void main() {
       transport: transport,
       notifications: notifications ?? _FakeNotifications(),
       bossKey: bossKey,
+      friendRequestLimiter: friendRequestLimiter,
       discoveryFactory:
           ({
             required LocalIdentity identity,
@@ -210,7 +215,10 @@ void main() {
     await setup.controller.setup(displayName: '本机', password: '1234');
     expect(setup.controller.stage, AppStage.ready);
 
-    final secret = setup.controller.pairingSecret!;
+    // 口令证明基于归一化口令（中文词口令去掉词间空格）计算。
+    final secret = AppController.normalizePairingCode(
+      setup.controller.pairingSecret!,
+    );
     final myDeviceId = setup.controller.identity!.deviceId;
 
     setup.transport.emit(
@@ -558,9 +566,7 @@ void main() {
     setup.transport.emit(
       textMessagePacket(sessionId, '隐藏期间到达', messageId: 'msg-hidden'),
     );
-    await _waitUntil(
-      () => notifications.shown.contains('message:msg-hidden'),
-    );
+    await _waitUntil(() => notifications.shown.contains('message:msg-hidden'));
   });
 
   test('取消发送中的聊天请求会清空待确认并通知对端', () async {
@@ -584,7 +590,10 @@ void main() {
     await _waitUntil(() => setup.controller.chatRequests.isNotEmpty);
     final request = setup.controller.chatRequests.values.single;
     expect(request.incoming, isFalse);
-    expect(setup.controller.chats.single.state, ChatSessionState.pendingOutgoing);
+    expect(
+      setup.controller.chats.single.state,
+      ChatSessionState.pendingOutgoing,
+    );
 
     await setup.controller.cancelChatRequest(request);
 
@@ -778,11 +787,7 @@ void main() {
       ),
     ]);
 
-    await setup.controller.setGroupMemberRole(
-      group,
-      member,
-      GroupRole.admin,
-    );
+    await setup.controller.setGroupMemberRole(group, member, GroupRole.admin);
 
     final updated = (await setup.database.loadGroupMembers(group.groupId))
         .firstWhere((value) => value.deviceId == 'member-device');
@@ -794,11 +799,7 @@ void main() {
     );
     expect(broadcast.payload['members'], isA<List>());
 
-    await setup.controller.setGroupMemberRole(
-      group,
-      member,
-      GroupRole.member,
-    );
+    await setup.controller.setGroupMemberRole(group, member, GroupRole.member);
     expect(
       (await setup.database.loadGroupMembers(group.groupId))
           .firstWhere((value) => value.deviceId == 'member-device')
@@ -1196,10 +1197,7 @@ void main() {
     setup.controller.groups = [group];
     setPeerOnline(setup);
 
-    await setup.controller.inviteToGroup(
-      group,
-      setup.controller.peers.single,
-    );
+    await setup.controller.inviteToGroup(group, setup.controller.peers.single);
 
     final invite = setup.transport.sentEnvelopes.lastWhere(
       (envelope) => envelope.type == MessageType.groupInvite,
@@ -1263,11 +1261,7 @@ void main() {
                 'displayName': '群主',
                 'role': 'owner',
               },
-              {
-                'deviceId': myDeviceId,
-                'displayName': '本机',
-                'role': 'member',
-              },
+              {'deviceId': myDeviceId, 'displayName': '本机', 'role': 'member'},
               {
                 'deviceId': 'new-member',
                 'displayName': '新同学',
@@ -1283,9 +1277,7 @@ void main() {
     final members = await setup.database.loadGroupMembers('group-sync');
     expect(members.any((member) => member.deviceId == 'new-member'), isTrue);
     expect(
-      members
-          .firstWhere((member) => member.deviceId == 'owner-device')
-          .role,
+      members.firstWhere((member) => member.deviceId == 'owner-device').role,
       GroupRole.owner,
     );
   });
@@ -1750,6 +1742,102 @@ void main() {
       ),
       isFalse,
     );
+  });
+
+  test('加好友限频：发送方冷却期内不会重复发起申请', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-rate-outgoing-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(milliseconds: 200),
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+
+    setPeerOnline(setup);
+    final peer = setup.controller.peers.single;
+    await setup.controller.requestChat(peer);
+    // 等第一条申请超时清除，模拟“刚失败就想再试一次”。
+    await _waitUntil(
+      () =>
+          setup.controller.chatRequests.isEmpty &&
+          setup.controller.chats.every(
+            (chat) => chat.state == ChatSessionState.none,
+          ),
+    );
+    final sentBefore = setup.transport.sentEnvelopes.length;
+
+    await setup.controller.requestChat(peer);
+
+    expect(setup.transport.sentEnvelopes.length, sentBefore);
+    expect(setup.controller.chatRequests, isEmpty);
+    expect(setup.controller.topRightMessage, contains('频繁'));
+  });
+
+  test('加好友限频：被添加方按设备限频并在窗口结束后恢复', () async {
+    var now = DateTime(2026, 1, 1);
+    final limiter = FriendRequestLimiter(
+      clock: () => now,
+      outgoingCooldown: Duration.zero,
+      window: const Duration(seconds: 2),
+      outgoingWindowLimit: 100,
+      incomingPerPeerLimit: 1,
+      incomingGlobalLimit: 100,
+    );
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-rate-incoming-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 30),
+      friendRequestLimiter: limiter,
+    );
+    addTearDown(() async {
+      setup.controller.clearTopRightMessage();
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+
+    IncomingPacket request(String requestId) => IncomingPacket(
+      envelope: ProtocolEnvelope(
+        type: MessageType.chatRequest,
+        payload: {
+          'requestId': requestId,
+          'deviceId': 'peer-device',
+          'displayName': '李四',
+        },
+      ),
+      remoteAddress: '192.168.1.20',
+    );
+
+    setup.transport.emit(request('rate-1'));
+    await _waitUntil(() => setup.controller.chatRequests.containsKey('rate-1'));
+    await setup.controller.rejectChatRequest(
+      setup.controller.chatRequests['rate-1']!,
+    );
+    await _waitUntil(() => setup.controller.chatRequests.isEmpty);
+
+    // 冷却窗口内再发一次：被限频静默丢弃，不生成申请。
+    setup.transport.emit(request('rate-2'));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(setup.controller.chatRequests, isEmpty);
+
+    // 窗口滑过后恢复受理。
+    now = now.add(const Duration(seconds: 3));
+    setup.transport.emit(request('rate-3'));
+    await _waitUntil(() => setup.controller.chatRequests.containsKey('rate-3'));
   });
 }
 

@@ -368,6 +368,7 @@ class PreviewAppController extends AppController {
   final Map<String, Map<String, GroupRole>> _rolesByGroup = {};
   final Map<String, List<GroupMember>> _membersByGroup = {};
   int _nextMessageSeq = 100;
+  bool _disposed = false;
 
   void reset({AppStage initialStage = AppStage.ready}) {
     stage = initialStage;
@@ -470,7 +471,9 @@ class PreviewAppController extends AppController {
     windowsNotificationsEnabled = true;
     lanDiscoveryEnabled = true;
     blockFriendRequests = false;
-    pairingSecret = 'ABCD2345';
+    // 词表是 assets 数据，预览模式同样异步加载；加载完成前先用占位口令展示。
+    pairingSecret = '月亮 咖啡 火箭 西瓜 星星';
+    unawaited(_loadPairingSecret());
     bossKeyEnabled = true;
     bossKeyShortcut = BossKeyShortcut.altF;
     bossKeyNotifyWhenHidden = false;
@@ -655,14 +658,17 @@ class PreviewAppController extends AppController {
     notifyListeners();
   }
 
+  Future<void> _loadPairingSecret() async {
+    await ensurePairingWordListLoaded();
+    if (_disposed) return;
+    pairingSecret = generatePairingSecret();
+    notifyListeners();
+  }
+
   @override
   Future<void> regeneratePairingCode() async {
-    const alphabet = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
-    final seed = DateTime.now().microsecondsSinceEpoch;
-    pairingSecret = List.generate(
-      8,
-      (i) => alphabet[(seed >> (i * 3)) % alphabet.length],
-    ).join();
+    await ensurePairingWordListLoaded();
+    pairingSecret = generatePairingSecret();
     showPreviewToast('预览模式：已重新生成口令 $myPairingCode', icon: Icons.vpn_key);
   }
 
@@ -1241,6 +1247,7 @@ class PreviewAppController extends AppController {
 
   @override
   void dispose() {
+    _disposed = true;
     final service = _previewStandaloneNotifications;
     _previewStandaloneNotifications = null;
     if (service != null) {

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:material_ui/material_ui.dart';
@@ -23,9 +22,11 @@ import '../core/fonts/bundled_fonts.dart';
 import '../core/fonts/installed_fonts.dart';
 import '../core/identity/database_key_provider.dart';
 import '../core/identity/identity_service.dart';
+import '../core/identity/pairing_word_list.dart';
 import '../core/models/models.dart';
 import '../core/networking/chat_transport.dart';
 import '../core/networking/discovery_service.dart';
+import '../core/networking/friend_request_limiter.dart';
 import '../core/notifications/notification_window_channel.dart';
 import '../core/notifications/standalone_notification_service.dart';
 import '../core/notifications/system_notification_service.dart';
@@ -65,9 +66,13 @@ class AppController extends ChangeNotifier {
     SystemNotificationService? notifications,
     BossKeyService? bossKey,
     DiscoveryServiceFactory? discoveryFactory,
+    FriendRequestLimiter? friendRequestLimiter,
+    PairingWordList? pairingWordList,
     this.onBossKeyVisibilityChanged,
     this._requestTimeout = NetworkConfig.requestTimeout,
   }) : _keyProvider = keyProvider ?? EncryptedFileDatabaseKeyProvider(),
+       _friendRequestLimiter = friendRequestLimiter ?? FriendRequestLimiter(),
+       _pairingWordList = pairingWordList ?? PairingWordList(),
        _database = database ?? AppDatabase(),
        _transport = transport ?? WebSocketChatTransport(),
        _notifications = notifications ?? AdaptiveDesktopNotificationService(),
@@ -172,6 +177,8 @@ class AppController extends ChangeNotifier {
   final BossKeyService _bossKey;
   final DiscoveryServiceFactory _discoveryFactory;
   final Duration _requestTimeout;
+  final FriendRequestLimiter _friendRequestLimiter;
+  final PairingWordList _pairingWordList;
   final FutureOr<void> Function(bool hidden)? onBossKeyVisibilityChanged;
   final _log = Logger('AppController');
   DiscoveryService? _discovery;
@@ -373,14 +380,21 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_lanDiscoverySetting),
       fallback: true,
     );
+    // 口令词表是 assets 数据，启动时加载一次；失败则应用启动失败并报错。
+    await _pairingWordList.load();
     final storedPairingSecret = await _database.loadSetting(
       _pairingSecretSetting,
     );
-    if (storedPairingSecret != null && storedPairingSecret.isNotEmpty) {
+    if (storedPairingSecret != null &&
+        isCurrentPairingSecret(storedPairingSecret)) {
       pairingSecret = storedPairingSecret;
     } else {
-      pairingSecret = _generatePairingSecret();
+      // 首次启动，或从旧版 8 位字母数字口令/旧词表升级：直接换成中文词口令。
+      pairingSecret = generatePairingSecret();
       await _database.saveSetting(_pairingSecretSetting, pairingSecret!);
+      if (storedPairingSecret != null && storedPairingSecret.isNotEmpty) {
+        _log.info('已把旧版口令升级为中文词口令');
+      }
     }
     blockFriendRequests = _settingBool(
       await _database.loadSetting(_blockFriendRequestsSetting),
@@ -451,7 +465,10 @@ class AppController extends ChangeNotifier {
     await _recoverInterruptedRequests();
     groups = await _database.loadGroups();
     for (final group in groups) {
-      _rememberMyRole(group.groupId, await _database.loadGroupMembers(group.groupId));
+      _rememberMyRole(
+        group.groupId,
+        await _database.loadGroupMembers(group.groupId),
+      );
     }
     final localIdentity = identity!;
     await _notifications.initialize();
@@ -713,10 +730,7 @@ class AppController extends ChangeNotifier {
   /// 开关“屏蔽加好友申请”。开启后忽略陌生人的申请（口令申请与已验证好友不受影响）。
   Future<void> setBlockFriendRequests(bool value) async {
     if (blockFriendRequests == value) return;
-    await _database.saveSetting(
-      _blockFriendRequestsSetting,
-      value.toString(),
-    );
+    await _database.saveSetting(_blockFriendRequestsSetting, value.toString());
     blockFriendRequests = value;
     notifyListeners();
   }
@@ -961,33 +975,54 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 口令字符表：去掉易混的 0/O/1/I/L，便于机房里口头报读与手动输入。
-  static const _pairingAlphabet = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+  /// 中文词口令：从词表里不放回随机取 [pairingWordCount] 个词，
+  /// 展示时按词用空格分隔（如 `月亮 咖啡 火箭 西瓜 星星`）。
+  ///
+  /// 5 个词 × 2048 词的词表约 55 bit，比旧版 8 位字母数字口令（约 40 bit）强，
+  /// 同时天然适合口头报读与记忆。词表见 [PairingWordList]（assets 资源）。
+  static const int pairingWordCount = PairingWordList.wordCount;
 
-  /// 口令长度（字符数）。8 位在“可口头报读”的前提下尽量提高随意猜测的成本。
-  static const _pairingCodeLength = 8;
-
-  /// 本机随机口令（秘密）。首次就绪时生成并持久化，明文仅本地保存，不随公告广播。
+  /// 本机随机口令（秘密），按词用空格分隔。首次就绪时生成并持久化，
+  /// 明文仅本地保存，不随公告广播。
   String? pairingSecret;
 
-  /// 格式化后的本机口令，展示给对方以便互加（形如 `XXXX XXXX`）。
+  /// 展示给对方的本机口令：新格式已按词分好组，旧版 8 位口令做兼容格式化。
   String get myPairingCode => formatPairingCode(pairingSecret ?? '');
 
-  /// 把紧凑口令格式化为分组展示；非 8 位时原样返回。
+  /// 旧版口令：8 位大写字母/数字（如 `K7F2Q9XM`）。
+  static bool _isLegacyPairingCode(String code) =>
+      code.length == 8 && RegExp(r'^[A-Z0-9]+$').hasMatch(code);
+
+  /// 格式化展示用的口令：
+  /// - 旧版 8 位字母数字 → `XXXX XXXX`；
+  /// - 中文词口令本身已按词分隔，原样返回。
   static String formatPairingCode(String code) {
-    if (code.length != _pairingCodeLength) return code;
-    return '${code.substring(0, 4)} ${code.substring(4)}';
+    if (_isLegacyPairingCode(code)) {
+      return '${code.substring(0, 4)} ${code.substring(4)}';
+    }
+    return code;
   }
 
-  /// 归一化用户输入的口令：去空白并大写，便于与存储的紧凑口令比较。
+  /// 归一化用户输入的口令：去掉所有空白（含全角空格）并转大写。
+  ///
+  /// 中文词口令按词存储时带空格，输入时空格可有可无——归一化后两者一致；
+  /// 旧版字母数字口令也能被同一套规则处理，因此新旧版本可以互相添加。
   static String normalizePairingCode(String value) =>
       value.replaceAll(RegExp(r'\s+'), '').toUpperCase();
 
-  /// 口令哈希 `sha256(口令 + deviceId)`，随 deviceId 加盐，随公告广播供对方本地匹配。
+  /// 判断持久化的口令是否为当前格式（词数正确且词都在当前词表内）。
+  /// 旧版 8 位口令或词表升级后不再匹配的口令会在启动时被迁移成新口令。
+  bool isCurrentPairingSecret(String secret) =>
+      _pairingWordList.isCurrentSecret(secret);
+
+  /// 口令哈希 `sha256(归一化口令 + deviceId)`，随 deviceId 加盐，随公告广播供对方本地匹配。
+  /// 哈希始终基于去掉空格的紧凑口令，保证“带不带空格”算出的哈希一致。
   String? get _pairingHash {
     final secret = pairingSecret;
     if (secret == null || secret.isEmpty || identity == null) return null;
-    return sha256String(secret + identity!.deviceId);
+    final normalized = normalizePairingCode(secret);
+    if (normalized.isEmpty) return null;
+    return sha256String(normalized + identity!.deviceId);
   }
 
   /// 判断某个已发现设备的口令哈希是否与输入口令一致。
@@ -997,17 +1032,39 @@ class AppController extends ChangeNotifier {
     return sha256String(normalized + peer.deviceId) == peer.pairingHash;
   }
 
-  static String _generatePairingSecret() {
-    final random = Random.secure();
-    return List.generate(
-      _pairingCodeLength,
-      (_) => _pairingAlphabet[random.nextInt(_pairingAlphabet.length)],
-    ).join();
+  /// 加载口令词表（幂等）。正常启动由 [_enterReady] 完成；
+  /// 预览模式等不经过初始化的入口需要先调用。
+  Future<void> ensurePairingWordListLoaded() => _pairingWordList.load();
+
+  /// 生成新的中文词口令：从已加载的词表里不放回随机取 [pairingWordCount] 个词。
+  ///
+  /// 令词表大小为 N，熵约为 log2(N × (N-1) × … × (N-4))；2048 词时约 55 bit。
+  String generatePairingSecret() => _pairingWordList.generateSecret();
+
+  /// 距离可以向 [deviceId] 再次发起好友申请还需等待多久；可立即发起时为 [Duration.zero]。
+  Duration friendRequestCooldown(String deviceId) =>
+      _friendRequestLimiter.outgoingCooldownRemaining(deviceId);
+
+  /// 把冷却时长格式化为“X 秒”/“X 分钟”，供提示文案使用。
+  static String _formatCooldown(Duration duration) {
+    final seconds = duration.inMilliseconds <= 0
+        ? 0
+        : (duration.inMilliseconds / 1000).ceil();
+    return seconds >= 60 ? '${(seconds / 60).ceil()} 分钟' : '$seconds 秒';
+  }
+
+  /// 复制展示用的口令到剪贴板（含词间空格，便于对方直接粘贴）。
+  Future<void> copyPairingCode() async {
+    final code = myPairingCode;
+    if (code.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    _showTopRightMessage('已复制口令', icon: Icons.copy);
   }
 
   /// 重新生成本机口令并广播新的口令哈希；旧口令随即失效。
   Future<void> regeneratePairingCode() async {
-    final secret = _generatePairingSecret();
+    await _pairingWordList.load();
+    final secret = generatePairingSecret();
     await _database.saveSetting(_pairingSecretSetting, secret);
     pairingSecret = secret;
     _discovery?.updatePairingHash(_pairingHash);
@@ -1046,6 +1103,16 @@ class AppController extends ChangeNotifier {
       active: false,
       hasPendingRequest: hasPending,
     )) {
+      return;
+    }
+    if (!_friendRequestLimiter.allowOutgoing(peer.deviceId)) {
+      final wait = _friendRequestLimiter.outgoingCooldownRemaining(
+        peer.deviceId,
+      );
+      _showTopRightMessage(
+        '加好友太频繁，请 ${_formatCooldown(wait)}后再试',
+        icon: Icons.hourglass_bottom,
+      );
       return;
     }
     final requestId = _uuid.v4();
@@ -1614,7 +1681,14 @@ class AppController extends ChangeNotifier {
     await _openPath(directory, revealPath: path, failure: '无法打开文件所在位置');
   }
 
-  static const _stickerExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
+  static const _stickerExtensions = [
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'bmp',
+  ];
 
   Future<List<FavoriteSticker>> _loadValidFavoriteStickers() async {
     final stored = await _database.loadFavoriteStickers();
@@ -2816,6 +2890,12 @@ class AppController extends ChangeNotifier {
         chatRequests.containsKey(requestId)) {
       return;
     }
+    // 被添加方限频：同设备高频申请或轮换设备号刷屏时静默丢弃，
+    // 不建立申请卡片、不弹系统通知。
+    if (!_friendRequestLimiter.allowIncoming(deviceId)) {
+      _log.info('已按限频策略丢弃来自 $deviceId 的加好友申请');
+      return;
+    }
     final currentChat = chats
         .where((value) => value.peerDeviceId == deviceId)
         .firstOrNull;
@@ -2903,7 +2983,11 @@ class AppController extends ChangeNotifier {
     final proof = payload['pairingProof'];
     final secret = pairingSecret;
     if (proof is! String || secret == null || secret.isEmpty) return false;
-    final expected = sha256String('$secret|$requestId|${identity!.deviceId}');
+    final normalized = normalizePairingCode(secret);
+    if (normalized.isEmpty) return false;
+    final expected = sha256String(
+      '$normalized|$requestId|${identity!.deviceId}',
+    );
     return proof == expected;
   }
 
@@ -3423,7 +3507,8 @@ class AppController extends ChangeNotifier {
     final ownerDisplayName = payload['ownerDisplayName'];
     // 旧版本只发送 Owner 信息，此时邀请人视为 Owner。
     final inviterDeviceId = payload['inviterDeviceId'] ?? ownerDeviceId;
-    final inviterDisplayName = payload['inviterDisplayName'] ?? ownerDisplayName;
+    final inviterDisplayName =
+        payload['inviterDisplayName'] ?? ownerDisplayName;
     if (inviteId is! String ||
         groupId is! String ||
         groupName is! String ||
