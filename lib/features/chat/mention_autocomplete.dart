@@ -29,6 +29,8 @@ class MentionAutocomplete extends StatefulWidget {
     required this.onSend,
     required this.loadCandidates,
     this.hasAttachments = false,
+    this.sendOnCtrlEnter = false,
+    this.onSendOnCtrlEnterChanged,
     this.onPasteAttachments,
   });
 
@@ -37,6 +39,8 @@ class MentionAutocomplete extends StatefulWidget {
   final bool enabled;
   final VoidCallback onSend;
   final bool hasAttachments;
+  final bool sendOnCtrlEnter;
+  final ValueChanged<bool>? onSendOnCtrlEnterChanged;
   final Future<List<MentionCandidate>> Function() loadCandidates;
   final Future<bool> Function()? onPasteAttachments;
 
@@ -220,6 +224,8 @@ class _MentionAutocompleteState extends State<MentionAutocomplete> {
           focusNode: widget.focusNode,
           enabled: widget.enabled,
           hasAttachments: widget.hasAttachments,
+          sendOnCtrlEnter: widget.sendOnCtrlEnter,
+          onSendOnCtrlEnterChanged: widget.onSendOnCtrlEnterChanged,
           onSend: widget.onSend,
           onPasteAttachments: widget.onPasteAttachments,
           onSuggestionPrevious: keyboardActive

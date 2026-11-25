@@ -8,6 +8,8 @@ class MessageComposer extends StatefulWidget {
     required this.enabled,
     required this.onSend,
     this.hasAttachments = false,
+    this.sendOnCtrlEnter = false,
+    this.onSendOnCtrlEnterChanged,
     this.focusNode,
     this.onPasteAttachments,
     this.onSuggestionPrevious,
@@ -22,6 +24,10 @@ class MessageComposer extends StatefulWidget {
 
   /// 是否有待发送附件，用于在输入框为空但有附件时高亮发送按钮。
   final bool hasAttachments;
+
+  /// 为 true 时按 Ctrl + Enter 发送、Enter 换行；为 false 时按 Enter 发送、Ctrl + Enter 换行。
+  final bool sendOnCtrlEnter;
+  final ValueChanged<bool>? onSendOnCtrlEnterChanged;
 
   /// 由外部持有，方便引用回复后立刻把光标送回输入框。
   final FocusNode? focusNode;
@@ -55,10 +61,26 @@ class _MessageComposerState extends State<MessageComposer>
     ),
   ]).animate(_sendPulse);
 
+  late bool _sendOnCtrlEnter = widget.sendOnCtrlEnter;
+
+  @override
+  void didUpdateWidget(covariant MessageComposer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sendOnCtrlEnter != widget.sendOnCtrlEnter) {
+      _sendOnCtrlEnter = widget.sendOnCtrlEnter;
+    }
+  }
+
   @override
   void dispose() {
     _sendPulse.dispose();
     super.dispose();
+  }
+
+  void _setSendOnCtrlEnter(bool value) {
+    if (_sendOnCtrlEnter == value) return;
+    setState(() => _sendOnCtrlEnter = value);
+    widget.onSendOnCtrlEnterChanged?.call(value);
   }
 
   void _triggerSend() {
@@ -69,88 +91,229 @@ class _MessageComposerState extends State<MessageComposer>
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final enterAction =
+        widget.onSuggestionAccept ??
+        (_sendOnCtrlEnter ? _insertNewline : _send);
+    final ctrlEnterAction = _sendOnCtrlEnter ? _send : _insertNewline;
+    final shortcutHint = _sendOnCtrlEnter
+        ? 'Ctrl + Enter 发送，Enter 换行'
+        : 'Enter 发送，Ctrl + Enter 换行';
+    final sendTooltip = _sendOnCtrlEnter ? '发送 (Ctrl + Enter)' : '发送 (Enter)';
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Expanded(
-          child: CallbackShortcuts(
-            bindings: {
-              const SingleActivator(LogicalKeyboardKey.enter):
-                  widget.onSuggestionAccept ?? _send,
-              const SingleActivator(LogicalKeyboardKey.enter, control: true):
-                  _insertNewline,
-              const SingleActivator(LogicalKeyboardKey.numpadEnter):
-                  widget.onSuggestionAccept ?? _send,
-              const SingleActivator(
-                LogicalKeyboardKey.numpadEnter,
-                control: true,
-              ): _insertNewline,
-              const SingleActivator(LogicalKeyboardKey.keyV, control: true):
-                  _paste,
-              const SingleActivator(LogicalKeyboardKey.arrowUp):
-                  ?widget.onSuggestionPrevious,
-              const SingleActivator(LogicalKeyboardKey.arrowDown):
-                  ?widget.onSuggestionNext,
-              const SingleActivator(LogicalKeyboardKey.escape):
-                  ?widget.onSuggestionDismiss,
-            },
-            child: TextField(
-              controller: widget.controller,
-              focusNode: widget.focusNode,
-              enabled: widget.enabled,
-              minLines: 1,
-              maxLines: 5,
-              keyboardType: TextInputType.multiline,
-              textInputAction: TextInputAction.newline,
-              decoration: InputDecoration(
-                hintText: widget.enabled
-                    ? '输入消息（Enter 发送，Ctrl + Enter 换行，可直接粘贴图片）'
-                    : '对方离线，暂时无法发送',
-                border: const OutlineInputBorder(),
-                isDense: true,
+        CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.enter): enterAction,
+            const SingleActivator(LogicalKeyboardKey.enter, control: true):
+                ctrlEnterAction,
+            const SingleActivator(LogicalKeyboardKey.numpadEnter): enterAction,
+            const SingleActivator(
+              LogicalKeyboardKey.numpadEnter,
+              control: true,
+            ): ctrlEnterAction,
+            const SingleActivator(LogicalKeyboardKey.keyV, control: true):
+                _paste,
+            const SingleActivator(LogicalKeyboardKey.arrowUp):
+                ?widget.onSuggestionPrevious,
+            const SingleActivator(LogicalKeyboardKey.arrowDown):
+                ?widget.onSuggestionNext,
+            const SingleActivator(LogicalKeyboardKey.escape):
+                ?widget.onSuggestionDismiss,
+          },
+          child: TextField(
+            controller: widget.controller,
+            focusNode: widget.focusNode,
+            enabled: widget.enabled,
+            minLines: 3,
+            maxLines: 6,
+            keyboardType: TextInputType.multiline,
+            textInputAction: TextInputAction.newline,
+            decoration: InputDecoration(
+              hintText: widget.enabled
+                  ? '输入消息，可直接粘贴图片'
+                  : '对方离线，暂时无法发送',
+              hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
               ),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              contentPadding: const EdgeInsets.fromLTRB(6, 4, 6, 8),
             ),
           ),
         ),
-        const SizedBox(width: 10),
-        ValueListenableBuilder<TextEditingValue>(
-          valueListenable: widget.controller,
-          builder: (context, value, _) {
-            final ready =
-                widget.enabled &&
-                (value.text.trim().isNotEmpty || widget.hasAttachments);
-            return ScaleTransition(
-              scale: _sendScale,
-              child: AnimatedScale(
-                duration: const Duration(milliseconds: 160),
-                curve: Curves.easeOutCubic,
-                scale: ready ? 1.0 : 0.94,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  curve: Curves.easeOutCubic,
-                  decoration: BoxDecoration(
-                    color: !widget.enabled
-                        ? colorScheme.onSurface.withValues(alpha: 0.12)
-                        : ready
-                        ? colorScheme.primary
-                        : colorScheme.primaryContainer,
-                    shape: BoxShape.circle,
-                  ),
-                  child: IconButton(
-                    tooltip: '发送',
-                    onPressed: widget.enabled ? _triggerSend : null,
-                    color: !widget.enabled
-                        ? colorScheme.onSurface.withValues(alpha: 0.38)
-                        : ready
-                        ? colorScheme.onPrimary
-                        : colorScheme.onPrimaryContainer,
-                    icon: const Icon(Icons.send, size: 20),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            if (widget.enabled)
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Text(
+                    shortcutHint,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant.withValues(
+                        alpha: 0.65,
+                      ),
+                    ),
                   ),
                 ),
               ),
-            );
-          },
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: widget.controller,
+              builder: (context, value, _) {
+                final ready =
+                    widget.enabled &&
+                    (value.text.trim().isNotEmpty || widget.hasAttachments);
+                final backgroundColor = !widget.enabled
+                    ? colorScheme.onSurface.withValues(alpha: 0.1)
+                    : ready
+                    ? colorScheme.primary
+                    : colorScheme.primary.withValues(alpha: 0.45);
+                final foregroundColor = !widget.enabled
+                    ? colorScheme.onSurface.withValues(alpha: 0.38)
+                    : ready
+                    ? colorScheme.onPrimary
+                    : colorScheme.onPrimary.withValues(alpha: 0.8);
+                final arrowColor = !widget.enabled
+                    ? colorScheme.onSurface.withValues(alpha: 0.38)
+                    : colorScheme.onPrimary.withValues(alpha: ready ? 1.0 : 0.9);
+                return ScaleTransition(
+                  scale: _sendScale,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOutCubic,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: backgroundColor,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Tooltip(
+                            message: sendTooltip,
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                key: const ValueKey('composer-send-button'),
+                                onTap: ready ? _triggerSend : null,
+                                child: Container(
+                                  height: 34,
+                                  padding: const EdgeInsets.fromLTRB(
+                                    18,
+                                    0,
+                                    12,
+                                    0,
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    '发送',
+                                    style: theme.textTheme.labelLarge?.copyWith(
+                                      color: foregroundColor,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Container(
+                            width: 1,
+                            height: 14,
+                            color: arrowColor.withValues(alpha: 0.38),
+                          ),
+                          Material(
+                            color: Colors.transparent,
+                            child: PopupMenuButton<bool>(
+                              key: const ValueKey('composer-send-mode-button'),
+                              enabled: widget.enabled,
+                              tooltip: '切换发送快捷键',
+                              initialValue: _sendOnCtrlEnter,
+                              position: PopupMenuPosition.over,
+                              offset: const Offset(0, -104),
+                              constraints: const BoxConstraints(
+                                minWidth: 200,
+                                maxWidth: 320,
+                              ),
+                              onSelected: _setSendOnCtrlEnter,
+                              itemBuilder: (context) => [
+                                PopupMenuItem<bool>(
+                                  value: false,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        width: 20,
+                                        child: !_sendOnCtrlEnter
+                                            ? Icon(
+                                                Icons.check,
+                                                size: 16,
+                                                color: colorScheme.primary,
+                                              )
+                                            : null,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      const Flexible(
+                                        child: Text('按 Enter 键发送消息'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                PopupMenuItem<bool>(
+                                  value: true,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        width: 20,
+                                        child: _sendOnCtrlEnter
+                                            ? Icon(
+                                                Icons.check,
+                                                size: 16,
+                                                color: colorScheme.primary,
+                                              )
+                                            : null,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      const Flexible(
+                                        child: Text('按 Ctrl + Enter 键发送消息'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                              child: SizedBox(
+                                width: 30,
+                                height: 34,
+                                child: Center(
+                                  child: Icon(
+                                    Icons.keyboard_arrow_down,
+                                    size: 17,
+                                    color: arrowColor,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
         ),
       ],
     );

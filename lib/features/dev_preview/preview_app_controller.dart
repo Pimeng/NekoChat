@@ -782,6 +782,12 @@ class PreviewAppController extends AppController {
   }
 
   @override
+  Future<void> setSendOnCtrlEnter(bool value) async {
+    sendOnCtrlEnter = value;
+    notifyListeners();
+  }
+
+  @override
   Future<void> setSeparateFonts(bool value) async {
     separateFonts = value;
     appearanceRevision.value++;

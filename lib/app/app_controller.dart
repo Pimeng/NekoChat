@@ -101,6 +101,7 @@ class AppController extends ChangeNotifier {
   static const _boldTextSetting = 'bold_text';
   static const _stickerSuggestionsEnabledSetting =
       'sticker_suggestions_enabled';
+  static const _sendOnCtrlEnterSetting = 'send_on_ctrl_enter';
   static const _fontSeparateSetting = 'font_separate';
   static const _fontFamilyLatinSetting = 'font_family_latin';
 
@@ -306,6 +307,9 @@ class AppController extends ChangeNotifier {
   /// 是否在聊天输入框中启用收藏表情备注联想。
   bool stickerSuggestionsEnabled = true;
 
+  /// 是否使用 Ctrl + Enter 发送消息（关闭时为 Enter 发送、Ctrl + Enter 换行）。
+  bool sendOnCtrlEnter = false;
+
   /// 仅当外观（字体）设置变化时自增，供根部重建主题/缩放；
   /// 避免高频 [notifyListeners] 都触发 MaterialApp 重建。
   final ValueNotifier<int> appearanceRevision = ValueNotifier<int>(0);
@@ -463,6 +467,10 @@ class AppController extends ChangeNotifier {
     stickerSuggestionsEnabled = _settingBool(
       await _database.loadSetting(_stickerSuggestionsEnabledSetting),
       fallback: true,
+    );
+    sendOnCtrlEnter = _settingBool(
+      await _database.loadSetting(_sendOnCtrlEnterSetting),
+      fallback: false,
     );
     appearanceRevision.value++;
     peerRemarks = await _database.loadPeerRemarks();
@@ -965,6 +973,15 @@ class AppController extends ChangeNotifier {
       );
     }
     stickerSuggestionsEnabled = value;
+    notifyListeners();
+  }
+
+  Future<void> setSendOnCtrlEnter(bool value) async {
+    if (sendOnCtrlEnter == value) return;
+    if (_database.directoryPath != null) {
+      await _database.saveSetting(_sendOnCtrlEnterSetting, value.toString());
+    }
+    sendOnCtrlEnter = value;
     notifyListeners();
   }
 

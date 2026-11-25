@@ -1161,6 +1161,8 @@ class _MainShellState extends State<MainShell> {
           onReorderFavoriteStickers: controller.reorderFavoriteStickers,
           onSetFavoriteStickerRemark: controller.setFavoriteStickerRemark,
           stickerSuggestionsEnabled: controller.stickerSuggestionsEnabled,
+          sendOnCtrlEnter: controller.sendOnCtrlEnter,
+          onSendOnCtrlEnterChanged: controller.setSendOnCtrlEnter,
           onAddMessageToStickers: controller.addMessageToFavoriteStickers,
           actions: [
             IconButton(
@@ -1276,6 +1278,8 @@ class _MainShellState extends State<MainShell> {
           onReorderFavoriteStickers: controller.reorderFavoriteStickers,
           onSetFavoriteStickerRemark: controller.setFavoriteStickerRemark,
           stickerSuggestionsEnabled: controller.stickerSuggestionsEnabled,
+          sendOnCtrlEnter: controller.sendOnCtrlEnter,
+          onSendOnCtrlEnterChanged: controller.setSendOnCtrlEnter,
           onAddMessageToStickers: controller.addMessageToFavoriteStickers,
           onMention: (name) => _insertMention(composer, name),
           loadMentionCandidates: () async {
@@ -3372,6 +3376,8 @@ class _DetachedConversationWindowState
             onReorderFavoriteStickers: controller.reorderFavoriteStickers,
             onSetFavoriteStickerRemark: controller.setFavoriteStickerRemark,
             stickerSuggestionsEnabled: controller.stickerSuggestionsEnabled,
+            sendOnCtrlEnter: controller.sendOnCtrlEnter,
+            onSendOnCtrlEnterChanged: controller.setSendOnCtrlEnter,
             onAddMessageToStickers: controller.addMessageToFavoriteStickers,
             onMention: isGroup
                 ? (name) => _MainShellState._insertMention(_composer, name)
@@ -3589,6 +3595,8 @@ class _ConversationPane extends StatefulWidget {
     this.onReorderFavoriteStickers,
     this.onSetFavoriteStickerRemark,
     this.stickerSuggestionsEnabled = true,
+    this.sendOnCtrlEnter = false,
+    this.onSendOnCtrlEnterChanged,
     this.onAddMessageToStickers,
   });
   final String conversationId;
@@ -3651,6 +3659,8 @@ class _ConversationPane extends StatefulWidget {
   final Future<void> Function(FavoriteSticker sticker, String? remark)?
   onSetFavoriteStickerRemark;
   final bool stickerSuggestionsEnabled;
+  final bool sendOnCtrlEnter;
+  final ValueChanged<bool>? onSendOnCtrlEnterChanged;
   final Future<bool> Function(ChatMessage message)? onAddMessageToStickers;
 
   @override
@@ -4227,8 +4237,17 @@ class _ConversationPaneState extends State<_ConversationPane> {
                 ),
         ),
         Container(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
-          color: Theme.of(context).colorScheme.surface,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border(
+              top: BorderSide(
+                color: Theme.of(
+                  context,
+                ).colorScheme.outlineVariant.withValues(alpha: 0.55),
+              ),
+            ),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -4321,26 +4340,31 @@ class _ConversationPaneState extends State<_ConversationPane> {
                     tooltip: '表情与收藏',
                     visualDensity: VisualDensity.compact,
                     onPressed: widget.enabled ? _toggleStickerPicker : null,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     icon: const Icon(
                       Icons.sentiment_satisfied_alt_outlined,
                       size: 20,
                     ),
                   ),
+                  const SizedBox(width: 2),
                   IconButton(
                     tooltip: '添加图片或文件',
                     visualDensity: VisualDensity.compact,
                     onPressed: widget.enabled ? _pickAttachments : null,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     icon: const Icon(Icons.attach_file, size: 20),
                   ),
                 ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 2),
               widget.loadMentionCandidates == null
                   ? MessageComposer(
                       controller: widget.composer,
                       focusNode: _composerFocus,
                       enabled: widget.enabled,
                       hasAttachments: widget.pendingAttachments.isNotEmpty,
+                      sendOnCtrlEnter: widget.sendOnCtrlEnter,
+                      onSendOnCtrlEnterChanged: widget.onSendOnCtrlEnterChanged,
                       onSend: () => unawaited(_handleSend()),
                       onPasteAttachments: _pasteAttachments,
                     )
@@ -4349,6 +4373,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
                       focusNode: _composerFocus,
                       enabled: widget.enabled,
                       hasAttachments: widget.pendingAttachments.isNotEmpty,
+                      sendOnCtrlEnter: widget.sendOnCtrlEnter,
+                      onSendOnCtrlEnterChanged: widget.onSendOnCtrlEnterChanged,
                       onSend: () => unawaited(_handleSend()),
                       onPasteAttachments: _pasteAttachments,
                       loadCandidates: widget.loadMentionCandidates!,

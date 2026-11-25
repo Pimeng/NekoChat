@@ -1179,27 +1179,47 @@ class _MessageComposerDemoState extends State<_MessageComposerDemo> {
     super.dispose();
   }
 
+  Widget _composerBox(BuildContext context, Widget child) => Container(
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(
+        color: Theme.of(
+          context,
+        ).colorScheme.outlineVariant.withValues(alpha: 0.6),
+      ),
+    ),
+    child: child,
+  );
+
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       const _SubHeading('启用状态（在线）'),
-      MessageComposer(
-        controller: _enabledController,
-        enabled: true,
-        onSend: () {
-          final text = _enabledController.text.trim();
-          if (text.isEmpty) return;
-          widget.onAction('发送消息：$text');
-          _enabledController.clear();
-        },
+      _composerBox(
+        context,
+        MessageComposer(
+          controller: _enabledController,
+          enabled: true,
+          onSend: () {
+            final text = _enabledController.text.trim();
+            if (text.isEmpty) return;
+            widget.onAction('发送消息：$text');
+            _enabledController.clear();
+          },
+        ),
       ),
       const SizedBox(height: 16),
       const _SubHeading('禁用状态（对方离线）'),
-      MessageComposer(
-        controller: _disabledController,
-        enabled: false,
-        onSend: () {},
+      _composerBox(
+        context,
+        MessageComposer(
+          controller: _disabledController,
+          enabled: false,
+          onSend: () {},
+        ),
       ),
     ],
   );
