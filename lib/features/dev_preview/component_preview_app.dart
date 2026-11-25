@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../app/neko_chat_app.dart';
+import '../../core/text/pinyin_search.dart';
 import 'preview_app_controller.dart';
 import 'preview_catalog.dart';
 
@@ -126,10 +127,10 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
         : catalog
               .where(
                 (entry) =>
-                    entry.name.toLowerCase().contains(query) ||
+                    matchesPinyinSearch(entry.name, query) ||
                     entry.widgetType.toLowerCase().contains(query) ||
-                    entry.description.toLowerCase().contains(query) ||
-                    entry.category.label.toLowerCase().contains(query),
+                    matchesPinyinSearch(entry.description, query) ||
+                    matchesPinyinSearch(entry.category.label, query),
               )
               .toList();
 

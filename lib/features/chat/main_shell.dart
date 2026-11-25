@@ -11,6 +11,7 @@ import '../../app/app_controller.dart';
 import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
 import '../../core/protocol/protocol.dart';
+import '../../core/text/pinyin_search.dart';
 import '../common/smooth_dialog.dart';
 import '../settings/settings_page.dart';
 import 'group_info_drawer.dart';
@@ -6286,8 +6287,8 @@ class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
         }(),
     ].where((entry) {
       if (query.isEmpty) return true;
-      return entry.displayName.toLowerCase().contains(query) ||
-          entry.originalDisplayName.toLowerCase().contains(query) ||
+      return matchesPinyinSearch(entry.displayName, query) ||
+          matchesPinyinSearch(entry.originalDisplayName, query) ||
           entry.deviceId.toLowerCase().contains(query) ||
           (entry.peer?.ip.contains(query) ?? false) ||
           (entry.trustedPeer?.lastKnownIp.contains(query) ?? false);
@@ -6299,8 +6300,8 @@ class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
         group.groupId,
         group.name,
       );
-      return displayName.toLowerCase().contains(query) ||
-          group.name.toLowerCase().contains(query);
+      return matchesPinyinSearch(displayName, query) ||
+          matchesPinyinSearch(group.name, query);
     }).toList();
 
     return Dialog(

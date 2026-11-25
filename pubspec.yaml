@@ -52,6 +52,7 @@ dependencies:
   pasteboard: ^0.6.2
   desktop_drop: ^0.8.4
   multiview_desktop: ^1.2.2
+  lpinyin: ^2.0.3
 
 dev_dependencies:
   flutter_test:

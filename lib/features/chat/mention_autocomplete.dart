@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import '../../core/text/pinyin_search.dart';
 import 'message_composer.dart';
 
 class MentionCandidate {
@@ -129,12 +130,14 @@ class _MentionAutocompleteState extends State<MentionAutocomplete> {
   }
 
   void _filterCandidates() {
-    final normalized = _query.trim().toLowerCase();
+    final normalized = _query.trim();
     _filteredCandidates = [
       for (final candidate in _allCandidates)
         if (normalized.isEmpty ||
-            candidate.displayName.toLowerCase().contains(normalized) ||
-            candidate.insertionName.toLowerCase().contains(normalized))
+            matchesPinyinSearch(candidate.displayName, normalized) ||
+            matchesPinyinSearch(candidate.insertionName, normalized) ||
+            (candidate.originalName != null &&
+                matchesPinyinSearch(candidate.originalName!, normalized)))
           candidate,
     ];
     if (_filteredCandidates.isEmpty) {

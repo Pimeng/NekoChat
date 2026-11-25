@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../app/app_controller.dart';
 import '../../core/models/models.dart';
+import '../../core/text/pinyin_search.dart';
 import 'main_shell.dart';
 
 enum _DrawerPage { overview, members, invite, memberDetail }
@@ -824,8 +825,8 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
         member.deviceId,
         member.displayName,
       );
-      return displayName.toLowerCase().contains(query) ||
-          member.displayName.toLowerCase().contains(query);
+      return matchesPinyinSearch(displayName, query) ||
+          matchesPinyinSearch(member.displayName, query);
     }).toList();
 
     return Column(

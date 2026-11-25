@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/models/models.dart';
+import '../../core/text/pinyin_search.dart';
 import '../common/smooth_dialog.dart';
 
 enum StickerPickerTab { emoji, favorites }
@@ -1131,30 +1132,28 @@ List<FavoriteSticker> matchStickersByRemark(
   List<FavoriteSticker> stickers,
   String rawQuery,
 ) {
-  final query = rawQuery.trim().toLowerCase();
+  final query = rawQuery.trim();
   if (query.isEmpty || query.length > 24 || query.startsWith('@')) {
     return const [];
   }
   final scored = <(FavoriteSticker sticker, int score, int order)>[];
   for (var i = 0; i < stickers.length; i++) {
     final sticker = stickers[i];
-    final remark = sticker.remark?.trim().toLowerCase();
+    final remark = sticker.remark?.trim();
     if (remark == null || remark.isEmpty) continue;
     final tokens = remark
         .split(RegExp(r'[\s,，、/]+'))
         .where((token) => token.isNotEmpty)
         .toList();
-    int? score;
-    if (remark == query || tokens.any((t) => t == query)) {
-      score = 0;
-    } else if (remark.startsWith(query) ||
-        tokens.any((t) => t.startsWith(query))) {
-      score = 1;
-    } else if (remark.contains(query)) {
-      score = 2;
+    var bestScore = pinyinMatchScore(remark, query);
+    for (final token in tokens) {
+      final tokenScore = pinyinMatchScore(token, query);
+      if (tokenScore != null && (bestScore == null || tokenScore < bestScore)) {
+        bestScore = tokenScore;
+      }
     }
-    if (score != null) {
-      scored.add((sticker, score, i));
+    if (bestScore != null) {
+      scored.add((sticker, bestScore, i));
     }
   }
   scored.sort((a, b) {
