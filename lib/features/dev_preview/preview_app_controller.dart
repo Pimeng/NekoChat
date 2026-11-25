@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import '../../app/app_controller.dart';
+import '../../core/backup/data_backup_service.dart';
 import '../../core/boss_key/boss_key_service.dart';
 import '../../core/models/models.dart';
 import '../../core/notifications/notification_window_channel.dart';
@@ -1243,6 +1244,42 @@ class PreviewAppController extends AppController {
       ],
       reply: reply ?? replyingTo,
     );
+  }
+
+  @override
+  Future<String?> pickBackupDestinationPath() async =>
+      r'D:\Backups\NekoChat_Backup_Preview.nekobackup';
+
+  @override
+  Future<String?> pickBackupFilePath() async =>
+      r'D:\Backups\NekoChat_Backup_Preview.nekobackup';
+
+  @override
+  Future<BackupManifest> inspectBackup(String sourcePath) async =>
+      BackupManifest(
+        formatVersion: DataBackupService.currentFormatVersion,
+        createdAt: PreviewFixtures.baseTime,
+        displayName: identity?.displayName ?? '橘猫工程师',
+        includesAttachments: true,
+        stickerCount: favoriteStickers.length,
+        fileCount: 8,
+        totalBytes: 2 * 1024 * 1024,
+        entries: const [],
+      );
+
+  @override
+  Future<BackupManifest> createBackup({
+    required String destinationPath,
+    bool includeAttachments = true,
+  }) async {
+    showPreviewToast('预览模式：已模拟创建数据备份（含 ${favoriteStickers.length} 个表情）');
+    return inspectBackup(destinationPath);
+  }
+
+  @override
+  Future<BackupManifest> restoreFromBackup(String sourcePath) async {
+    showPreviewToast('预览模式：已模拟还原备份数据');
+    return inspectBackup(sourcePath);
   }
 
   @override

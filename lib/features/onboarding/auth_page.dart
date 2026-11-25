@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../../app/app_controller.dart';
+import '../common/backup_restore_dialogs.dart';
 
 // 品牌靛蓝（取自种子色）与「橘猫」暖橙点睛色。
 const _brandIndigo = Color(0xFF4666E5);
@@ -59,6 +60,11 @@ class _AuthPageState extends State<AuthPage> {
     if (mounted) setState(() => _busy = false);
   }
 
+  Future<void> _restoreFromBackup() async {
+    if (_busy || widget.controller.restoreInProgress) return;
+    await runRestoreBackupFlow(context, widget.controller);
+  }
+
   void _show(String message) => ScaffoldMessenger.of(
     context,
   ).showSnackBar(SnackBar(content: Text(message)));
@@ -67,16 +73,19 @@ class _AuthPageState extends State<AuthPage> {
   Widget build(BuildContext context) {
     final setup = widget.controller.stage == AppStage.setup;
     final error = widget.controller.errorMessage;
+    final notice = widget.controller.authNoticeMessage;
     final form = _AuthForm(
       setup: setup,
-      busy: _busy,
+      busy: _busy || widget.controller.restoreInProgress,
       obscure: _obscure,
       error: error,
+      notice: notice,
       name: _name,
       password: _password,
       confirmation: _confirmation,
       onToggleObscure: () => setState(() => _obscure = !_obscure),
       onSubmit: _submit,
+      onRestoreBackup: _restoreFromBackup,
     );
     return widget.windowControls
         ? _buildWindowed(context, form)
@@ -355,22 +364,26 @@ class _AuthForm extends StatelessWidget {
     required this.busy,
     required this.obscure,
     required this.error,
+    required this.notice,
     required this.name,
     required this.password,
     required this.confirmation,
     required this.onToggleObscure,
     required this.onSubmit,
+    required this.onRestoreBackup,
   });
 
   final bool setup;
   final bool busy;
   final bool obscure;
   final String? error;
+  final String? notice;
   final TextEditingController name;
   final TextEditingController password;
   final TextEditingController confirmation;
   final VoidCallback onToggleObscure;
   final Future<void> Function() onSubmit;
+  final Future<void> Function() onRestoreBackup;
 
   @override
   Widget build(BuildContext context) {
@@ -456,6 +469,10 @@ class _AuthForm extends StatelessWidget {
                 ),
               ),
             ],
+            if (notice != null) ...[
+              const SizedBox(height: 16),
+              _NoticeBanner(message: notice!),
+            ],
             if (error != null) ...[
               const SizedBox(height: 16),
               _ErrorBanner(message: error!),
@@ -492,6 +509,16 @@ class _AuthForm extends StatelessWidget {
                 label: Text(setup ? '创建并进入' : '解锁'),
               ),
             ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.center,
+              child: TextButton.icon(
+                key: const ValueKey('auth-restore-backup-button'),
+                onPressed: busy ? null : onRestoreBackup,
+                icon: const Icon(Icons.restore_rounded, size: 18),
+                label: const Text('从备份文件还原数据'),
+              ),
+            ),
           ],
         ),
       ),
@@ -522,6 +549,39 @@ class _AuthForm extends StatelessWidget {
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
         borderSide: const BorderSide(color: _brandIndigo, width: 1.6),
+      ),
+    );
+  }
+}
+
+class _NoticeBanner extends StatelessWidget {
+  const _NoticeBanner({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.check_circle_outline_rounded,
+            color: scheme.primary,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: scheme.onPrimaryContainer, height: 1.35),
+            ),
+          ),
+        ],
       ),
     );
   }

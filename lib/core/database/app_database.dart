@@ -69,6 +69,9 @@ class AppDatabase {
   /// 当前使用的数据目录，未打开数据库时为 null。界面用它告诉用户数据在哪。
   String? get directoryPath => _directoryPath;
 
+  /// 解析当前配置的数据目录（数据库尚未打开时也可调用，用于首次引导页直接还原备份）。
+  Future<Directory> resolveDirectory() => _directory();
+
   /// 判断路径是否位于数据目录内；数据库未打开时返回 false。
   bool isInsideDataDirectory(String path) =>
       _attachmentPaths?.isInsideRoot(path) ?? false;
@@ -945,6 +948,30 @@ class AppDatabase {
     where: 'sticker_id = ?',
     whereArgs: [stickerId],
   );
+
+  /// 导出当前数据库的一致性快照到 [destinationPath]，供在线备份使用。
+  ///
+  /// 优先使用 SQLite 原生 `VACUUM INTO`（无需关闭连接且自动合并 WAL）；
+  /// 若不支持或失败，则执行 WAL checkpoint 后直接复制数据库文件。
+  Future<void> exportSnapshot(String destinationPath) async {
+    final target = File(destinationPath);
+    if (await target.exists()) await target.delete();
+    await target.parent.create(recursive: true);
+    final escapedPath = destinationPath.replaceAll("'", "''");
+    try {
+      await database.execute("VACUUM INTO '$escapedPath'");
+      return;
+    } on Object catch (error, stack) {
+      _log.warning('VACUUM INTO 导出快照失败，回退为 checkpoint 复制', error, stack);
+    }
+    try {
+      await database.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
+    } on Object {
+      // 非 WAL 模式或只读时忽略。
+    }
+    final sourcePath = p.join(_directoryPath!, 'neko_chat.db');
+    await File(sourcePath).copy(destinationPath);
+  }
 
   Future<void> close() async {
     await _database?.close();

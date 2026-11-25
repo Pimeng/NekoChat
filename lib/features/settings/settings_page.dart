@@ -5,6 +5,7 @@ import '../../app/app_controller.dart';
 import '../../core/boss_key/boss_key_service.dart';
 import '../../core/models/models.dart';
 import '../../core/notifications/notification_window_channel.dart';
+import '../common/backup_restore_dialogs.dart';
 import '../common/smooth_dialog.dart';
 
 enum SettingsSection {
@@ -13,7 +14,7 @@ enum SettingsSection {
   privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
   files('文件接收', '自动接收与大小上限', Icons.download_outlined),
   notifications('通知', '独立弹窗、系统通知与测试', Icons.notifications_outlined),
-  storage('存储与关于', '数据文件夹与版本信息', Icons.folder_outlined);
+  storage('存储与关于', '数据文件夹、备份还原与版本信息', Icons.folder_outlined);
 
   const SettingsSection(this.title, this.subtitle, this.icon);
   final String title;
@@ -198,10 +199,15 @@ class SettingsPage extends StatelessWidget {
                       : controller.openDataDirectory,
                 ),
               ),
+              const SizedBox(height: 12),
+              _BackupRestoreCard(
+                controller: controller,
+                popRoutesOnRestore: true,
+              ),
               const Padding(
                 padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
                 child: Text(
-                  '聊天记录、身份数据和已接收附件都保存在本机。',
+                  '聊天记录、身份数据、收藏表情包和已接收附件都保存在本机；定期备份可避免重置或换机导致数据丢失。',
                   style: TextStyle(color: Colors.black54, fontSize: 12),
                 ),
               ),
@@ -1208,10 +1214,12 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
                 : controller.openDataDirectory,
           ),
         ),
+        const SizedBox(height: 12),
+        _BackupRestoreCard(controller: controller),
         const Padding(
           padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
           child: Text(
-            '聊天记录、身份数据和已接收附件都保存在本机。',
+            '聊天记录、身份数据、收藏表情包和已接收附件都保存在本机；定期备份可避免重置或换机导致数据丢失。',
             style: TextStyle(color: Colors.black54, fontSize: 12),
           ),
         ),
@@ -1219,6 +1227,70 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
         const SettingsVersionFooter(),
       ],
     };
+  }
+}
+
+class _BackupRestoreCard extends StatelessWidget {
+  const _BackupRestoreCard({
+    required this.controller,
+    this.popRoutesOnRestore = false,
+  });
+
+  final AppController controller;
+  final bool popRoutesOnRestore;
+
+  @override
+  Widget build(BuildContext context) {
+    final busy = controller.backupInProgress || controller.restoreInProgress;
+    final canBackup = !busy && controller.dataDirectory != null;
+    final stickerCount = controller.favoriteStickers.length;
+    return Card(
+      child: Column(
+        children: [
+          ListTile(
+            key: const ValueKey('settings-backup-tile'),
+            leading: const Icon(Icons.backup_outlined),
+            title: const Text('备份数据'),
+            subtitle: Text(
+              stickerCount > 0
+                  ? '打包身份、聊天记录、设置与全部 $stickerCount 个收藏表情'
+                  : '打包身份、聊天记录、设置与收藏表情，防止重置丢失',
+            ),
+            trailing: controller.backupInProgress
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.chevron_right),
+            enabled: canBackup,
+            onTap: canBackup
+                ? () => runCreateBackupFlow(context, controller)
+                : null,
+          ),
+          const Divider(height: 1, indent: 56),
+          ListTile(
+            key: const ValueKey('settings-restore-tile'),
+            leading: const Icon(Icons.restore_outlined),
+            title: const Text('还原数据'),
+            subtitle: const Text('从 .nekobackup 备份文件恢复全部数据与表情包'),
+            trailing: controller.restoreInProgress
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.chevron_right),
+            enabled: !busy,
+            onTap: busy
+                ? null
+                : () => runRestoreBackupFlow(
+                    context,
+                    controller,
+                    popRoutesOnSuccess: popRoutesOnRestore,
+                  ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

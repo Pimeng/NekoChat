@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
+import '../core/backup/data_backup_service.dart';
 import '../core/config/network_config.dart';
 import '../core/boss_key/boss_key_service.dart';
 import '../core/database/app_database.dart';
@@ -68,11 +69,13 @@ class AppController extends ChangeNotifier {
     DiscoveryServiceFactory? discoveryFactory,
     FriendRequestLimiter? friendRequestLimiter,
     PairingWordList? pairingWordList,
+    DataBackupService? backupService,
     this.onBossKeyVisibilityChanged,
     this._requestTimeout = NetworkConfig.requestTimeout,
   }) : _keyProvider = keyProvider ?? EncryptedFileDatabaseKeyProvider(),
        _friendRequestLimiter = friendRequestLimiter ?? FriendRequestLimiter(),
        _pairingWordList = pairingWordList ?? PairingWordList(),
+       _backupService = backupService ?? const DataBackupService(),
        _database = database ?? AppDatabase(),
        _transport = transport ?? WebSocketChatTransport(),
        _notifications = notifications ?? AdaptiveDesktopNotificationService(),
@@ -179,6 +182,7 @@ class AppController extends ChangeNotifier {
   final Duration _requestTimeout;
   final FriendRequestLimiter _friendRequestLimiter;
   final PairingWordList _pairingWordList;
+  final DataBackupService _backupService;
   final FutureOr<void> Function(bool hidden)? onBossKeyVisibilityChanged;
   final _log = Logger('AppController');
   DiscoveryService? _discovery;
@@ -195,6 +199,11 @@ class AppController extends ChangeNotifier {
 
   AppStage stage = AppStage.booting;
   String? errorMessage;
+
+  /// 登录/引导页展示的正向提示（例如刚完成备份还原后提示输入原密码解锁）。
+  String? authNoticeMessage;
+  bool backupInProgress = false;
+  bool restoreInProgress = false;
   String? topRightMessage;
   IconData topRightIcon = Icons.block;
   LocalIdentity? identity;
@@ -494,6 +503,7 @@ class AppController extends ChangeNotifier {
     _discovery!.updatePairingHash(_pairingHash);
     if (lanDiscoveryEnabled) await _discovery!.start();
     errorMessage = null;
+    authNoticeMessage = null;
     dataDirectory = _database.directoryPath;
     stage = AppStage.ready;
     _log.info('应用已就绪，deviceId=${localIdentity.deviceId}');
@@ -2014,6 +2024,149 @@ class AppController extends ChangeNotifier {
     final path = dataDirectory;
     if (path == null) return;
     await _openPath(path, failure: '无法打开数据目录');
+  }
+
+  /// 打开系统目录选择器，返回推荐的备份文件完整路径；取消时返回 null。
+  Future<String?> pickBackupDestinationPath() async {
+    final uri = await FilePicker.pickDirectory(dialogTitle: '选择备份保存位置');
+    if (uri == null) return null;
+    final directoryPath = uri.toFilePath(windows: Platform.isWindows);
+    if (directoryPath.isEmpty) return null;
+    return p.join(directoryPath, DataBackupService.suggestedFileName());
+  }
+
+  /// 打开系统文件选择器，选择 `.nekobackup` 备份文件；取消时返回 null。
+  Future<String?> pickBackupFilePath() async {
+    final result = await FilePicker.pickFile(
+      dialogTitle: '选择 NekoChat 备份文件',
+      type: FileType.custom,
+      allowedExtensions: const [backupFileExtension],
+    );
+    return result?.path;
+  }
+
+  /// 读取并校验备份文件摘要信息，供还原确认弹窗展示。
+  Future<BackupManifest> inspectBackup(String sourcePath) =>
+      _backupService.inspectBackup(File(sourcePath));
+
+  /// 创建本地数据备份（包含密钥、数据库快照、全部收藏表情包、头像及可选附件）。
+  Future<BackupManifest> createBackup({
+    required String destinationPath,
+    bool includeAttachments = true,
+  }) async {
+    if (stage != AppStage.ready || dataDirectory == null) {
+      throw const BackupException('请先解锁应用后再创建备份');
+    }
+    if (backupInProgress || restoreInProgress) {
+      throw const BackupException('当前正在执行备份或还原，请稍候');
+    }
+    backupInProgress = true;
+    notifyListeners();
+    try {
+      final manifest = await _backupService.createBackup(
+        dataDirectory: Directory(dataDirectory!),
+        destinationFile: File(destinationPath),
+        exportDatabaseSnapshot: _database.exportSnapshot,
+        includeAttachments: includeAttachments,
+        displayName: identity?.displayName,
+        appVersion: appBuildName,
+        stickerCount: favoriteStickers.length,
+      );
+      _showTopRightMessage(
+        '备份已保存（含 ${manifest.stickerCount} 个表情）',
+        icon: Icons.backup_outlined,
+      );
+      return manifest;
+    } finally {
+      backupInProgress = false;
+      notifyListeners();
+    }
+  }
+
+  /// 从备份文件还原全部本地数据。
+  ///
+  /// 支持在已登录（设置页）及未登录（创建身份/解锁页）状态下调用；
+  /// 还原完成后统一切回解锁页，要求用户使用该备份对应的密码重新解锁。
+  Future<BackupManifest> restoreFromBackup(String sourcePath) async {
+    if (backupInProgress || restoreInProgress) {
+      throw const BackupException('当前正在执行备份或还原，请稍候');
+    }
+    restoreInProgress = true;
+    notifyListeners();
+    try {
+      final targetDirectory = await _database.resolveDirectory();
+      final manifest = await _backupService.restoreBackup(
+        sourceFile: File(sourcePath),
+        dataDirectory: targetDirectory,
+        beforeSwap: _prepareForDataRestore,
+      );
+      errorMessage = null;
+      authNoticeMessage =
+          '已从备份还原数据（含 ${manifest.stickerCount} 个收藏表情），请输入该备份的密码解锁';
+      stage = await _keyProvider.hasExistingKey()
+          ? AppStage.locked
+          : AppStage.setup;
+      _log.info('已从备份还原数据：$sourcePath');
+      return manifest;
+    } finally {
+      restoreInProgress = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _prepareForDataRestore() async {
+    final wasReady = stage == AppStage.ready || _database.directoryPath != null;
+    for (final timer in _chatRequestTimers.values) {
+      timer.cancel();
+    }
+    _chatRequestTimers.clear();
+    _topRightMessageTimer?.cancel();
+    _topRightMessageTimer = null;
+    topRightMessage = null;
+
+    if (wasReady) {
+      await _discovery?.stop();
+      _discovery = null;
+      await _transport.stop();
+      if (bossKeyEnabled) {
+        try {
+          await _bossKey.configure(enabled: false, shortcut: bossKeyShortcut);
+        } on Object {
+          // 忽略反注册失败，重新解锁后会再次注册。
+        }
+      }
+      unawaited(_notifications.clearAll());
+      await _database.close();
+    }
+
+    identity = null;
+    profileAvatarPath = null;
+    profileAvatarHash = null;
+    peerAvatarPaths.clear();
+    _peerAvatarHashes.clear();
+    _avatarDownloadsInFlight.clear();
+    dataDirectory = null;
+    trustedPeers = {};
+    peers = [];
+    chats = [];
+    groups = [];
+    favoriteStickers = [];
+    _myGroupRoles.clear();
+    _groupMemberRoles.clear();
+    peerRemarks = {};
+    groupRemarks = {};
+    chatRequests.clear();
+    groupInvitations.clear();
+    _pendingGroupPayloads.clear();
+    _outgoingGroupInvites.clear();
+    selectedChatId = null;
+    selectedGroupId = null;
+    messages = [];
+    _openConversationWindows.clear();
+    replyingTo = null;
+    _historySyncedDevices.clear();
+    bossKeyHidden = false;
+    bossKeyError = null;
   }
 
   Future<void> _openPath(

@@ -2,8 +2,58 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:neko_chat/app/app_controller.dart';
+import 'package:neko_chat/core/backup/data_backup_service.dart';
 import 'package:neko_chat/core/models/models.dart';
+import 'package:neko_chat/features/onboarding/auth_page.dart';
 import 'package:neko_chat/features/settings/settings_page.dart';
+
+class _BackupTestController extends AppController {
+  _BackupTestController({this.fakeBackupPath}) {
+    dataDirectory = r'D:\fake\neko_chat_data';
+    stage = AppStage.ready;
+  }
+
+  final String? fakeBackupPath;
+  bool? lastIncludeAttachments;
+  String? lastRestoredPath;
+
+  @override
+  Future<String?> pickBackupDestinationPath() async => fakeBackupPath;
+
+  @override
+  Future<String?> pickBackupFilePath() async => fakeBackupPath;
+
+  @override
+  Future<BackupManifest> inspectBackup(String sourcePath) async =>
+      BackupManifest(
+        formatVersion: 1,
+        createdAt: DateTime(2026, 11, 25, 22, 30),
+        displayName: '测试猫猫',
+        includesAttachments: true,
+        stickerCount: 12,
+        fileCount: 15,
+        totalBytes: 3 * 1024 * 1024,
+        entries: const [],
+      );
+
+  @override
+  Future<BackupManifest> createBackup({
+    required String destinationPath,
+    bool includeAttachments = true,
+  }) async {
+    lastIncludeAttachments = includeAttachments;
+    return inspectBackup(destinationPath);
+  }
+
+  @override
+  Future<BackupManifest> restoreFromBackup(String sourcePath) async {
+    lastRestoredPath = sourcePath;
+    stage = AppStage.locked;
+    authNoticeMessage = '已从备份还原数据（含 12 个收藏表情），请输入该备份的密码解锁';
+    notifyListeners();
+    return inspectBackup(sourcePath);
+  }
+}
 
 class _BlacklistTestController extends AppController {
   @override
@@ -137,5 +187,81 @@ void main() {
 
     expect(controller.blockedPeers, isEmpty);
     expect(find.text('黑名单为空'), findsOneWidget);
+  });
+
+  testWidgets('存储设置页支持触发备份与还原确认流程', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _BackupTestController(
+      fakeBackupPath: r'D:\Backups\demo.nekobackup',
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SettingsSectionPane(
+            controller: controller,
+            section: SettingsSection.storage,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('备份数据'), findsOneWidget);
+    expect(find.text('还原数据'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('settings-backup-tile')));
+    await tester.pumpAndSettle();
+    expect(find.text('备份本地数据'), findsOneWidget);
+    await tester.tap(find.text('同时备份已接收的聊天图片与文件'));
+    await tester.pump();
+    await tester.tap(find.text('选择保存位置'));
+    await tester.pumpAndSettle();
+
+    expect(controller.lastIncludeAttachments, isFalse);
+    expect(find.text('数据备份完成'), findsOneWidget);
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('settings-restore-tile')));
+    await tester.pumpAndSettle();
+    expect(find.text('确认还原数据？'), findsOneWidget);
+    expect(find.text('12 个'), findsOneWidget);
+    await tester.tap(find.text('立即还原'));
+    await tester.pumpAndSettle();
+    expect(controller.lastRestoredPath, r'D:\Backups\demo.nekobackup');
+  });
+
+  testWidgets('首次引导页提供从备份还原入口并在还原后显示提示', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = _BackupTestController(
+      fakeBackupPath: r'D:\Backups\demo.nekobackup',
+    )..stage = AppStage.setup;
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) =>
+              AuthPage(controller: controller, windowControls: false),
+        ),
+      ),
+    );
+
+    expect(find.text('创建本机身份'), findsOneWidget);
+    expect(find.text('从备份文件还原数据'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('auth-restore-backup-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('确认还原数据？'), findsOneWidget);
+    await tester.tap(find.text('立即还原'));
+    await tester.pumpAndSettle();
+
+    expect(controller.stage, AppStage.locked);
+    expect(find.text('解锁 NekoChat'), findsOneWidget);
+    expect(find.textContaining('已从备份还原数据'), findsOneWidget);
   });
 }
