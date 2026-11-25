@@ -249,6 +249,17 @@ class StandaloneNotificationService
           windowButtonVisibility: false,
           alwaysOnTop: true,
           title: 'NekoChat 通知',
+          // Flutter 3.47+ 将 MaterialApp 拆至 material_ui，multiview_desktop
+          // 1.2.2 捕获主窗口壳层时会回退到 WidgetsApp；为其提供 pageRouteBuilder
+          // 以满足 WidgetsApp 断言，避免弹出独立通知窗口时抛出异常。
+          shellOverrides: mvd.ViewShellOverrides(
+            pageRouteBuilder:
+                <T>(RouteSettings settings, WidgetBuilder builder) =>
+                    PageRouteBuilder<T>(
+                      settings: settings,
+                      pageBuilder: (context, _, _) => builder(context),
+                    ),
+          ),
         ),
       );
     } finally {

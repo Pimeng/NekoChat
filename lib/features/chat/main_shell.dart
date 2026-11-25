@@ -40,17 +40,32 @@ Future<void> openConversationInWindow(
 
   final title = _conversationWindowTitle(controller, conversationId);
   if (title == null) return;
+  final parentTheme = Theme.of(context);
   try {
     final viewId = await openWindow(
-      (_, publicId) => _DetachedConversationWindow(
-        controller: controller,
-        conversationId: conversationId,
-        viewId: publicId,
+      (_, publicId) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: parentTheme,
+        home: _DetachedConversationWindow(
+          controller: controller,
+          conversationId: conversationId,
+          viewId: publicId,
+        ),
       ),
       options: WindowOptions(
         title: '$title - NekoChat',
         size: const Size(920, 720),
         minimumSize: const Size(640, 480),
+        // Flutter 3.47+ 使用 material_ui 时 multiview_desktop 会回退到 WidgetsApp，
+        // 提供 pageRouteBuilder 避免触发 WidgetsApp 路由断言异常。
+        shellOverrides: ViewShellOverrides(
+          pageRouteBuilder:
+              <T>(RouteSettings settings, WidgetBuilder builder) =>
+                  PageRouteBuilder<T>(
+                    settings: settings,
+                    pageBuilder: (context, _, _) => builder(context),
+                  ),
+        ),
       ),
       parentContext: context,
     );
