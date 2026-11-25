@@ -207,6 +207,8 @@ class _MainShellState extends State<MainShell> {
           )
           .toList();
 
+  /// 打开与已验证联系人的会话：已有会话直接进入，否则在对方在线时恢复已验证会话。
+  /// 这里不会“添加好友”，好友申请统一从“联系人 → 添加好友”发起。
   Future<void> _openChatWithPeer(
     AppController controller,
     String deviceId,
@@ -434,7 +436,7 @@ class _MainShellState extends State<MainShell> {
           const SizedBox(height: 8),
           _NavRailButton(
             key: const ValueKey('nav-rail-search'),
-            tooltip: '搜索设备或会话',
+            tooltip: '搜索联系人或群聊',
             icon: Icons.search,
             selected: false,
             badgeCount: 0,
@@ -480,26 +482,14 @@ class _MainShellState extends State<MainShell> {
         onSelectPeer: (entry) async {
           Navigator.pop(dialogContext);
           final chat = entry.chat;
-          if (chat?.state == ChatSessionState.active ||
-              entry.peer?.online != true) {
-            if (chat != null) {
-              await controller.selectChat(chat.chatId);
-              if (mounted) setState(() => _navTab = _MainNavTab.messages);
-              return;
-            }
-          }
-          if (entry.trustedPeer != null && !entry.trustedPeer!.blocked) {
-            await _openChatWithPeer(controller, entry.deviceId);
+          if (chat != null) {
+            await controller.selectChat(chat.chatId);
+            if (mounted) setState(() => _navTab = _MainNavTab.messages);
             return;
           }
-          if (entry.peer != null && entry.peer!.online) {
-            await controller.requestChat(entry.peer!);
-            if (mounted) {
-              setState(() {
-                _navTab = _MainNavTab.contacts;
-                _contactDetailMode = _ContactDetailMode.friendRequests;
-              });
-            }
+          // 搜索结果只包含联系人与会话；添加好友统一在“联系人 → 添加好友”里发起。
+          if (entry.trustedPeer != null && !entry.trustedPeer!.blocked) {
+            await _openChatWithPeer(controller, entry.deviceId);
           }
         },
         onSelectGroup: (group) async {
@@ -567,19 +557,14 @@ class _MainShellState extends State<MainShell> {
   }
 
   Widget _buildMessagesSidebar(AppController controller) {
-    final entries = _unifiedPeerEntries(controller)
-        .where((entry) => entry.trustedPeer?.blocked != true)
-        .toList();
     final groups = controller.groups;
 
-    final items = <({int rank, int timestamp, Widget tile})>[
-      for (final entry in entries)
+    final items = <({int timestamp, Widget tile})>[
+      for (final entry in _conversationEntries(controller))
         (
-          rank: entry.chat != null ? 0 : 1,
           timestamp:
               entry.chat?.lastMessageAt?.millisecondsSinceEpoch ??
               entry.chat?.createdAt?.millisecondsSinceEpoch ??
-              entry.peer?.lastSeen.millisecondsSinceEpoch ??
               0,
           tile: UnifiedPeerTile(
             entry: entry,
@@ -588,30 +573,17 @@ class _MainShellState extends State<MainShell> {
                 controller.selectedChatId == entry.chat!.chatId,
             onSecondaryTapDown: (details) =>
                 _showPeerContextMenu(controller, entry, details),
+            // 会话列表只负责打开已有会话；添加好友统一走“联系人 → 添加好友”。
             onTap: () async {
               final chat = entry.chat;
-              if (chat?.state == ChatSessionState.active ||
-                  entry.peer?.online != true) {
-                if (chat != null) {
-                  await controller.selectChat(chat.chatId);
-                }
-                return;
+              if (chat != null) {
+                await controller.selectChat(chat.chatId);
               }
-              if (chat?.state == ChatSessionState.pendingIncoming ||
-                  chat?.state == ChatSessionState.pendingOutgoing) {
-                setState(() {
-                  _navTab = _MainNavTab.contacts;
-                  _contactDetailMode = _ContactDetailMode.friendRequests;
-                });
-                return;
-              }
-              await controller.requestChat(entry.peer!);
             },
           ),
         ),
       for (final group in groups)
         (
-          rank: 0,
           timestamp:
               group.lastMessageAt?.millisecondsSinceEpoch ??
               group.createdAt.millisecondsSinceEpoch,
@@ -644,10 +616,7 @@ class _MainShellState extends State<MainShell> {
             ),
           ),
         ),
-    ]..sort((a, b) {
-        if (a.rank != b.rank) return a.rank.compareTo(b.rank);
-        return b.timestamp.compareTo(a.timestamp);
-      });
+    ]..sort((a, b) => b.timestamp.compareTo(a.timestamp));
 
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -6252,9 +6221,7 @@ class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
       for (final chat in controller.chats) chat.peerDeviceId: chat,
     };
     final candidateIds = <String>{
-      ..._unifiedPeerEntries(controller)
-          .where((e) => e.trustedPeer?.blocked != true)
-          .map((e) => e.deviceId),
+      ..._conversationEntries(controller).map((e) => e.deviceId),
       ...controller.trustedPeers.values
           .where((t) => !t.blocked)
           .map((t) => t.deviceId),
@@ -6321,7 +6288,7 @@ class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
                 autofocus: true,
                 onChanged: (_) => setState(() {}),
                 decoration: InputDecoration(
-                  hintText: '搜索联系人、群聊或局域网设备',
+                  hintText: '搜索联系人或群聊',
                   prefixIcon: const Icon(Icons.search),
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
@@ -6366,7 +6333,7 @@ class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
                       padding: const EdgeInsets.only(bottom: 12),
                       children: [
                         if (matchedPeers.isNotEmpty) ...[
-                          const SectionTitle(title: '联系人与设备'),
+                          const SectionTitle(title: '联系人'),
                           for (final entry in matchedPeers)
                             ListTile(
                               dense: true,
@@ -6499,43 +6466,42 @@ class WelcomePane extends StatelessWidget {
   );
 }
 
-List<UnifiedPeerEntry> _unifiedPeerEntries(AppController controller) {
+/// 会话列表条目：只包含已建立的私聊会话，不会混入底层发现的陌生设备。
+/// 陌生设备不再能通过点击会话列表直接发起好友申请，添加好友统一走
+/// “联系人 → 添加好友”（口令或附近设备）。
+List<UnifiedPeerEntry> _conversationEntries(AppController controller) {
   final peersById = {for (final peer in controller.peers) peer.deviceId: peer};
-  final chatsByPeer = {
-    for (final chat in controller.chats) chat.peerDeviceId: chat,
-  };
-  final deviceIds = <String>{
-    ...peersById.values
-        .where((peer) => peer.online)
-        .map((peer) => peer.deviceId),
-    ...chatsByPeer.keys,
-  };
-  String originalName(String deviceId) =>
-      peersById[deviceId]?.displayName ??
-      chatsByPeer[deviceId]?.displayName ??
-      controller.trustedPeers[deviceId]?.displayName ??
-      '未知设备';
-  final entries = [
-    for (final deviceId in deviceIds)
+  final entries = <UnifiedPeerEntry>[];
+  for (final chat in controller.chats) {
+    if (chat.state != ChatSessionState.active) continue;
+    final trusted = controller.trustedPeers[chat.peerDeviceId];
+    if (trusted?.blocked == true) continue;
+    final peer = peersById[chat.peerDeviceId];
+    final originalName = peer?.displayName ?? chat.displayName;
+    entries.add(
       UnifiedPeerEntry(
-        deviceId: deviceId,
+        deviceId: chat.peerDeviceId,
         displayName: controller.peerDisplayName(
-          deviceId,
-          originalName(deviceId),
+          chat.peerDeviceId,
+          originalName,
         ),
-        originalDisplayName: originalName(deviceId),
-        peer: peersById[deviceId],
-        chat: chatsByPeer[deviceId],
-        trustedPeer: controller.trustedPeers[deviceId],
-        avatarPath: controller.peerAvatarPath(deviceId),
+        originalDisplayName: originalName,
+        peer: peer,
+        chat: chat,
+        trustedPeer: trusted,
+        avatarPath: controller.peerAvatarPath(chat.peerDeviceId),
       ),
-  ];
+    );
+  }
   entries.sort((a, b) {
-    final aOnline = a.peer?.online == true;
-    final bOnline = b.peer?.online == true;
-    if (aOnline != bOnline) return aOnline ? -1 : 1;
-    final aTime = a.chat?.lastMessageAt?.millisecondsSinceEpoch ?? 0;
-    final bTime = b.chat?.lastMessageAt?.millisecondsSinceEpoch ?? 0;
+    final aTime =
+        a.chat?.lastMessageAt?.millisecondsSinceEpoch ??
+        a.chat?.createdAt?.millisecondsSinceEpoch ??
+        0;
+    final bTime =
+        b.chat?.lastMessageAt?.millisecondsSinceEpoch ??
+        b.chat?.createdAt?.millisecondsSinceEpoch ??
+        0;
     if (aTime != bTime) return bTime.compareTo(aTime);
     return a.displayName.compareTo(b.displayName);
   });

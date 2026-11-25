@@ -369,7 +369,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('nav-rail-search')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('global-search-dialog')), findsOneWidget);
-    expect(find.text('搜索联系人、群聊或局域网设备'), findsOneWidget);
+    expect(find.text('搜索联系人或群聊'), findsOneWidget);
   });
 
   testWidgets('拖动分隔线可调整侧边栏宽度并保留收起动画', (tester) async {

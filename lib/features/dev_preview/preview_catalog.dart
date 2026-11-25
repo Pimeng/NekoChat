@@ -310,7 +310,7 @@ List<PreviewEntry> buildPreviewCatalog(
       builder: (_) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SectionTitle(title: '会话与设备'),
+          const SectionTitle(title: '会话'),
           SectionTitle(
             title: '群聊（带右侧操作按钮）',
             trailing: IconButton(
@@ -367,9 +367,9 @@ List<PreviewEntry> buildPreviewCatalog(
     ),
     PreviewEntry(
       id: 'unified-peer-tile',
-      name: '设备与会话列表项',
+      name: '会话列表项',
       widgetType: 'UnifiedPeerTile',
-      description: '覆盖在线已验证（选中）、在线未验证、离线历史会话、等待确认、已拉黑五种状态。',
+      description: '会话列表中的私聊条目：在线已验证（选中）、离线历史会话、等待确认与已拉黑等状态。',
       category: PreviewCategory.sidebar,
       builder: (_) {
         final peers = PreviewFixtures.peers();
@@ -389,20 +389,6 @@ List<PreviewEntry> buildPreviewCatalog(
               selected: true,
               onTap: () => onAction('选中在线会话：晓猫（前端）'),
               onSecondaryTapDown: (_) => onAction('右键点击：晓猫（前端）'),
-            ),
-            const Divider(height: 1),
-            UnifiedPeerTile(
-              entry: UnifiedPeerEntry(
-                deviceId: peers[1].deviceId,
-                displayName: peers[1].displayName,
-                originalDisplayName: peers[1].displayName,
-                peer: peers[1],
-                chat: null,
-                trustedPeer: null,
-              ),
-              selected: false,
-              onTap: () => onAction('发起聊天邀请：三花开发机'),
-              onSecondaryTapDown: (_) => onAction('右键点击：三花开发机'),
             ),
             const Divider(height: 1),
             UnifiedPeerTile(
