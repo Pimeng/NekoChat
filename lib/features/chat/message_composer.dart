@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+
+import '../common/neko_context_menu.dart';
 
 class MessageComposer extends StatefulWidget {
   const MessageComposer({
@@ -61,6 +65,7 @@ class _MessageComposerState extends State<MessageComposer>
     ),
   ]).animate(_sendPulse);
 
+  final GlobalKey _sendButtonGroupKey = GlobalKey();
   late bool _sendOnCtrlEnter = widget.sendOnCtrlEnter;
 
   @override
@@ -83,6 +88,36 @@ class _MessageComposerState extends State<MessageComposer>
     widget.onSendOnCtrlEnterChanged?.call(value);
   }
 
+  Future<void> _showSendModeMenu() async {
+    if (!widget.enabled) return;
+    final box =
+        _sendButtonGroupKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final topRight = box.localToGlobal(Offset(box.size.width, -6));
+    final selected = await showNekoContextMenu<bool>(
+      context: context,
+      position: topRight,
+      width: 214,
+      preferAbove: true,
+      alignRight: true,
+      items: [
+        NekoContextMenuItem<bool>(
+          value: false,
+          label: '按 Enter 键发送消息',
+          selected: !_sendOnCtrlEnter,
+        ),
+        NekoContextMenuItem<bool>(
+          value: true,
+          label: '按 Ctrl + Enter 键发送消息',
+          selected: _sendOnCtrlEnter,
+        ),
+      ],
+    );
+    if (selected != null && mounted) {
+      _setSendOnCtrlEnter(selected);
+    }
+  }
+
   void _triggerSend() {
     if (!widget.enabled) return;
     _sendPulse.forward(from: 0);
@@ -97,9 +132,6 @@ class _MessageComposerState extends State<MessageComposer>
         widget.onSuggestionAccept ??
         (_sendOnCtrlEnter ? _insertNewline : _send);
     final ctrlEnterAction = _sendOnCtrlEnter ? _send : _insertNewline;
-    final shortcutHint = _sendOnCtrlEnter
-        ? 'Ctrl + Enter 发送，Enter 换行'
-        : 'Enter 发送，Ctrl + Enter 换行';
     final sendTooltip = _sendOnCtrlEnter ? '发送 (Ctrl + Enter)' : '发送 (Enter)';
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -151,22 +183,6 @@ class _MessageComposerState extends State<MessageComposer>
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            if (widget.enabled)
-              Flexible(
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: Text(
-                    shortcutHint,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant.withValues(
-                        alpha: 0.65,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: widget.controller,
               builder: (context, value, _) {
@@ -189,6 +205,7 @@ class _MessageComposerState extends State<MessageComposer>
                 return ScaleTransition(
                   scale: _sendScale,
                   child: ClipRRect(
+                    key: _sendButtonGroupKey,
                     borderRadius: BorderRadius.circular(8),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 160),
@@ -233,74 +250,24 @@ class _MessageComposerState extends State<MessageComposer>
                             height: 14,
                             color: arrowColor.withValues(alpha: 0.38),
                           ),
-                          Material(
-                            color: Colors.transparent,
-                            child: PopupMenuButton<bool>(
-                              key: const ValueKey('composer-send-mode-button'),
-                              enabled: widget.enabled,
-                              tooltip: '切换发送快捷键',
-                              initialValue: _sendOnCtrlEnter,
-                              position: PopupMenuPosition.over,
-                              offset: const Offset(0, -104),
-                              constraints: const BoxConstraints(
-                                minWidth: 200,
-                                maxWidth: 320,
-                              ),
-                              onSelected: _setSendOnCtrlEnter,
-                              itemBuilder: (context) => [
-                                PopupMenuItem<bool>(
-                                  value: false,
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      SizedBox(
-                                        width: 20,
-                                        child: !_sendOnCtrlEnter
-                                            ? Icon(
-                                                Icons.check,
-                                                size: 16,
-                                                color: colorScheme.primary,
-                                              )
-                                            : null,
-                                      ),
-                                      const SizedBox(width: 6),
-                                      const Flexible(
-                                        child: Text('按 Enter 键发送消息'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                PopupMenuItem<bool>(
-                                  value: true,
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      SizedBox(
-                                        width: 20,
-                                        child: _sendOnCtrlEnter
-                                            ? Icon(
-                                                Icons.check,
-                                                size: 16,
-                                                color: colorScheme.primary,
-                                              )
-                                            : null,
-                                      ),
-                                      const SizedBox(width: 6),
-                                      const Flexible(
-                                        child: Text('按 Ctrl + Enter 键发送消息'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                              child: SizedBox(
-                                width: 30,
-                                height: 34,
-                                child: Center(
-                                  child: Icon(
-                                    Icons.keyboard_arrow_down,
-                                    size: 17,
-                                    color: arrowColor,
+                          Tooltip(
+                            message: '切换发送快捷键',
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                key: const ValueKey('composer-send-mode-button'),
+                                onTap: widget.enabled
+                                    ? () => unawaited(_showSendModeMenu())
+                                    : null,
+                                child: SizedBox(
+                                  width: 30,
+                                  height: 34,
+                                  child: Center(
+                                    child: Icon(
+                                      Icons.keyboard_arrow_down,
+                                      size: 17,
+                                      color: arrowColor,
+                                    ),
                                   ),
                                 ),
                               ),

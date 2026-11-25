@@ -174,7 +174,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(changedValue, isTrue);
-    expect(find.text('Ctrl + Enter 发送，Enter 换行'), findsOneWidget);
 
     await tester.tap(find.byType(TextField));
     await tester.enterText(find.byType(TextField), '第一行');

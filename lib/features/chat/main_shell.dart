@@ -12,6 +12,7 @@ import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
 import '../../core/protocol/protocol.dart';
 import '../../core/text/pinyin_search.dart';
+import '../common/neko_context_menu.dart';
 import '../common/smooth_dialog.dart';
 import '../settings/settings_page.dart';
 import 'group_info_drawer.dart';
@@ -1984,67 +1985,48 @@ class _MainShellState extends State<MainShell> {
     UnifiedPeerEntry entry,
     TapDownDetails details,
   ) async {
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final position = details.globalPosition;
-    final action = await showMenu<_PeerContextAction>(
+    final isBlocked = entry.trustedPeer?.blocked == true;
+    final action = await showNekoContextMenu<_PeerContextAction>(
       context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(position.dx, position.dy, 0, 0),
-        Offset.zero & overlay.size,
-      ),
+      position: details.globalPosition,
+      width: 164,
       items: [
-        PopupMenuItem(
+        NekoContextMenuItem(
           value: _PeerContextAction.openInWindow,
           enabled: entry.chat != null,
-          child: const ListTile(
-            leading: Icon(Icons.open_in_new),
-            title: Text('在独立窗口打开'),
-          ),
+          icon: Icons.open_in_new,
+          label: '在独立窗口打开',
         ),
-        const PopupMenuItem(
+        const NekoContextMenuItem(
           value: _PeerContextAction.info,
-          child: ListTile(
-            leading: Icon(Icons.badge_outlined),
-            title: Text('查看资料'),
-          ),
+          icon: Icons.badge_outlined,
+          label: '查看资料',
         ),
-        const PopupMenuItem(
+        const NekoContextMenuItem(
           value: _PeerContextAction.remark,
-          child: ListTile(
-            leading: Icon(Icons.drive_file_rename_outline),
-            title: Text('修改备注'),
-          ),
+          icon: Icons.drive_file_rename_outline,
+          label: '修改备注',
         ),
-        PopupMenuItem(
+        NekoContextMenuItem(
           value: _PeerContextAction.delete,
           enabled: entry.chat != null,
-          child: const ListTile(
-            leading: Icon(Icons.delete_outline),
-            title: Text('删除对话'),
-          ),
+          hasDividerBefore: true,
+          destructive: true,
+          icon: Icons.delete_outline,
+          label: '删除对话',
         ),
         if (entry.trustedPeer != null)
-          const PopupMenuItem(
+          const NekoContextMenuItem(
             value: _PeerContextAction.revokeVerification,
-            child: ListTile(
-              leading: Icon(Icons.gpp_bad_outlined),
-              title: Text('取消验证'),
-            ),
+            icon: Icons.gpp_bad_outlined,
+            label: '取消验证',
           ),
-        PopupMenuItem(
+        NekoContextMenuItem(
           value: _PeerContextAction.block,
           enabled: entry.trustedPeer != null,
-          child: ListTile(
-            leading: Icon(
-              entry.trustedPeer?.blocked == true
-                  ? Icons.check_circle_outline
-                  : Icons.block,
-            ),
-            title: Text(
-              entry.trustedPeer?.blocked == true ? '解除拉黑' : '拉黑此人',
-            ),
-          ),
+          destructive: !isBlocked,
+          icon: isBlocked ? Icons.check_circle_outline : Icons.block,
+          label: isBlocked ? '解除拉黑' : '拉黑此人',
         ),
       ],
     );
@@ -2189,63 +2171,46 @@ class _MainShellState extends State<MainShell> {
     ChatGroup group,
     TapDownDetails details,
   ) async {
-    final overlay =
-        Overlay.of(context).context.findRenderObject()! as RenderBox;
-    final position = details.globalPosition;
     final isOwner = group.ownerDeviceId == controller.identity!.deviceId;
-    final action = await showMenu<_GroupContextAction>(
+    final action = await showNekoContextMenu<_GroupContextAction>(
       context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(position.dx, position.dy, 0, 0),
-        Offset.zero & overlay.size,
-      ),
+      position: details.globalPosition,
+      width: 164,
       items: [
-        const PopupMenuItem(
+        const NekoContextMenuItem(
           value: _GroupContextAction.openInWindow,
-          child: ListTile(
-            leading: Icon(Icons.open_in_new),
-            title: Text('在独立窗口打开'),
-          ),
+          icon: Icons.open_in_new,
+          label: '在独立窗口打开',
         ),
-        const PopupMenuItem(
+        const NekoContextMenuItem(
           value: _GroupContextAction.members,
-          child: ListTile(
-            leading: Icon(Icons.people_outline),
-            title: Text('群成员'),
-          ),
+          icon: Icons.people_outline,
+          label: '群成员',
         ),
-        PopupMenuItem(
+        NekoContextMenuItem(
           value: _GroupContextAction.remark,
-          child: ListTile(
-            leading: const Icon(Icons.drive_file_rename_outline),
-            title: Text(
-              controller.groupRemarks.containsKey(group.groupId)
-                  ? '修改群聊备注'
-                  : '添加群聊备注',
-            ),
-          ),
+          icon: Icons.drive_file_rename_outline,
+          label: controller.groupRemarks.containsKey(group.groupId)
+              ? '修改群聊备注'
+              : '添加群聊备注',
         ),
-        const PopupMenuItem(
+        const NekoContextMenuItem(
           value: _GroupContextAction.invite,
-          child: ListTile(
-            leading: Icon(Icons.person_add_alt_1),
-            title: Text('邀请在线成员'),
-          ),
+          icon: Icons.person_add_alt_1,
+          label: '邀请在线成员',
         ),
         if (isOwner)
-          const PopupMenuItem(
+          const NekoContextMenuItem(
             value: _GroupContextAction.rename,
-            child: ListTile(
-              leading: Icon(Icons.edit_outlined),
-              title: Text('修改群名'),
-            ),
+            icon: Icons.edit_outlined,
+            label: '修改群名',
           ),
-        PopupMenuItem(
+        NekoContextMenuItem(
           value: _GroupContextAction.leave,
-          child: ListTile(
-            leading: Icon(isOwner ? Icons.delete_outline : Icons.logout),
-            title: Text(isOwner ? '解散群聊' : '退出群聊'),
-          ),
+          hasDividerBefore: true,
+          destructive: true,
+          icon: isOwner ? Icons.delete_outline : Icons.logout,
+          label: isOwner ? '解散群聊' : '退出群聊',
         ),
       ],
     );
@@ -3870,7 +3835,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
   ) {
     _removeFallbackMenu();
     final overlay = Overlay.of(context);
-    final menuKey = GlobalKey<_ChatMessageMenuOverlayState>();
+    final menuKey = GlobalKey<NekoContextMenuOverlayState>();
     late final OverlayEntry entry;
     // 收起动画播完后真正把浮层从 Overlay 移除；重复调用安全。
     void hardRemove() {
@@ -3892,10 +3857,19 @@ class _ConversationPaneState extends State<_ConversationPane> {
     if (items.isEmpty) return;
 
     entry = OverlayEntry(
-      builder: (context) => _ChatMessageMenuOverlay(
+      builder: (context) => NekoContextMenuOverlay(
         key: menuKey,
         position: position,
-        items: items,
+        width: 152,
+        items: [
+          for (final item in items)
+            NekoContextMenuItem<void>(
+              label: item.label,
+              icon: item.icon,
+              onTap: item.onTap,
+              hasDividerBefore: item.hasDividerBefore,
+            ),
+        ],
         onDismiss: dismiss,
         onClosed: hardRemove,
       ),
@@ -5287,225 +5261,6 @@ class ChatContextMenuItem {
   final IconData icon;
   final VoidCallback onTap;
   final bool hasDividerBefore;
-}
-
-/// 现代桌面风格右键菜单浮层（深色卡片 + 细描边 + 优雅投影 + 紧凑图标文字）。
-///
-/// 弹出时正向播放淡入+缩放，关闭时反向播放收起动画，动画结束后才移除浮层。
-class _ChatMessageMenuOverlay extends StatefulWidget {
-  const _ChatMessageMenuOverlay({
-    super.key,
-    required this.position,
-    required this.items,
-    required this.onDismiss,
-    required this.onClosed,
-  });
-
-  final Offset position;
-  final List<ChatContextMenuItem> items;
-
-  /// 请求关闭：会先触发收起动画。
-  final VoidCallback onDismiss;
-
-  /// 收起动画播完后的回调：真正把浮层从 Overlay 移除。
-  final VoidCallback onClosed;
-
-  @override
-  State<_ChatMessageMenuOverlay> createState() =>
-      _ChatMessageMenuOverlayState();
-}
-
-class _ChatMessageMenuOverlayState extends State<_ChatMessageMenuOverlay>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 140),
-    reverseDuration: const Duration(milliseconds: 120),
-  );
-  late final Animation<double> _anim = CurvedAnimation(
-    parent: _controller,
-    curve: Curves.easeOutCubic,
-    reverseCurve: Curves.easeInCubic,
-  );
-  bool _closing = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller.forward();
-  }
-
-  /// 反向播放收起动画，结束后移除浮层；重复调用只生效一次。
-  void close() {
-    if (_closing) return;
-    _closing = true;
-    _controller.reverse().whenComplete(widget.onClosed);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenSize = MediaQuery.of(context).size;
-    const menuWidth = 146.0;
-    final items = widget.items;
-    final dividerCount = items.where((e) => e.hasDividerBefore).length;
-    final menuHeight = items.length * 34.0 + dividerCount * 9.0 + 10.0;
-
-    double left = widget.position.dx;
-    double top = widget.position.dy;
-
-    if (left + menuWidth > screenSize.width - 12) {
-      left = (screenSize.width - menuWidth - 12).clamp(12.0, double.infinity);
-    }
-    if (top + menuHeight > screenSize.height - 12) {
-      top = (widget.position.dy - menuHeight).clamp(12.0, double.infinity);
-    }
-
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): widget.onDismiss,
-      },
-      child: Focus(
-        autofocus: true,
-        child: Stack(
-          children: [
-            // 全屏透明遮罩：点击空白处、其它控件或在别处右键均即刻关闭菜单
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (_) => widget.onDismiss(),
-                onSecondaryTapDown: (_) => widget.onDismiss(),
-                child: const ColoredBox(color: Colors.transparent),
-              ),
-            ),
-            // QQ/微信 现代暗色浮动菜单
-            Positioned(
-              left: left,
-              top: top,
-              child: AnimatedBuilder(
-                animation: _anim,
-                builder: (context, child) {
-                  final value = _anim.value.clamp(0.0, 1.0);
-                  return Opacity(
-                    opacity: value,
-                    child: Transform.scale(
-                      scale: 0.94 + 0.06 * value,
-                      alignment: Alignment.topLeft,
-                      child: child,
-                    ),
-                  );
-                },
-                child: Material(
-                  elevation: 12,
-                  shadowColor: Colors.black45,
-                  color: const Color(0xFF2C2C2C),
-                  borderRadius: BorderRadius.circular(8),
-                  clipBehavior: Clip.antiAlias,
-                  child: Container(
-                    width: menuWidth,
-                    padding: const EdgeInsets.symmetric(vertical: 5),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.14),
-                        width: 0.8,
-                      ),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        for (final item in items) ...[
-                          if (item.hasDividerBefore)
-                            Divider(
-                              height: 9,
-                              thickness: 0.8,
-                              indent: 8,
-                              endIndent: 8,
-                              color: Colors.white.withValues(alpha: 0.12),
-                            ),
-                          _ContextMenuItemTile(item: item),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ContextMenuItemTile extends StatefulWidget {
-  const _ContextMenuItemTile({required this.item});
-
-  final ChatContextMenuItem item;
-
-  @override
-  State<_ContextMenuItemTile> createState() => _ContextMenuItemTileState();
-}
-
-class _ContextMenuItemTileState extends State<_ContextMenuItemTile> {
-  bool _isHovering = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final item = widget.item;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _isHovering = true),
-        onExit: (_) => setState(() => _isHovering = false),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: item.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 100),
-            height: 32,
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            decoration: BoxDecoration(
-              color: _isHovering
-                  ? Colors.white.withValues(alpha: 0.12)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(5),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  item.icon,
-                  size: 16,
-                  color: Colors.white.withValues(alpha: 0.88),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    item.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontFamily: AppController.brandFontFamily,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400,
-                      color: Colors.white.withValues(alpha: 0.94),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class RecallNotice extends StatelessWidget {
