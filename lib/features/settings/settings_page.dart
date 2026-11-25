@@ -10,11 +10,12 @@ import '../common/smooth_dialog.dart';
 
 enum SettingsSection {
   lan('联机与好友', '启用交流、口令与好友验证', Icons.wifi_find_outlined),
-  files('聊天与文件', '表情联想与文件接收', Icons.chat_bubble_outline),
+  chat('聊天', '表情联想与输入体验', Icons.chat_bubble_outline),
   notifications('消息通知', '独立弹窗、系统通知与测试', Icons.notifications_outlined),
   appearance('外观与字体', '字体大小、字体与字重', Icons.text_fields_outlined),
   privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
-  storage('存储与关于', '数据文件夹、备份还原与版本信息', Icons.folder_outlined);
+  storage('存储', '数据文件夹、文件接收与备份还原', Icons.folder_outlined),
+  about('关于', '应用信息与当前版本', Icons.info_outline);
 
   const SettingsSection(this.title, this.subtitle, this.icon);
   final String title;
@@ -44,13 +45,8 @@ class SettingsPage extends StatelessWidget {
               const SizedBox(height: 12),
               _FriendVerificationCard(controller: controller),
               const SizedBox(height: 24),
-              const SettingsSectionTitle('聊天与文件'),
+              const SettingsSectionTitle('聊天'),
               _ChatInputCard(controller: controller),
-              const SizedBox(height: 12),
-              _FileReceiveCard(
-                controller: controller,
-                onEditLimit: () => _showAutoReceiveLimitDialog(context),
-              ),
               const SizedBox(height: 24),
               const SettingsSectionTitle('消息通知'),
               _NotificationSettingsCard(controller: controller),
@@ -79,16 +75,22 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
-              const SettingsSectionTitle('存储与关于'),
+              const SettingsSectionTitle('存储'),
               _DataDirectoryCard(controller: controller),
+              const SizedBox(height: 12),
+              _FileReceiveCard(
+                controller: controller,
+                onEditLimit: () => _showAutoReceiveLimitDialog(context),
+              ),
               const SizedBox(height: 12),
               _BackupRestoreCard(
                 controller: controller,
                 popRoutesOnRestore: true,
               ),
               const _StorageFootNote(),
-              const SizedBox(height: 32),
-              const SettingsVersionFooter(),
+              const SizedBox(height: 24),
+              const SettingsSectionTitle('关于'),
+              const _AboutAppCard(),
             ],
           ),
         ),
@@ -925,17 +927,9 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
         const SettingsSectionTitle('好友验证'),
         _FriendVerificationCard(controller: controller),
       ],
-      SettingsSection.files => [
+      SettingsSection.chat => [
         const SettingsSectionTitle('聊天输入'),
         _ChatInputCard(controller: controller),
-        const SizedBox(height: 20),
-        const SettingsSectionTitle('文件接收'),
-        _FileReceiveCard(
-          controller: controller,
-          onEditLimit: () => SettingsPage(
-            controller: controller,
-          )._showAutoReceiveLimitDialog(context),
-        ),
       ],
       SettingsSection.notifications => [
         const SettingsSectionTitle('提醒方式'),
@@ -964,12 +958,19 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
         const SettingsSectionTitle('本地数据'),
         _DataDirectoryCard(controller: controller),
         const SizedBox(height: 20),
+        const SettingsSectionTitle('文件接收'),
+        _FileReceiveCard(
+          controller: controller,
+          onEditLimit: () => SettingsPage(
+            controller: controller,
+          )._showAutoReceiveLimitDialog(context),
+        ),
+        const SizedBox(height: 20),
         const SettingsSectionTitle('备份与还原'),
         _BackupRestoreCard(controller: controller),
         const _StorageFootNote(),
-        const SizedBox(height: 28),
-        const SettingsVersionFooter(),
       ],
+      SettingsSection.about => [const _AboutAppCard()],
     };
   }
 }
@@ -1249,6 +1250,60 @@ class _StorageFootNote extends StatelessWidget {
       style: TextStyle(color: Colors.black54, fontSize: 12),
     ),
   );
+}
+
+class _AboutAppCard extends StatelessWidget {
+  const _AboutAppCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Card(
+      key: const ValueKey('settings-about-card'),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: colorScheme.primaryContainer.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Image.asset('assets/app.png', fit: BoxFit.contain),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'NekoChat',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '当前版本 ${appBuildName ?? '未知'}',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.primary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '轻量局域网即时聊天工具，无需服务器，聊天记录、身份与收藏表情均保存在本机。',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _LanCommunicationCard extends StatelessWidget {

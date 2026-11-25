@@ -494,7 +494,7 @@ void main() {
     );
   });
 
-  testWidgets('聊天与文件设置页可切换表情联想开关', (tester) async {
+  testWidgets('聊天设置页可切换表情联想开关', (tester) async {
     final controller = _renderController(messages: const []);
     addTearDown(controller.dispose);
     expect(controller.stickerSuggestionsEnabled, isTrue);
@@ -504,7 +504,7 @@ void main() {
         home: Scaffold(
           body: SettingsSectionPane(
             controller: controller,
-            section: SettingsSection.files,
+            section: SettingsSection.chat,
           ),
         ),
       ),

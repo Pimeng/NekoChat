@@ -137,10 +137,14 @@ void main() {
 
     expect(appBuildName, isNotNull);
     await tester.scrollUntilVisible(
-      find.byKey(const ValueKey('settings-version-footer')),
+      find.byKey(const ValueKey('settings-about-card')),
       300,
     );
-    expect(find.text('NekoChat · 当前版本 $appBuildName'), findsOneWidget);
+    expect(find.text('当前版本 $appBuildName'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('settings-version-footer')),
+      findsNothing,
+    );
   });
 
   testWidgets('快捷键二级页可录入新组合', (tester) async {
@@ -220,9 +224,15 @@ void main() {
       ),
     );
 
+    expect(find.text('自动接收文件'), findsOneWidget);
     expect(find.text('备份数据'), findsOneWidget);
     expect(find.text('还原数据'), findsOneWidget);
 
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('settings-backup-tile')),
+      200,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('settings-backup-tile')));
     await tester.pumpAndSettle();
     expect(find.text('备份本地数据'), findsOneWidget);
@@ -236,6 +246,11 @@ void main() {
     await tester.tap(find.text('完成'));
     await tester.pumpAndSettle();
 
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('settings-restore-tile')),
+      200,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('settings-restore-tile')));
     await tester.pumpAndSettle();
     expect(find.text('确认还原数据？'), findsOneWidget);
@@ -243,6 +258,30 @@ void main() {
     await tester.tap(find.text('立即还原'));
     await tester.pumpAndSettle();
     expect(controller.lastRestoredPath, r'D:\Backups\demo.nekobackup');
+  });
+
+  testWidgets('关于页面单独展示应用信息与当前版本', (tester) async {
+    final controller = AppController();
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SettingsSectionPane(
+            controller: controller,
+            section: SettingsSection.about,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('关于'), findsOneWidget);
+    expect(find.text('NekoChat'), findsOneWidget);
+    expect(find.text('当前版本 $appBuildName'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('settings-version-footer')),
+      findsNothing,
+    );
   });
 
   testWidgets('首次引导页提供从备份还原入口并在还原后显示提示', (tester) async {
