@@ -17,6 +17,7 @@ import 'group_info_drawer.dart';
 import 'message_composer.dart';
 import 'mention_autocomplete.dart';
 import 'peer_info_drawer.dart';
+import 'sticker_picker.dart';
 import 'view_drop_service.dart';
 
 final Map<String, int> _detachedConversationWindowIds = {};
@@ -1165,6 +1166,14 @@ class _MainShellState extends State<MainShell> {
           canRecallMessage: controller.canRecallMessage,
           onRecallMessage: controller.recallMessage,
           recallNoticeFor: controller.recallNotice,
+          favoriteStickers: controller.favoriteStickers,
+          onPickFavoriteStickers: controller.pickAndAddFavoriteStickers,
+          onSendFavoriteSticker: (sticker) => controller.sendFavoriteSticker(
+            sticker,
+            conversationId: conversationId,
+          ),
+          onRemoveFavoriteSticker: controller.removeFavoriteSticker,
+          onAddMessageToStickers: controller.addMessageToFavoriteStickers,
           actions: [
             IconButton(
               tooltip: '会话操作',
@@ -1269,6 +1278,14 @@ class _MainShellState extends State<MainShell> {
           canRecallMessage: controller.canRecallMessage,
           onRecallMessage: controller.recallMessage,
           recallNoticeFor: controller.recallNotice,
+          favoriteStickers: controller.favoriteStickers,
+          onPickFavoriteStickers: controller.pickAndAddFavoriteStickers,
+          onSendFavoriteSticker: (sticker) => controller.sendFavoriteSticker(
+            sticker,
+            conversationId: conversationId,
+          ),
+          onRemoveFavoriteSticker: controller.removeFavoriteSticker,
+          onAddMessageToStickers: controller.addMessageToFavoriteStickers,
           onMention: (name) => _insertMention(composer, name),
           loadMentionCandidates: () async {
             final members = await controller.groupMembers(group.groupId);
@@ -3296,6 +3313,19 @@ class _DetachedConversationWindowState
             canRecallMessage: controller.canRecallMessage,
             onRecallMessage: controller.recallMessage,
             recallNoticeFor: controller.recallNotice,
+            favoriteStickers: controller.favoriteStickers,
+            onPickFavoriteStickers: controller.pickAndAddFavoriteStickers,
+            onSendFavoriteSticker: (sticker) async {
+              final reply = _replyingTo;
+              if (reply != null && mounted) setState(() => _replyingTo = null);
+              await controller.sendFavoriteSticker(
+                sticker,
+                conversationId: widget.conversationId,
+                reply: reply,
+              );
+            },
+            onRemoveFavoriteSticker: controller.removeFavoriteSticker,
+            onAddMessageToStickers: controller.addMessageToFavoriteStickers,
             onMention: isGroup
                 ? (name) => _MainShellState._insertMention(_composer, name)
                 : null,
@@ -3505,6 +3535,11 @@ class _ConversationPane extends StatefulWidget {
     this.senderHeaderFor,
     this.senderRoleFor,
     this.avatarPathFor,
+    this.favoriteStickers = const [],
+    this.onPickFavoriteStickers,
+    this.onSendFavoriteSticker,
+    this.onRemoveFavoriteSticker,
+    this.onAddMessageToStickers,
   });
   final String conversationId;
   final String title;
@@ -3557,6 +3592,11 @@ class _ConversationPane extends StatefulWidget {
   final String Function(String deviceId)? senderHeaderFor;
   final GroupRole? Function(String deviceId)? senderRoleFor;
   final String? Function(String deviceId)? avatarPathFor;
+  final List<FavoriteSticker> favoriteStickers;
+  final Future<int> Function()? onPickFavoriteStickers;
+  final Future<void> Function(FavoriteSticker sticker)? onSendFavoriteSticker;
+  final Future<void> Function(FavoriteSticker sticker)? onRemoveFavoriteSticker;
+  final Future<bool> Function(ChatMessage message)? onAddMessageToStickers;
 
   @override
   State<_ConversationPane> createState() => _ConversationPaneState();
@@ -3575,6 +3615,11 @@ class _ConversationPaneState extends State<_ConversationPane> {
 
   /// 消息右键菜单（文字/图片/文件统一自绘）。
   OverlayEntry? _fallbackMenu;
+
+  /// 表情与收藏表情弹出面板。
+  final GlobalKey _stickerButtonKey = GlobalKey();
+  OverlayEntry? _stickerPickerOverlay;
+  StickerPickerTab _stickerPickerTab = StickerPickerTab.favorites;
 
   /// 各气泡当前的文本选区，右键「复制选中」时读取。
   final Map<String, String?> _selectedTexts = {};
@@ -3595,11 +3640,22 @@ class _ConversationPaneState extends State<_ConversationPane> {
   void didUpdateWidget(covariant _ConversationPane oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.conversationId != widget.conversationId) {
+      _removeStickerPicker();
       _knownMessageIds
         ..clear()
         ..addAll(widget.messages.map((m) => m.messageId));
       _enteringMessageIds.clear();
       return;
+    }
+    if (!widget.enabled) {
+      _removeStickerPicker();
+    } else if (_stickerPickerOverlay != null &&
+        oldWidget.favoriteStickers != widget.favoriteStickers) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _stickerPickerOverlay?.mounted == true) {
+          _stickerPickerOverlay?.markNeedsBuild();
+        }
+      });
     }
     for (final message in widget.messages) {
       if (_knownMessageIds.add(message.messageId)) {
@@ -3612,9 +3668,104 @@ class _ConversationPaneState extends State<_ConversationPane> {
   void dispose() {
     _highlightTimer?.cancel();
     _removeFallbackMenu();
+    _removeStickerPicker();
     _composerFocus.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _removeStickerPicker() {
+    _stickerPickerOverlay?.remove();
+    _stickerPickerOverlay = null;
+  }
+
+  void _toggleStickerPicker() {
+    if (_stickerPickerOverlay != null) {
+      _removeStickerPicker();
+      return;
+    }
+    _removeFallbackMenu();
+    final overlay = Overlay.of(context);
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (overlayContext) {
+        final screen = MediaQuery.sizeOf(overlayContext);
+        final renderBox =
+            _stickerButtonKey.currentContext?.findRenderObject() as RenderBox?;
+        final anchor = renderBox == null
+            ? Offset(20, screen.height - 72)
+            : renderBox.localToGlobal(Offset.zero);
+        const margin = 12.0;
+        final panelWidth =
+            StickerPickerPanel.preferredWidth.clamp(240.0, screen.width - margin * 2);
+        final panelHeight =
+            StickerPickerPanel.preferredHeight.clamp(200.0, screen.height - margin * 2);
+        final left = anchor.dx.clamp(
+          margin,
+          (screen.width - panelWidth - margin).clamp(margin, double.infinity),
+        );
+        final top = (anchor.dy - panelHeight - 10).clamp(
+          margin,
+          (screen.height - panelHeight - margin).clamp(margin, double.infinity),
+        );
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _removeStickerPicker,
+                onSecondaryTapDown: (_) => _removeStickerPicker(),
+              ),
+            ),
+            Positioned(
+              left: left,
+              top: top,
+              child: Semantics(
+                container: true,
+                explicitChildNodes: true,
+                child: SizedBox(
+                  width: panelWidth,
+                  height: panelHeight,
+                  child: StickerPickerPanel(
+                    stickers: widget.favoriteStickers,
+                    initialTab: _stickerPickerTab,
+                    onTabChanged: (tab) => _stickerPickerTab = tab,
+                    onPickStickers: () async =>
+                        await widget.onPickFavoriteStickers?.call() ?? 0,
+                    onRemoveSticker: (sticker) async =>
+                        await widget.onRemoveFavoriteSticker?.call(sticker),
+                    onSelectSticker: (sticker) async {
+                      _removeStickerPicker();
+                      await widget.onSendFavoriteSticker?.call(sticker);
+                    },
+                    onSelectEmoji: _insertEmoji,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    _stickerPickerOverlay = entry;
+    overlay.insert(entry);
+  }
+
+  void _insertEmoji(String emoji) {
+    final value = widget.composer.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final updatedText = value.text.replaceRange(
+      selection.start,
+      selection.end,
+      emoji,
+    );
+    widget.composer.value = value.copyWith(
+      text: updatedText,
+      selection: TextSelection.collapsed(offset: selection.start + emoji.length),
+      composing: TextRange.empty,
+    );
   }
 
   void _removeFallbackMenu() {
@@ -3975,6 +4126,11 @@ class _ConversationPaneState extends State<_ConversationPane> {
                               widget.onRecallMessage != null
                           ? () => widget.onRecallMessage!(message)
                           : null,
+                      onAddToStickers:
+                          message.kind == MessageKind.image &&
+                              widget.onAddMessageToStickers != null
+                          ? () => widget.onAddMessageToStickers!(message)
+                          : null,
                       onShowFallbackMenu: _showFallbackMenu,
                       onSelectionChanged: (text) =>
                           _selectedTexts[message.messageId] = text,
@@ -4042,36 +4198,44 @@ class _ConversationPaneState extends State<_ConversationPane> {
                 ),
               ),
               Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   IconButton(
-                    tooltip: '添加图片或文件',
-                    onPressed: widget.enabled ? _pickAttachments : null,
-                    icon: const Icon(Icons.attach_file),
+                    key: _stickerButtonKey,
+                    tooltip: '表情与收藏',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: widget.enabled ? _toggleStickerPicker : null,
+                    icon: const Icon(
+                      Icons.sentiment_satisfied_alt_outlined,
+                      size: 20,
+                    ),
                   ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: widget.loadMentionCandidates == null
-                        ? MessageComposer(
-                            controller: widget.composer,
-                            focusNode: _composerFocus,
-                            enabled: widget.enabled,
-                            hasAttachments: widget.pendingAttachments.isNotEmpty,
-                            onSend: () => unawaited(_handleSend()),
-                            onPasteAttachments: _pasteAttachments,
-                          )
-                        : MentionAutocomplete(
-                            controller: widget.composer,
-                            focusNode: _composerFocus,
-                            enabled: widget.enabled,
-                            hasAttachments: widget.pendingAttachments.isNotEmpty,
-                            onSend: () => unawaited(_handleSend()),
-                            onPasteAttachments: _pasteAttachments,
-                            loadCandidates: widget.loadMentionCandidates!,
-                          ),
+                  IconButton(
+                    tooltip: '添加图片或文件',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: widget.enabled ? _pickAttachments : null,
+                    icon: const Icon(Icons.attach_file, size: 20),
                   ),
                 ],
               ),
+              const SizedBox(height: 6),
+              widget.loadMentionCandidates == null
+                  ? MessageComposer(
+                      controller: widget.composer,
+                      focusNode: _composerFocus,
+                      enabled: widget.enabled,
+                      hasAttachments: widget.pendingAttachments.isNotEmpty,
+                      onSend: () => unawaited(_handleSend()),
+                      onPasteAttachments: _pasteAttachments,
+                    )
+                  : MentionAutocomplete(
+                      controller: widget.composer,
+                      focusNode: _composerFocus,
+                      enabled: widget.enabled,
+                      hasAttachments: widget.pendingAttachments.isNotEmpty,
+                      onSend: () => unawaited(_handleSend()),
+                      onPasteAttachments: _pasteAttachments,
+                      loadCandidates: widget.loadMentionCandidates!,
+                    ),
             ],
           ),
         ),
@@ -4419,6 +4583,7 @@ class MessageBubble extends StatelessWidget {
     this.onCopy,
     this.onMention,
     this.onRecall,
+    this.onAddToStickers,
     this.resolveMessage,
     this.onJumpToReply,
     this.onShowFallbackMenu,
@@ -4466,6 +4631,7 @@ class MessageBubble extends StatelessWidget {
   final Future<void> Function()? onCopy;
   final VoidCallback? onMention;
   final Future<void> Function()? onRecall;
+  final Future<void> Function()? onAddToStickers;
 
   /// 按消息 id 找到本地的原消息，用于在引用块里展示图片缩略图。
   final ChatMessage? Function(String messageId)? resolveMessage;
@@ -4885,6 +5051,17 @@ class MessageBubble extends StatelessWidget {
     final selection = selectedText?.call();
     final hasSelection = selection != null && selection.trim().isNotEmpty;
     return [
+      if (message.kind == MessageKind.image &&
+          _hasLocalAttachment &&
+          onAddToStickers != null)
+        ChatContextMenuItem(
+          icon: Icons.add_reaction_outlined,
+          label: '添加到表情',
+          onTap: () {
+            dismiss();
+            unawaited(onAddToStickers!());
+          },
+        ),
       ChatContextMenuItem(
         icon: Icons.copy_rounded,
         label: hasSelection ? '复制选中' : '复制',

@@ -353,3 +353,23 @@ class PendingAttachment {
   final String mimeType;
   final bool isImage;
 }
+
+/// 用户收藏的自定义表情图片，文件保存在数据目录的 stickers/ 子目录中。
+class FavoriteSticker {
+  const FavoriteSticker({
+    required this.stickerId,
+    required this.filePath,
+    required this.fileHash,
+    required this.fileName,
+    required this.mimeType,
+    required this.fileSize,
+    required this.createdAt,
+  });
+  final String stickerId;
+  final String filePath;
+  final String fileHash;
+  final String fileName;
+  final String mimeType;
+  final int fileSize;
+  final DateTime createdAt;
+}

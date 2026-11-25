@@ -31,7 +31,7 @@ class PlainSqliteBackend implements DatabaseBackend {
     return databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 6,
+        version: 7,
         onCreate: onCreate,
         onUpgrade: onUpgrade,
       ),
@@ -189,6 +189,17 @@ class AppDatabase {
         remark TEXT NOT NULL
       )
     ''');
+    await db.execute('''
+      CREATE TABLE favorite_stickers (
+        sticker_id TEXT PRIMARY KEY,
+        file_path TEXT NOT NULL,
+        file_hash TEXT NOT NULL UNIQUE,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
     _log.info('数据库 Schema v$version 已创建');
   }
 
@@ -257,6 +268,19 @@ class AppDatabase {
           'ALTER TABLE messages ADD COLUMN recalled_by_device_id TEXT',
         );
       }
+    }
+    if (oldVersion < 7) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS favorite_stickers (
+          sticker_id TEXT PRIMARY KEY,
+          file_path TEXT NOT NULL,
+          file_hash TEXT NOT NULL UNIQUE,
+          file_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          file_size INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      ''');
     }
     _log.info('数据库 Schema 已从 v$oldVersion 升级到 v$newVersion');
   }
@@ -842,6 +866,48 @@ class AppDatabase {
       await txn.delete('groups', where: 'group_id = ?', whereArgs: [groupId]);
     });
   }
+
+  Future<List<FavoriteSticker>> loadFavoriteStickers() async {
+    final rows = await database.query(
+      'favorite_stickers',
+      orderBy: 'created_at DESC',
+    );
+    return rows
+        .map(
+          (row) => FavoriteSticker(
+            stickerId: row['sticker_id'] as String,
+            filePath: _decodeAttachment(row['file_path'] as String)!,
+            fileHash: row['file_hash'] as String,
+            fileName: row['file_name'] as String,
+            mimeType: row['mime_type'] as String,
+            fileSize: row['file_size'] as int,
+            createdAt: DateTime.fromMillisecondsSinceEpoch(
+              row['created_at'] as int,
+            ),
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> saveFavoriteSticker(FavoriteSticker sticker) => database.insert(
+    'favorite_stickers',
+    {
+      'sticker_id': sticker.stickerId,
+      'file_path': _encodeAttachment(sticker.filePath),
+      'file_hash': sticker.fileHash,
+      'file_name': sticker.fileName,
+      'mime_type': sticker.mimeType,
+      'file_size': sticker.fileSize,
+      'created_at': sticker.createdAt.millisecondsSinceEpoch,
+    },
+    conflictAlgorithm: ConflictAlgorithm.replace,
+  );
+
+  Future<void> deleteFavoriteSticker(String stickerId) => database.delete(
+    'favorite_stickers',
+    where: 'sticker_id = ?',
+    whereArgs: [stickerId],
+  );
 
   Future<void> close() async {
     await _database?.close();

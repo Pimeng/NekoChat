@@ -206,6 +206,9 @@ class AppController extends ChangeNotifier {
   List<ChatSummary> chats = [];
   List<ChatGroup> groups = [];
 
+  /// 用户收藏的自定义表情图片列表，按收藏时间倒序排列。
+  List<FavoriteSticker> favoriteStickers = [];
+
   /// 本机在每个群里的角色缓存，用于同步判断管理员权限（如撤回）。
   final Map<String, GroupRole> _myGroupRoles = {};
 
@@ -423,6 +426,7 @@ class AppController extends ChangeNotifier {
     appearanceRevision.value++;
     peerRemarks = await _database.loadPeerRemarks();
     groupRemarks = await _database.loadGroupRemarks();
+    favoriteStickers = await _loadValidFavoriteStickers();
     final storedAvatarPath = await _database.loadSetting(_profileAvatarSetting);
     if (storedAvatarPath != null && storedAvatarPath.isNotEmpty) {
       final resolved = _database.attachmentPaths.decode(storedAvatarPath);
@@ -1588,6 +1592,233 @@ class AppController extends ChangeNotifier {
     }
     await _openPath(directory, revealPath: path, failure: '无法打开文件所在位置');
   }
+
+  static const _stickerExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
+
+  Future<List<FavoriteSticker>> _loadValidFavoriteStickers() async {
+    final stored = await _database.loadFavoriteStickers();
+    final valid = <FavoriteSticker>[];
+    for (final sticker in stored) {
+      if (await File(sticker.filePath).exists()) {
+        valid.add(sticker);
+      }
+    }
+    return valid;
+  }
+
+  /// 从本地文件选择一张或多张图片添加到收藏表情。返回成功新增的数量。
+  Future<int> pickAndAddFavoriteStickers() async {
+    final files = await FilePicker.pickFiles(
+      dialogTitle: '选择要收藏的表情图片',
+      type: FileType.custom,
+      allowedExtensions: _stickerExtensions,
+    );
+    if (files.isEmpty) return 0;
+    var added = 0;
+    var duplicates = 0;
+    var failed = 0;
+    _AddStickerResult? lastFailure;
+    for (final picked in files) {
+      final path = picked.path;
+      if (path == null) continue;
+      final status = await _addFavoriteStickerInternal(path);
+      switch (status) {
+        case _AddStickerResult.added:
+          added++;
+        case _AddStickerResult.duplicate:
+          duplicates++;
+        default:
+          failed++;
+          lastFailure = status;
+      }
+    }
+    if (added > 0) {
+      _showTopRightMessage(
+        added == 1 ? '已添加到收藏表情' : '已添加 $added 个收藏表情',
+        icon: Icons.favorite_rounded,
+      );
+    } else if (duplicates > 0 && failed == 0) {
+      _showTopRightMessage(
+        duplicates == 1 ? '该表情已在收藏中' : '所选图片均已在收藏中',
+        icon: Icons.favorite_border_rounded,
+      );
+    } else if (failed > 0 && lastFailure != null) {
+      _showTopRightMessage(
+        _stickerFailureMessage(lastFailure),
+        icon: Icons.error_outline,
+      );
+    }
+    return added;
+  }
+
+  /// 将聊天中的图片消息添加到收藏表情。
+  Future<bool> addMessageToFavoriteStickers(ChatMessage message) async {
+    if (message.kind != MessageKind.image) return false;
+    final path = message.filePath;
+    if (path == null || !await File(path).exists()) {
+      _reportMissingAttachment(message);
+      return false;
+    }
+    return addFavoriteStickerFromPath(path);
+  }
+
+  /// 将本地图片文件复制到数据目录的 stickers/ 下并加入收藏表情列表。
+  Future<bool> addFavoriteStickerFromPath(
+    String sourcePath, {
+    bool showFeedback = true,
+  }) async {
+    final result = await _addFavoriteStickerInternal(sourcePath);
+    if (showFeedback) {
+      switch (result) {
+        case _AddStickerResult.added:
+          _showTopRightMessage('已添加到收藏表情', icon: Icons.favorite_rounded);
+        case _AddStickerResult.duplicate:
+          _showTopRightMessage('该表情已在收藏中', icon: Icons.favorite_border_rounded);
+        default:
+          _showTopRightMessage(
+            _stickerFailureMessage(result),
+            icon: Icons.error_outline,
+          );
+      }
+    }
+    return result == _AddStickerResult.added;
+  }
+
+  String _stickerFailureMessage(_AddStickerResult result) => switch (result) {
+    _AddStickerResult.databaseNotReady => '数据目录尚未就绪，请先登录后重试',
+    _AddStickerResult.fileNotFound => '所选图片文件不存在',
+    _AddStickerResult.emptyFile => '所选图片文件为空',
+    _AddStickerResult.tooLarge => '表情图片不能超过 20 MB',
+    _AddStickerResult.unsupportedFormat => '不支持该文件格式，请选择常见图片格式',
+    _AddStickerResult.ioError => '保存收藏表情失败，请重试',
+    _AddStickerResult.added => '已添加到收藏表情',
+    _AddStickerResult.duplicate => '该表情已在收藏中',
+  };
+
+  Future<_AddStickerResult> _addFavoriteStickerInternal(
+    String sourcePath,
+  ) async {
+    final rootDir = _database.directoryPath;
+    if (rootDir == null) return _AddStickerResult.databaseNotReady;
+    try {
+      final source = File(sourcePath);
+      if (!await source.exists()) return _AddStickerResult.fileNotFound;
+      final size = await source.length();
+      if (size <= 0) return _AddStickerResult.emptyFile;
+      if (size > NetworkConfig.maxProfileAvatarBytes) {
+        return _AddStickerResult.tooLarge;
+      }
+      final header = await _readFileHeader(source);
+      final byHeader = lookupMimeType(source.path, headerBytes: header);
+      final byPath = lookupMimeType(source.path);
+      final mimeType = (byHeader != null && byHeader.startsWith('image/'))
+          ? byHeader
+          : (byPath != null && byPath.startsWith('image/'))
+          ? byPath
+          : null;
+      if (mimeType == null) {
+        return _AddStickerResult.unsupportedFormat;
+      }
+      final hash = await sha256File(source);
+      if (favoriteStickers.any((item) => item.fileHash == hash)) {
+        return _AddStickerResult.duplicate;
+      }
+
+      var extension = p.extension(source.path).toLowerCase();
+      if (extension.isEmpty) {
+        extension = _extensionForImageMime(mimeType);
+      }
+      final stickersDir = Directory(p.join(rootDir, 'stickers'));
+      await stickersDir.create(recursive: true);
+      final target = File(p.join(stickersDir.path, '$hash$extension'));
+      if (!await target.exists()) {
+        final partial = File('${target.path}.part');
+        if (await partial.exists()) await partial.delete();
+        await source.copy(partial.path);
+        await partial.rename(target.path);
+      }
+
+      final sticker = FavoriteSticker(
+        stickerId: _uuid.v4(),
+        filePath: target.path,
+        fileHash: hash,
+        fileName: p.basename(source.path),
+        mimeType: mimeType,
+        fileSize: size,
+        createdAt: DateTime.now(),
+      );
+      await _database.saveFavoriteSticker(sticker);
+      favoriteStickers = [sticker, ...favoriteStickers];
+      notifyListeners();
+      return _AddStickerResult.added;
+    } on Object catch (error, stack) {
+      _log.warning('添加收藏表情失败：$sourcePath', error, stack);
+      return _AddStickerResult.ioError;
+    }
+  }
+
+  Future<void> removeFavoriteSticker(FavoriteSticker sticker) async {
+    await _database.deleteFavoriteSticker(sticker.stickerId);
+    favoriteStickers = favoriteStickers
+        .where((item) => item.stickerId != sticker.stickerId)
+        .toList();
+    if (_database.isInsideDataDirectory(sticker.filePath)) {
+      try {
+        final file = File(sticker.filePath);
+        if (await file.exists()) await file.delete();
+      } on Object catch (error, stack) {
+        _log.warning('删除收藏表情文件失败：${sticker.filePath}', error, stack);
+      }
+    }
+    _showTopRightMessage('已移除收藏表情', icon: Icons.delete_outline_rounded);
+    notifyListeners();
+  }
+
+  /// 直接把收藏的表情作为图片发送到指定会话（或当前选中的会话）。
+  Future<void> sendFavoriteSticker(
+    FavoriteSticker sticker, {
+    String? conversationId,
+    ChatMessage? reply,
+  }) async {
+    final file = File(sticker.filePath);
+    if (!await file.exists()) {
+      _showTopRightMessage('表情文件不存在，可能已被删除', icon: Icons.error_outline);
+      return;
+    }
+    final attachment = PendingAttachment(
+      path: sticker.filePath,
+      fileName: sticker.fileName,
+      fileSize: sticker.fileSize,
+      mimeType: sticker.mimeType,
+      isImage: true,
+    );
+    await sendMessageWithAttachmentsTo(
+      conversationId:
+          conversationId ??
+          (selectedGroupId == null ? selectedChatId : 'group:$selectedGroupId'),
+      content: '',
+      attachments: [attachment],
+      reply: reply ?? replyingTo,
+    );
+  }
+
+  Future<List<int>> _readFileHeader(File file) async {
+    final raf = await file.open();
+    try {
+      return await raf.read(32);
+    } finally {
+      await raf.close();
+    }
+  }
+
+  String _extensionForImageMime(String mimeType) => switch (mimeType) {
+    'image/png' => '.png',
+    'image/jpeg' => '.jpg',
+    'image/gif' => '.gif',
+    'image/webp' => '.webp',
+    'image/bmp' => '.bmp',
+    _ => '.png',
+  };
 
   /// 让用户重新指定缺失附件在本机的位置，修复换机或移动文件后失效的记录。
   Future<void> relocateAttachment(ChatMessage message) async {
@@ -4045,4 +4276,15 @@ class AppController extends ChangeNotifier {
     appearanceRevision.dispose();
     super.dispose();
   }
+}
+
+enum _AddStickerResult {
+  added,
+  duplicate,
+  databaseNotReady,
+  fileNotFound,
+  emptyFile,
+  tooLarge,
+  unsupportedFormat,
+  ioError,
 }

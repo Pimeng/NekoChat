@@ -1124,6 +1124,36 @@ class PreviewAppController extends AppController {
   }
 
   @override
+  Future<int> pickAndAddFavoriteStickers() async {
+    showPreviewToast('预览模式：选择收藏表情（不访问系统文件对话框）');
+    return 0;
+  }
+
+  @override
+  Future<bool> addMessageToFavoriteStickers(ChatMessage message) async {
+    showPreviewToast('预览模式：已添加到收藏表情');
+    return true;
+  }
+
+  @override
+  Future<void> removeFavoriteSticker(FavoriteSticker sticker) async {
+    favoriteStickers = favoriteStickers
+        .where((item) => item.stickerId != sticker.stickerId)
+        .toList();
+    showPreviewToast('预览模式：已移除收藏表情');
+    notifyListeners();
+  }
+
+  @override
+  Future<void> sendFavoriteSticker(
+    FavoriteSticker sticker, {
+    String? conversationId,
+    ChatMessage? reply,
+  }) async {
+    showPreviewToast('预览模式：发送收藏表情 ${sticker.fileName}');
+  }
+
+  @override
   void dispose() {
     final service = _previewStandaloneNotifications;
     _previewStandaloneNotifications = null;
