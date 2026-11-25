@@ -68,7 +68,12 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
     );
     await tester.pump();
 
@@ -107,7 +112,12 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
     );
     await tester.pump();
 
@@ -139,7 +149,12 @@ void main() {
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
     );
     await tester.pump();
 
@@ -168,7 +183,12 @@ void main() {
     );
     addTearDown(controller.dispose);
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
     );
     await tester.tap(find.text('刚发出的消息'), buttons: kSecondaryMouseButton);
     await tester.pumpAndSettle();
@@ -192,7 +212,12 @@ void main() {
     );
     addTearDown(controller.dispose);
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
     );
     expect(find.text('你撤回了一条消息'), findsOneWidget);
     expect(find.text('引用回复'), findsNothing);
@@ -268,7 +293,12 @@ void main() {
     );
     addTearDown(controller.dispose);
     await tester.pumpWidget(
-      MaterialApp(home: MainShell(controller: controller)),
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
     );
 
     // 两条消息在 5 分钟内，只显示 1 条居中时间分隔条
@@ -293,5 +323,130 @@ void main() {
     await gesture.moveTo(Offset.zero);
     await tester.pumpAndSettle();
     expect(find.text(exactTimeText), findsNothing);
+  });
+
+  testWidgets('已接收文件气泡显示另存为按钮和右键菜单，saveAttachmentAs 避免覆盖重名文件', (tester) async {
+    final sourceDir = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('neko-save-as-src-'),
+    ))!;
+    final targetDir = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('neko-save-as-dst-'),
+    ))!;
+    addTearDown(() async {
+      await sourceDir.delete(recursive: true);
+      await targetDir.delete(recursive: true);
+    });
+    final sourceFile = File(
+      '${sourceDir.path}${Platform.pathSeparator}report.txt',
+    );
+    await tester.runAsync(() => sourceFile.writeAsString('hello neko'));
+
+    final fileMessage = ChatMessage(
+      messageId: 'msg-file-1',
+      chatId: 'chat-1',
+      senderDeviceId: 'peer-device',
+      kind: MessageKind.file,
+      content: 'report.txt',
+      fileName: 'report.txt',
+      filePath: sourceFile.path,
+      fileSize: 10,
+      mimeType: 'text/plain',
+      timestamp: DateTime(2026, 11, 26, 0, 30),
+      status: MessageStatus.sent,
+    );
+    final controller = renderOnlyController(messages: [fileMessage]);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
+    );
+
+    expect(find.text('打开文件'), findsOneWidget);
+    expect(find.text('另存为'), findsOneWidget);
+
+    await tester.tapAt(
+      tester.getCenter(find.text('report.txt')),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('另存为…'), findsOneWidget);
+
+    final firstSaved = await tester.runAsync(
+      () => controller.saveAttachmentAs(
+        fileMessage,
+        destinationDirectory: targetDir.path,
+      ),
+    );
+    expect(firstSaved, isNotNull);
+    expect(File(firstSaved!).readAsStringSync(), 'hello neko');
+
+    final secondSaved = await tester.runAsync(
+      () => controller.saveAttachmentAs(
+        fileMessage,
+        destinationDirectory: targetDir.path,
+      ),
+    );
+    expect(secondSaved, isNotNull);
+    expect(secondSaved, isNot(firstSaved));
+    expect(secondSaved!, endsWith('report (1).txt'));
+    expect(File(secondSaved).readAsStringSync(), 'hello neko');
+  });
+
+  testWidgets('自己撤回的消息在 1 分钟内显示可点击的重新编辑，超时后自动隐藏', (tester) async {
+    final now = DateTime.now();
+    final recalledMessage = ChatMessage(
+      messageId: 'msg-reedit-1',
+      chatId: 'chat-1',
+      senderDeviceId: 'local-device',
+      kind: MessageKind.text,
+      content: '原本要发的话',
+      timestamp: now.subtract(const Duration(seconds: 10)),
+      status: MessageStatus.sent,
+    ).asRecalled(byDeviceId: 'local-device', at: now);
+    final controller = renderOnlyController(messages: [recalledMessage]);
+    controller.peers = [
+      DiscoveredPeer(
+        deviceId: 'peer-device',
+        displayName: '李四',
+        ip: '192.168.1.2',
+        port: 23333,
+        lastSeen: now,
+        trusted: true,
+        online: true,
+      ),
+    ];
+    controller.registerRecallReEditDraft(
+      'msg-reedit-1',
+      '原本要发的话',
+      recalledAt: now,
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) => MainShell(controller: controller),
+        ),
+      ),
+    );
+
+    expect(find.text('你撤回了一条消息'), findsOneWidget);
+    expect(find.text('重新编辑'), findsOneWidget);
+
+    await tester.tap(find.text('重新编辑'));
+    await tester.pump();
+    final composerField = tester.widget<TextField>(find.byType(TextField).last);
+    expect(composerField.controller?.text, '原本要发的话');
+
+    // 超过 1 分钟后「重新编辑」自动消失
+    await tester.pump(const Duration(minutes: 1, seconds: 1));
+    await tester.pump();
+    expect(find.text('重新编辑'), findsNothing);
   });
 }

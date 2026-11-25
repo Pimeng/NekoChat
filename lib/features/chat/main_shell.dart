@@ -1140,6 +1140,7 @@ class _MainShellState extends State<MainShell> {
           onReadClipboardAttachments: controller.readClipboardAttachments,
           onOpenAttachment: controller.openAttachment,
           onOpenAttachmentFolder: controller.openAttachmentFolder,
+          onSaveAttachmentAs: controller.saveAttachmentAs,
           onAcceptFile: controller.acceptIncomingFile,
           onRejectFile: controller.rejectIncomingFile,
           onRetryFile: controller.retryFileDownload,
@@ -1152,6 +1153,7 @@ class _MainShellState extends State<MainShell> {
           canRecallMessage: controller.canRecallMessage,
           onRecallMessage: controller.recallMessage,
           recallNoticeFor: controller.recallNotice,
+          reEditableContentFor: controller.reEditableRecallContent,
           favoriteStickers: controller.favoriteStickers,
           onPickFavoriteStickers: controller.pickAndAddFavoriteStickers,
           onSendFavoriteSticker: (sticker) => controller.sendFavoriteSticker(
@@ -1257,6 +1259,7 @@ class _MainShellState extends State<MainShell> {
           onReadClipboardAttachments: controller.readClipboardAttachments,
           onOpenAttachment: controller.openAttachment,
           onOpenAttachmentFolder: controller.openAttachmentFolder,
+          onSaveAttachmentAs: controller.saveAttachmentAs,
           onAcceptFile: controller.acceptIncomingFile,
           onRejectFile: controller.rejectIncomingFile,
           onRetryFile: controller.retryFileDownload,
@@ -1269,6 +1272,7 @@ class _MainShellState extends State<MainShell> {
           canRecallMessage: controller.canRecallMessage,
           onRecallMessage: controller.recallMessage,
           recallNoticeFor: controller.recallNotice,
+          reEditableContentFor: controller.reEditableRecallContent,
           favoriteStickers: controller.favoriteStickers,
           onPickFavoriteStickers: controller.pickAndAddFavoriteStickers,
           onSendFavoriteSticker: (sticker) => controller.sendFavoriteSticker(
@@ -3309,6 +3313,7 @@ class _DetachedConversationWindowState
             onReadClipboardAttachments: controller.readClipboardAttachments,
             onOpenAttachment: controller.openAttachment,
             onOpenAttachmentFolder: controller.openAttachmentFolder,
+            onSaveAttachmentAs: controller.saveAttachmentAs,
             onAcceptFile: controller.acceptIncomingFile,
             onRejectFile: controller.rejectIncomingFile,
             onRetryFile: controller.retryFileDownload,
@@ -3324,6 +3329,7 @@ class _DetachedConversationWindowState
             canRecallMessage: controller.canRecallMessage,
             onRecallMessage: controller.recallMessage,
             recallNoticeFor: controller.recallNotice,
+          reEditableContentFor: controller.reEditableRecallContent,
             favoriteStickers: controller.favoriteStickers,
             onPickFavoriteStickers: controller.pickAndAddFavoriteStickers,
             onSendFavoriteSticker: (sticker) async {
@@ -3532,6 +3538,7 @@ class _ConversationPane extends StatefulWidget {
     required this.onReadClipboardAttachments,
     required this.onOpenAttachment,
     required this.onOpenAttachmentFolder,
+    this.onSaveAttachmentAs,
     required this.onAcceptFile,
     required this.onRejectFile,
     required this.onRetryFile,
@@ -3545,6 +3552,7 @@ class _ConversationPane extends StatefulWidget {
     this.canRecallMessage,
     this.onRecallMessage,
     this.recallNoticeFor,
+    this.reEditableContentFor,
     this.onMention,
     this.loadMentionCandidates,
     this.headerLeftPadding = 22,
@@ -3587,6 +3595,7 @@ class _ConversationPane extends StatefulWidget {
   final Future<List<PendingAttachment>> Function() onReadClipboardAttachments;
   final Future<void> Function(ChatMessage) onOpenAttachment;
   final Future<void> Function(ChatMessage) onOpenAttachmentFolder;
+  final Future<String?> Function(ChatMessage)? onSaveAttachmentAs;
   final Future<void> Function(ChatMessage) onAcceptFile;
   final Future<void> Function(ChatMessage) onRejectFile;
   final Future<void> Function(ChatMessage) onRetryFile;
@@ -3602,6 +3611,7 @@ class _ConversationPane extends StatefulWidget {
   final bool Function(ChatMessage)? canRecallMessage;
   final Future<void> Function(ChatMessage)? onRecallMessage;
   final String Function(ChatMessage)? recallNoticeFor;
+  final String? Function(ChatMessage)? reEditableContentFor;
 
   /// 右键“@TA”时把昵称插进输入框。
   final void Function(String name)? onMention;
@@ -4143,6 +4153,8 @@ class _ConversationPaneState extends State<_ConversationPane> {
                           );
                           final Widget itemWidget;
                           if (message.isRecalled) {
+                            final reEditableText = widget.reEditableContentFor
+                                ?.call(message);
                             itemWidget = RecallNotice(
                               key: _keyFor(message.messageId),
                               text:
@@ -4150,6 +4162,13 @@ class _ConversationPaneState extends State<_ConversationPane> {
                                   '一条消息已撤回',
                               highlighted:
                                   _highlightedMessageId == message.messageId,
+                              onReEdit:
+                                  reEditableText != null && widget.enabled
+                                  ? () {
+                                      widget.composer.text = reEditableText;
+                                      _focusComposer();
+                                    }
+                                  : null,
                             );
                           } else {
                             final bubble = MessageBubble(
@@ -4185,6 +4204,7 @@ class _ConversationPaneState extends State<_ConversationPane> {
                               missingHint: widget.missingHintFor(message),
                               onOpen: widget.onOpenAttachment,
                               onOpenFolder: widget.onOpenAttachmentFolder,
+                              onSaveAs: widget.onSaveAttachmentAs,
                               onAccept: widget.onAcceptFile,
                               onReject: widget.onRejectFile,
                               onRetry: widget.onRetryFile,
@@ -4722,6 +4742,7 @@ class MessageBubble extends StatelessWidget {
     required this.missingHint,
     required this.onOpen,
     required this.onOpenFolder,
+    this.onSaveAs,
     required this.onAccept,
     required this.onReject,
     required this.onRetry,
@@ -4772,6 +4793,7 @@ class MessageBubble extends StatelessWidget {
   final String missingHint;
   final Future<void> Function(ChatMessage) onOpen;
   final Future<void> Function(ChatMessage) onOpenFolder;
+  final Future<String?> Function(ChatMessage)? onSaveAs;
   final Future<void> Function(ChatMessage) onAccept;
   final Future<void> Function(ChatMessage) onReject;
   final Future<void> Function(ChatMessage) onRetry;
@@ -5189,10 +5211,21 @@ class MessageBubble extends StatelessWidget {
               hasLocalFile &&
               message.status == MessageStatus.sent) ...[
             const SizedBox(height: 8),
-            TextButton.icon(
-              onPressed: () => onOpen(message),
-              icon: const Icon(Icons.open_in_new, size: 18),
-              label: const Text('打开文件'),
+            Wrap(
+              spacing: 4,
+              children: [
+                TextButton.icon(
+                  onPressed: () => onOpen(message),
+                  icon: const Icon(Icons.open_in_new, size: 18),
+                  label: const Text('打开文件'),
+                ),
+                if (onSaveAs != null)
+                  TextButton.icon(
+                    onPressed: () => onSaveAs!(message),
+                    icon: const Icon(Icons.save_alt_outlined, size: 18),
+                    label: const Text('另存为'),
+                  ),
+              ],
             ),
           ],
         ],
@@ -5327,6 +5360,15 @@ class MessageBubble extends StatelessWidget {
             unawaited(onOpen(message));
           },
         ),
+        if (onSaveAs != null)
+          ChatContextMenuItem(
+            icon: Icons.save_alt_outlined,
+            label: '另存为…',
+            onTap: () {
+              dismiss();
+              unawaited(onSaveAs!(message));
+            },
+          ),
         ChatContextMenuItem(
           icon: Icons.folder_open_outlined,
           label: '打开所在文件夹',
@@ -5501,35 +5543,62 @@ class RecallNotice extends StatelessWidget {
     super.key,
     required this.text,
     required this.highlighted,
+    this.onReEdit,
   });
 
   final String text;
   final bool highlighted;
+  final VoidCallback? onReEdit;
 
   @override
-  Widget build(BuildContext context) => AnimatedContainer(
-    duration: const Duration(milliseconds: 220),
-    width: double.infinity,
-    margin: const EdgeInsets.only(bottom: 12),
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-    color: highlighted
-        ? Theme.of(context).colorScheme.primary.withValues(alpha: .08)
-        : Colors.transparent,
-    alignment: Alignment.center,
-    child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest
-            .withValues(alpha: .55),
-        borderRadius: BorderRadius.circular(12),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      color: highlighted
+          ? colorScheme.primary.withValues(alpha: .08)
+          : Colors.transparent,
+      alignment: Alignment.center,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerHighest.withValues(alpha: .55),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              text,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (onReEdit != null) ...[
+              const SizedBox(width: 6),
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: onReEdit,
+                  child: Text(
+                    '重新编辑',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: colorScheme.primary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.labelMedium
-            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
-      ),
-    ),
-  );
+    );
+  }
 }
 
 /// 把元信息（昵称、时间、引用摘要等）排除在文本选择之外，

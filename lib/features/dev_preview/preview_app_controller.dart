@@ -1102,14 +1102,19 @@ class PreviewAppController extends AppController {
           _rolesByGroup[group.groupId]?[me] == GroupRole.admin &&
           me != group.ownerDeviceId;
     }
-    // 复用真实控制器的撤回规则；预览的角色数据在 _rolesByGroup，且时间锚到
-    // 固定数据的 baseTime，避免实际时钟偏离窗口后连群主也撤不了。
+    // 复用真实控制器的撤回规则；预览的静态假数据锚到 baseTime，
+    // 预览中新发送的消息（时间戳晚于 baseTime）则使用真实当前时间。
+    final effectiveNow =
+        now ??
+        (message.timestamp.isAfter(PreviewFixtures.baseTime)
+            ? DateTime.now()
+            : PreviewFixtures.baseTime);
     return AppController.canActorRecall(
       message,
       actorDeviceId: me,
       group: group,
       isAdmin: isAdmin,
-      now: now ?? PreviewFixtures.baseTime,
+      now: effectiveNow,
     );
   }
 
@@ -1119,9 +1124,19 @@ class PreviewAppController extends AppController {
     if (list == null) return;
     final idx = list.indexWhere((m) => m.messageId == message.messageId);
     if (idx < 0) return;
+    final recalledAt = DateTime.now();
+    if (message.senderDeviceId == identity!.deviceId &&
+        message.kind == MessageKind.text &&
+        message.content.isNotEmpty) {
+      registerRecallReEditDraft(
+        message.messageId,
+        message.content,
+        recalledAt: recalledAt,
+      );
+    }
     list[idx] = message.asRecalled(
       byDeviceId: identity!.deviceId,
-      at: DateTime.now(),
+      at: recalledAt,
     );
     messages = List<ChatMessage>.from(list);
     notifyListeners();
@@ -1144,6 +1159,15 @@ class PreviewAppController extends AppController {
   @override
   Future<void> openAttachmentFolder(ChatMessage message) async {
     showPreviewToast('预览模式：打开所在文件夹');
+  }
+
+  @override
+  Future<String?> saveAttachmentAs(
+    ChatMessage message, {
+    String? destinationDirectory,
+  }) async {
+    showPreviewToast('预览模式：另存为 ${message.fileName ?? ""}');
+    return null;
   }
 
   @override

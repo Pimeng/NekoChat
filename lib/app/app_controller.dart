@@ -1729,6 +1729,68 @@ class AppController extends ChangeNotifier {
     await _openPath(directory, revealPath: path, failure: '无法打开文件所在位置');
   }
 
+  /// 将已接收/本地存在的附件（文件或图片）另存为到用户选择的目录。
+  /// [destinationDirectory] 可供测试直接注入目标目录，默认弹出系统目录选择器。
+  Future<String?> saveAttachmentAs(
+    ChatMessage message, {
+    String? destinationDirectory,
+  }) async {
+    final sourcePath = message.filePath;
+    if (sourcePath == null || !await File(sourcePath).exists()) {
+      _reportMissingAttachment(message);
+      return null;
+    }
+    var targetDir = destinationDirectory;
+    if (targetDir == null) {
+      final uri = await FilePicker.pickDirectory(dialogTitle: '选择另存为位置');
+      if (uri == null) return null;
+      targetDir = uri.toFilePath(windows: Platform.isWindows);
+    }
+    if (targetDir.isEmpty) return null;
+
+    final rawName = (message.fileName ?? '').trim();
+    final safeName = _sanitizeSaveFileName(
+      rawName.isEmpty ? p.basename(sourcePath) : rawName,
+    );
+    try {
+      await Directory(targetDir).create(recursive: true);
+      final targetPath = await _uniqueDestinationPath(targetDir, safeName);
+      await File(sourcePath).copy(targetPath);
+      _showTopRightMessage(
+        '已另存为：${p.basename(targetPath)}',
+        icon: Icons.save_alt_outlined,
+      );
+      return targetPath;
+    } on Object catch (error) {
+      _showTopRightMessage('另存为失败：$error', icon: Icons.error_outline);
+      return null;
+    }
+  }
+
+  String _sanitizeSaveFileName(String name) {
+    final base = p.basename(name).replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_').trim();
+    final trimmed = base.replaceAll(RegExp(r'[.\s]+$'), '');
+    return trimmed.isEmpty ? 'attachment' : trimmed;
+  }
+
+  Future<String> _uniqueDestinationPath(
+    String directory,
+    String fileName,
+  ) async {
+    final direct = p.join(directory, fileName);
+    if (!await File(direct).exists()) return direct;
+    final stem = p.basenameWithoutExtension(fileName);
+    final ext = p.extension(fileName);
+    for (var i = 1; i < 10000; i++) {
+      final candidate = p.join(directory, '$stem ($i)$ext');
+      if (!await File(candidate).exists()) return candidate;
+    }
+    return p.join(
+      directory,
+      '${stem}_${DateTime.now().millisecondsSinceEpoch}$ext',
+    );
+  }
+
   static const _stickerExtensions = [
     'png',
     'jpg',
@@ -2158,6 +2220,11 @@ class AppController extends ChangeNotifier {
       timer.cancel();
     }
     _chatRequestTimers.clear();
+    for (final timer in _recalledReEditTimers.values) {
+      timer.cancel();
+    }
+    _recalledReEditTimers.clear();
+    _recalledReEditDrafts.clear();
     _topRightMessageTimer?.cancel();
     _topRightMessageTimer = null;
     topRightMessage = null;
@@ -2627,6 +2694,52 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  static const recallReEditWindow = Duration(minutes: 1);
+
+  final Map<String, ({String content, DateTime expiresAt})>
+  _recalledReEditDrafts = {};
+  final Map<String, Timer> _recalledReEditTimers = {};
+
+  /// 缓存自己刚撤回的文字消息，供 1 分钟内点击「重新编辑」恢复到输入框。
+  void registerRecallReEditDraft(
+    String messageId,
+    String content, {
+    DateTime? recalledAt,
+  }) {
+    if (content.isEmpty) return;
+    final at = recalledAt ?? DateTime.now();
+    _recalledReEditTimers.remove(messageId)?.cancel();
+    _recalledReEditDrafts[messageId] = (
+      content: content,
+      expiresAt: at.add(recallReEditWindow),
+    );
+    _recalledReEditTimers[messageId] = Timer(recallReEditWindow, () {
+      _recalledReEditDrafts.remove(messageId);
+      _recalledReEditTimers.remove(messageId);
+      notifyListeners();
+    });
+  }
+
+  /// 返回指定已撤回消息在 1 分钟内可重新编辑的原文本；不可重新编辑或已过期时返回 null。
+  String? reEditableRecallContent(ChatMessage message, {DateTime? now}) {
+    final actor = identity?.deviceId;
+    if (actor == null ||
+        !message.isRecalled ||
+        message.senderDeviceId != actor ||
+        message.recalledByDeviceId != actor) {
+      return null;
+    }
+    final entry = _recalledReEditDrafts[message.messageId];
+    if (entry == null) return null;
+    final current = now ?? DateTime.now();
+    if (!current.isBefore(entry.expiresAt)) {
+      _recalledReEditDrafts.remove(message.messageId);
+      _recalledReEditTimers.remove(message.messageId)?.cancel();
+      return null;
+    }
+    return entry.content;
+  }
+
   String recallNotice(ChatMessage message) {
     final actor = message.recalledByDeviceId;
     if (actor == identity?.deviceId) {
@@ -2664,6 +2777,16 @@ class AppController extends ChangeNotifier {
       return;
     }
     if (replyingTo?.messageId == message.messageId) replyingTo = null;
+    if (actorDeviceId == identity?.deviceId &&
+        message.senderDeviceId == actorDeviceId &&
+        message.kind == MessageKind.text &&
+        message.content.isNotEmpty) {
+      registerRecallReEditDraft(
+        message.messageId,
+        message.content,
+        recalledAt: recalledAt,
+      );
+    }
     final index = messages.indexWhere(
       (value) => value.messageId == message.messageId,
     );
@@ -4650,6 +4773,11 @@ class AppController extends ChangeNotifier {
       timer.cancel();
     }
     _chatRequestTimers.clear();
+    for (final timer in _recalledReEditTimers.values) {
+      timer.cancel();
+    }
+    _recalledReEditTimers.clear();
+    _recalledReEditDrafts.clear();
     unawaited(_discovery?.stop());
     unawaited(_transport.stop());
     unawaited(_database.close());
