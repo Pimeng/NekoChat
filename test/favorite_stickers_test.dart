@@ -494,7 +494,7 @@ void main() {
     );
   });
 
-  testWidgets('外观设置页可切换表情联想开关', (tester) async {
+  testWidgets('聊天与文件设置页可切换表情联想开关', (tester) async {
     final controller = _renderController(messages: const []);
     addTearDown(controller.dispose);
     expect(controller.stickerSuggestionsEnabled, isTrue);
@@ -502,12 +502,9 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: SingleChildScrollView(
-            child: AnimatedBuilder(
-              animation: controller,
-              builder: (_, _) =>
-                  AppearanceSettingsCards(controller: controller),
-            ),
+          body: SettingsSectionPane(
+            controller: controller,
+            section: SettingsSection.files,
           ),
         ),
       ),

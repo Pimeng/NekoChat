@@ -78,7 +78,7 @@ void main() {
       MaterialApp(home: SettingsPage(controller: controller)),
     );
 
-    expect(find.text('在线探测'), findsWidgets);
+    expect(find.text('联机与好友'), findsOneWidget);
     expect(find.text('启用交流'), findsOneWidget);
     expect(find.text('拒绝所有新申请'), findsOneWidget);
     expect(

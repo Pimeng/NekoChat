@@ -9,11 +9,11 @@ import '../common/backup_restore_dialogs.dart';
 import '../common/smooth_dialog.dart';
 
 enum SettingsSection {
-  lan('在线探测', '保持在线并与同一局域网设备互相可见', Icons.wifi_find_outlined),
-  appearance('外观', '字体大小、字体与字重', Icons.text_fields_outlined),
+  lan('联机与好友', '启用交流、口令与好友验证', Icons.wifi_find_outlined),
+  files('聊天与文件', '表情联想与文件接收', Icons.chat_bubble_outline),
+  notifications('消息通知', '独立弹窗、系统通知与测试', Icons.notifications_outlined),
+  appearance('外观与字体', '字体大小、字体与字重', Icons.text_fields_outlined),
   privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
-  files('文件接收', '自动接收与大小上限', Icons.download_outlined),
-  notifications('通知', '独立弹窗、系统通知与测试', Icons.notifications_outlined),
   storage('存储与关于', '数据文件夹、备份还原与版本信息', Icons.folder_outlined);
 
   const SettingsSection(this.title, this.subtitle, this.icon);
@@ -39,171 +39,54 @@ class SettingsPage extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
             children: [
-              const SettingsSectionTitle('在线探测'),
+              const SettingsSectionTitle('联机与好友'),
               _LanCommunicationCard(controller: controller),
               const SizedBox(height: 12),
-              PairingCodeCard(controller: controller),
+              _FriendVerificationCard(controller: controller),
+              const SizedBox(height: 24),
+              const SettingsSectionTitle('聊天与文件'),
+              _ChatInputCard(controller: controller),
               const SizedBox(height: 12),
-              Card(
-                child: SwitchListTile(
-                  secondary: const Icon(Icons.person_off_outlined),
-                  title: const Text('屏蔽加好友申请'),
-                  subtitle: const Text(
-                    '开启后忽略陌生人的加好友申请；用你口令来加你的人、以及已验证好友不受影响',
-                  ),
-                  value: controller.blockFriendRequests,
-                  onChanged: controller.setBlockFriendRequests,
-                ),
+              _FileReceiveCard(
+                controller: controller,
+                onEditLimit: () => _showAutoReceiveLimitDialog(context),
               ),
               const SizedBox(height: 24),
-              const SettingsSectionTitle('隐私'),
-              Card(
-                child: Column(
-                  children: [
-                    SwitchListTile(
-                      secondary: const Icon(Icons.visibility_off_outlined),
-                      title: const Text('老板键'),
-                      subtitle: const Text('开启全局快捷键隐藏或恢复应用'),
-                      value: controller.bossKeyEnabled,
-                      onChanged: controller.setBossKeyEnabled,
-                    ),
-                    const Divider(height: 1, indent: 56),
-                    ListTile(
-                      leading: const Icon(Icons.keyboard_outlined),
-                      title: const Text('快捷键'),
-                      subtitle: Text(controller.bossKeyShortcut.displayLabel),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) =>
-                              BossKeyShortcutPage(controller: controller),
-                        ),
-                      ),
-                    ),
-                    const Divider(height: 1, indent: 56),
-                    SwitchListTile(
-                      secondary: const Icon(
-                        Icons.notifications_active_outlined,
-                      ),
-                      title: const Text('隐藏后仍然弹出通知'),
-                      subtitle: const Text('老板键隐藏窗口后，新消息仍显示 Windows 通知'),
-                      value: controller.bossKeyNotifyWhenHidden,
-                      onChanged: controller.setBossKeyNotifyWhenHidden,
-                    ),
-                    if (controller.bossKeyError != null) ...[
-                      const Divider(height: 1, indent: 56),
-                      ListTile(
-                        leading: Icon(
-                          Icons.warning_amber_rounded,
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                        title: Text(
-                          controller.bossKeyError!,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
-                child: Text(
-                  '隐藏后不显示任务栏入口或系统通知，再按当前快捷键 '
-                  '或重新启动 NekoChat 即可恢复。进程仍会在任务管理器中显示。',
-                  style: TextStyle(color: Colors.black54, fontSize: 12),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.block_outlined),
-                  title: const Text('黑名单'),
-                  subtitle: Text(
-                    controller.blockedPeers.isEmpty
-                        ? '暂无已拉黑的联系人'
-                        : '已拉黑 ${controller.blockedPeers.length} 人，可随时解除拉黑',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => BlockedPeersPage(controller: controller),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              const SettingsSectionTitle('文件接收'),
-              Card(
-                child: Column(
-                  children: [
-                    SwitchListTile(
-                      secondary: const Icon(Icons.download_outlined),
-                      title: const Text('自动接收文件'),
-                      subtitle: const Text('小文件自动下载，大文件仍需手动确认'),
-                      value: controller.autoReceiveFiles,
-                      onChanged: controller.setAutoReceiveFiles,
-                    ),
-                    const Divider(height: 1, indent: 56),
-                    ListTile(
-                      leading: const Icon(Icons.data_usage_outlined),
-                      title: const Text('自动接收大小上限'),
-                      subtitle: Text(
-                        '小于 ${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB '
-                        '的文件自动接收；达到上限后需要确认',
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            '${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB',
-                          ),
-                          const SizedBox(width: 4),
-                          const Icon(Icons.chevron_right),
-                        ],
-                      ),
-                      onTap: () => _showAutoReceiveLimitDialog(context),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              const SettingsSectionTitle('通知'),
+              const SettingsSectionTitle('消息通知'),
               _NotificationSettingsCard(controller: controller),
               const SizedBox(height: 24),
-              const SettingsSectionTitle('存储'),
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.folder_outlined),
-                  title: const Text('数据文件夹'),
-                  subtitle: Text(
-                    controller.dataDirectory ?? '数据目录尚未就绪',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+              const SettingsSectionTitle('外观与字体'),
+              AppearanceSettingsCards(controller: controller),
+              const SizedBox(height: 24),
+              const SettingsSectionTitle('隐私与安全'),
+              _BossKeySettingsCard(
+                controller: controller,
+                onTapShortcut: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        BossKeyShortcutPage(controller: controller),
                   ),
-                  trailing: const Icon(Icons.open_in_new, size: 20),
-                  onTap: controller.dataDirectory == null
-                      ? null
-                      : controller.openDataDirectory,
                 ),
               ),
+              const _BossKeyFootNote(),
+              const SizedBox(height: 12),
+              _BlacklistEntryCard(
+                controller: controller,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => BlockedPeersPage(controller: controller),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              const SettingsSectionTitle('存储与关于'),
+              _DataDirectoryCard(controller: controller),
               const SizedBox(height: 12),
               _BackupRestoreCard(
                 controller: controller,
                 popRoutesOnRestore: true,
               ),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
-                child: Text(
-                  '聊天记录、身份数据、收藏表情包和已接收附件都保存在本机；定期备份可避免重置或换机导致数据丢失。',
-                  style: TextStyle(color: Colors.black54, fontSize: 12),
-                ),
-              ),
-              const SizedBox(height: 24),
-              const SettingsSectionTitle('外观'),
-              AppearanceSettingsCards(controller: controller),
+              const _StorageFootNote(),
               const SizedBox(height: 32),
               const SettingsVersionFooter(),
             ],
@@ -510,17 +393,6 @@ class AppearanceSettingsCards extends StatelessWidget {
             subtitle: const Text('整体文字字重上调一档，看起来更醒目'),
             value: controller.boldText,
             onChanged: controller.setBoldText,
-          ),
-        ),
-        const SizedBox(height: 16),
-        Card(
-          child: SwitchListTile(
-            key: const ValueKey('sticker-suggestions-switch'),
-            secondary: const Icon(Icons.sentiment_satisfied_alt_outlined),
-            title: const Text('表情联想'),
-            subtitle: const Text('输入与收藏表情备注匹配的文字时，在输入框上方快捷弹出对应表情'),
-            value: controller.stickerSuggestionsEnabled,
-            onChanged: controller.setStickerSuggestionsEnabled,
           ),
         ),
       ],
@@ -1047,167 +919,336 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
     final controller = widget.controller;
     return switch (widget.section) {
       SettingsSection.lan => [
+        const SettingsSectionTitle('联机状态'),
         _LanCommunicationCard(controller: controller),
-        const SizedBox(height: 12),
-        PairingCodeCard(controller: controller),
-        const SizedBox(height: 12),
-        Card(
-          child: SwitchListTile(
-            secondary: const Icon(Icons.person_off_outlined),
-            title: const Text('屏蔽加好友申请'),
-            subtitle: const Text(
-              '开启后忽略陌生人的加好友申请；用你口令来加你的人、以及已验证好友不受影响',
-            ),
-            value: controller.blockFriendRequests,
-            onChanged: controller.setBlockFriendRequests,
-          ),
+        const SizedBox(height: 20),
+        const SettingsSectionTitle('好友验证'),
+        _FriendVerificationCard(controller: controller),
+      ],
+      SettingsSection.files => [
+        const SettingsSectionTitle('聊天输入'),
+        _ChatInputCard(controller: controller),
+        const SizedBox(height: 20),
+        const SettingsSectionTitle('文件接收'),
+        _FileReceiveCard(
+          controller: controller,
+          onEditLimit: () => SettingsPage(
+            controller: controller,
+          )._showAutoReceiveLimitDialog(context),
         ),
+      ],
+      SettingsSection.notifications => [
+        const SettingsSectionTitle('提醒方式'),
+        _NotificationSettingsCard(controller: controller),
       ],
       SettingsSection.appearance => [
         AppearanceSettingsCards(controller: controller),
       ],
       SettingsSection.privacy => [
-        Card(
-          child: Column(
-            children: [
-              SwitchListTile(
-                secondary: const Icon(Icons.visibility_off_outlined),
-                title: const Text('老板键'),
-                subtitle: const Text('开启全局快捷键隐藏或恢复应用'),
-                value: controller.bossKeyEnabled,
-                onChanged: controller.setBossKeyEnabled,
-              ),
-              const Divider(height: 1, indent: 56),
-              ListTile(
-                leading: const Icon(Icons.keyboard_outlined),
-                title: const Text('快捷键'),
-                subtitle: Text(controller.bossKeyShortcut.displayLabel),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => setState(
-                  () => _privacySubPage = _PrivacySubPage.bossKeyShortcut,
-                ),
-              ),
-              const Divider(height: 1, indent: 56),
-              SwitchListTile(
-                secondary: const Icon(Icons.notifications_active_outlined),
-                title: const Text('隐藏后仍然弹出通知'),
-                subtitle: const Text('老板键隐藏窗口后，新消息仍显示 Windows 通知'),
-                value: controller.bossKeyNotifyWhenHidden,
-                onChanged: controller.setBossKeyNotifyWhenHidden,
-              ),
-              if (controller.bossKeyError != null) ...[
-                const Divider(height: 1, indent: 56),
-                ListTile(
-                  leading: Icon(
-                    Icons.warning_amber_rounded,
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-                  title: Text(
-                    controller.bossKeyError!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
+        const SettingsSectionTitle('老板键'),
+        _BossKeySettingsCard(
+          controller: controller,
+          onTapShortcut: () =>
+              setState(() => _privacySubPage = _PrivacySubPage.bossKeyShortcut),
         ),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
-          child: Text(
-            '隐藏后不显示任务栏入口或系统通知，再按当前快捷键 '
-            '或重新启动 NekoChat 即可恢复。进程仍会在任务管理器中显示。',
-            style: TextStyle(color: Colors.black54, fontSize: 12),
-          ),
+        const _BossKeyFootNote(),
+        const SizedBox(height: 20),
+        const SettingsSectionTitle('联系人限制'),
+        _BlacklistEntryCard(
+          controller: controller,
+          onTap: () =>
+              setState(() => _privacySubPage = _PrivacySubPage.blockedPeers),
         ),
-        const SizedBox(height: 16),
-        Card(
-          child: ListTile(
-            leading: const Icon(Icons.block_outlined),
-            title: const Text('黑名单'),
-            subtitle: Text(
-              controller.blockedPeers.isEmpty
-                  ? '暂无已拉黑的联系人'
-                  : '已拉黑 ${controller.blockedPeers.length} 人，可随时解除拉黑',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => setState(
-              () => _privacySubPage = _PrivacySubPage.blockedPeers,
-            ),
-          ),
-        ),
-      ],
-      SettingsSection.files => [
-        Card(
-          child: Column(
-            children: [
-              SwitchListTile(
-                secondary: const Icon(Icons.download_outlined),
-                title: const Text('自动接收文件'),
-                subtitle: const Text('小文件自动下载，大文件仍需手动确认'),
-                value: controller.autoReceiveFiles,
-                onChanged: controller.setAutoReceiveFiles,
-              ),
-              const Divider(height: 1, indent: 56),
-              ListTile(
-                leading: const Icon(Icons.data_usage_outlined),
-                title: const Text('自动接收大小上限'),
-                subtitle: Text(
-                  '小于 ${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB '
-                  '的文件自动接收；达到上限后需要确认',
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB',
-                    ),
-                    const SizedBox(width: 4),
-                    const Icon(Icons.chevron_right),
-                  ],
-                ),
-                onTap: () =>
-                    SettingsPage(controller: controller)
-                        ._showAutoReceiveLimitDialog(context),
-              ),
-            ],
-          ),
-        ),
-      ],
-      SettingsSection.notifications => [
-        _NotificationSettingsCard(controller: controller),
       ],
       SettingsSection.storage => [
-        Card(
-          child: ListTile(
-            leading: const Icon(Icons.folder_outlined),
-            title: const Text('数据文件夹'),
-            subtitle: Text(
-              controller.dataDirectory ?? '数据目录尚未就绪',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: const Icon(Icons.open_in_new, size: 20),
-            onTap: controller.dataDirectory == null
-                ? null
-                : controller.openDataDirectory,
-          ),
-        ),
-        const SizedBox(height: 12),
+        const SettingsSectionTitle('本地数据'),
+        _DataDirectoryCard(controller: controller),
+        const SizedBox(height: 20),
+        const SettingsSectionTitle('备份与还原'),
         _BackupRestoreCard(controller: controller),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
-          child: Text(
-            '聊天记录、身份数据、收藏表情包和已接收附件都保存在本机；定期备份可避免重置或换机导致数据丢失。',
-            style: TextStyle(color: Colors.black54, fontSize: 12),
-          ),
-        ),
+        const _StorageFootNote(),
         const SizedBox(height: 28),
         const SettingsVersionFooter(),
       ],
     };
   }
+}
+
+class _FriendVerificationCard extends StatelessWidget {
+  const _FriendVerificationCard({required this.controller});
+
+  final AppController controller;
+
+  Future<void> _regenerate(BuildContext context) async {
+    final confirmed = await showNekoDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('重新生成口令'),
+        content: const Text('生成新口令后，旧口令立即失效，用旧口令添加你的操作将失败。确定继续吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('重新生成'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await controller.regeneratePairingCode();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final rejectedAll = controller.rejectAllNewRequests;
+    return Card(
+      child: Column(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.vpn_key_outlined),
+            title: const Text('我的口令'),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        controller.myPairingCode,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '复制口令',
+                      onPressed: controller.copyPairingCode,
+                      icon: const Icon(Icons.copy, size: 18),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '把口令告诉对方即可用它加你（可穿透“屏蔽加好友申请”）；怀疑泄露可重新生成。',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            isThreeLine: true,
+            trailing: TextButton.icon(
+              onPressed: () => _regenerate(context),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重新生成'),
+            ),
+          ),
+          const Divider(height: 1, indent: 56),
+          SwitchListTile(
+            secondary: const Icon(Icons.person_off_outlined),
+            title: const Text('屏蔽加好友申请'),
+            subtitle: Text(
+              rejectedAll
+                  ? '当前已开启“拒绝所有新申请”，所有新申请（含口令申请）均会被自动拒绝'
+                  : '开启后忽略陌生人的加好友申请；用你口令来加你的人、以及已验证好友不受影响',
+            ),
+            value: controller.blockFriendRequests,
+            onChanged: controller.setBlockFriendRequests,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChatInputCard extends StatelessWidget {
+  const _ChatInputCard({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: SwitchListTile(
+      key: const ValueKey('sticker-suggestions-switch'),
+      secondary: const Icon(Icons.sentiment_satisfied_alt_outlined),
+      title: const Text('表情联想'),
+      subtitle: const Text('输入与收藏表情备注匹配的文字时，在输入框上方快捷弹出对应表情'),
+      value: controller.stickerSuggestionsEnabled,
+      onChanged: controller.setStickerSuggestionsEnabled,
+    ),
+  );
+}
+
+class _FileReceiveCard extends StatelessWidget {
+  const _FileReceiveCard({required this.controller, required this.onEditLimit});
+
+  final AppController controller;
+  final VoidCallback onEditLimit;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Column(
+      children: [
+        SwitchListTile(
+          secondary: const Icon(Icons.download_outlined),
+          title: const Text('自动接收文件'),
+          subtitle: const Text('小文件自动下载，大文件仍需手动确认'),
+          value: controller.autoReceiveFiles,
+          onChanged: controller.setAutoReceiveFiles,
+        ),
+        const Divider(height: 1, indent: 56),
+        ListTile(
+          leading: const Icon(Icons.data_usage_outlined),
+          title: const Text('自动接收大小上限'),
+          subtitle: Text(
+            '小于 ${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB '
+            '的文件自动接收；达到上限后需要确认',
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '${_formatMegabytes(controller.autoReceiveFileLimitBytes)} MB',
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+          onTap: onEditLimit,
+        ),
+      ],
+    ),
+  );
+}
+
+class _BossKeySettingsCard extends StatelessWidget {
+  const _BossKeySettingsCard({
+    required this.controller,
+    required this.onTapShortcut,
+  });
+
+  final AppController controller;
+  final VoidCallback onTapShortcut;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Column(
+      children: [
+        SwitchListTile(
+          secondary: const Icon(Icons.visibility_off_outlined),
+          title: const Text('老板键'),
+          subtitle: const Text('开启全局快捷键隐藏或恢复应用'),
+          value: controller.bossKeyEnabled,
+          onChanged: controller.setBossKeyEnabled,
+        ),
+        const Divider(height: 1, indent: 56),
+        ListTile(
+          leading: const Icon(Icons.keyboard_outlined),
+          title: const Text('快捷键'),
+          subtitle: Text(controller.bossKeyShortcut.displayLabel),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: onTapShortcut,
+        ),
+        const Divider(height: 1, indent: 56),
+        SwitchListTile(
+          secondary: const Icon(Icons.notifications_active_outlined),
+          title: const Text('隐藏后仍然弹出通知'),
+          subtitle: const Text('老板键隐藏窗口后，新消息仍显示 Windows 通知'),
+          value: controller.bossKeyNotifyWhenHidden,
+          onChanged: controller.setBossKeyNotifyWhenHidden,
+        ),
+        if (controller.bossKeyError != null) ...[
+          const Divider(height: 1, indent: 56),
+          ListTile(
+            leading: Icon(
+              Icons.warning_amber_rounded,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            title: Text(
+              controller.bossKeyError!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+}
+
+class _BossKeyFootNote extends StatelessWidget {
+  const _BossKeyFootNote();
+
+  @override
+  Widget build(BuildContext context) => const Padding(
+    padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+    child: Text(
+      '隐藏后不显示任务栏入口或系统通知，再按当前快捷键 '
+      '或重新启动 NekoChat 即可恢复。进程仍会在任务管理器中显示。',
+      style: TextStyle(color: Colors.black54, fontSize: 12),
+    ),
+  );
+}
+
+class _BlacklistEntryCard extends StatelessWidget {
+  const _BlacklistEntryCard({required this.controller, required this.onTap});
+
+  final AppController controller;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: ListTile(
+      leading: const Icon(Icons.block_outlined),
+      title: const Text('黑名单'),
+      subtitle: Text(
+        controller.blockedPeers.isEmpty
+            ? '暂无已拉黑的联系人'
+            : '已拉黑 ${controller.blockedPeers.length} 人，可随时解除拉黑',
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: onTap,
+    ),
+  );
+}
+
+class _DataDirectoryCard extends StatelessWidget {
+  const _DataDirectoryCard({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: ListTile(
+      leading: const Icon(Icons.folder_outlined),
+      title: const Text('数据文件夹'),
+      subtitle: Text(
+        controller.dataDirectory ?? '数据目录尚未就绪',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: const Icon(Icons.open_in_new, size: 20),
+      onTap: controller.dataDirectory == null
+          ? null
+          : controller.openDataDirectory,
+    ),
+  );
+}
+
+class _StorageFootNote extends StatelessWidget {
+  const _StorageFootNote();
+
+  @override
+  Widget build(BuildContext context) => const Padding(
+    padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+    child: Text(
+      '聊天记录、身份数据、收藏表情包和已接收附件都保存在本机；定期备份可避免重置或换机导致数据丢失。',
+      style: TextStyle(color: Colors.black54, fontSize: 12),
+    ),
+  );
 }
 
 class _LanCommunicationCard extends StatelessWidget {
