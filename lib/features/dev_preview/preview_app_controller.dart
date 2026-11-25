@@ -471,6 +471,7 @@ class PreviewAppController extends AppController {
     autoReceiveFileLimitBytes = 10 * 1024 * 1024;
     windowsNotificationsEnabled = true;
     lanDiscoveryEnabled = true;
+    rejectAllNewRequests = false;
     blockFriendRequests = false;
     // 词表是 assets 数据，预览模式同样异步加载；加载完成前先用占位口令展示。
     pairingSecret = '月亮 咖啡 火箭 西瓜 星星';
@@ -650,6 +651,12 @@ class PreviewAppController extends AppController {
   @override
   Future<void> setLanDiscoveryEnabled(bool value) async {
     lanDiscoveryEnabled = value;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setRejectAllNewRequests(bool value) async {
+    rejectAllNewRequests = value;
     notifyListeners();
   }
 

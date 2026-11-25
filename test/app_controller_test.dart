@@ -960,6 +960,81 @@ void main() {
     expect(await setup.database.loadSetting('lan_discovery_enabled'), 'true');
   });
 
+  test('开启拒绝所有新申请后自动拒绝新的好友申请与群聊邀请', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-controller-reject-all-',
+    );
+    final setup = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 5),
+    );
+    addTearDown(() async {
+      await setup.database.close();
+      setup.controller.dispose();
+      await directory.delete(recursive: true);
+    });
+
+    await setup.controller.initialize();
+    await setup.controller.setup(displayName: '本机', password: '1234');
+    expect(setup.controller.rejectAllNewRequests, isFalse);
+
+    await setup.controller.setRejectAllNewRequests(true);
+    expect(setup.controller.rejectAllNewRequests, isTrue);
+    expect(await setup.database.loadSetting('reject_all_new_requests'), 'true');
+
+    // 普通好友申请与携带口令的新好友申请都会被自动拒绝并回复 chatReject。
+    setup.transport.emit(chatRequestPacket());
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(setup.controller.chatRequests, isEmpty);
+    expect(
+      setup.transport.sentEnvelopes.any(
+        (e) =>
+            e.type == MessageType.chatReject &&
+            e.payload['requestId'] == 'request-1',
+      ),
+      isTrue,
+    );
+
+    // 新的群聊邀请同样被自动拒绝并回复 groupInviteResponse(accepted: false)。
+    final trusted = TrustedPeer(
+      deviceId: 'trusted-peer',
+      displayName: '好友',
+      lastKnownIp: '192.168.1.30',
+      verifiedAt: DateTime.now(),
+    );
+    await setup.database.saveTrustedPeer(trusted);
+    setup.controller.trustedPeers[trusted.deviceId] = trusted;
+
+    setup.transport.emit(
+      const IncomingPacket(
+        envelope: ProtocolEnvelope(
+          type: MessageType.groupInvite,
+          payload: {
+            'inviteId': 'invite-auto-reject',
+            'groupId': 'group-1',
+            'groupName': '测试群',
+            'ownerDeviceId': 'trusted-peer',
+            'ownerDisplayName': '好友',
+            'inviterDeviceId': 'trusted-peer',
+            'inviterDisplayName': '好友',
+          },
+        ),
+        remoteAddress: '192.168.1.30',
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(setup.controller.groupInvitations, isEmpty);
+    expect(
+      setup.transport.sentEnvelopes.any(
+        (e) =>
+            e.type == MessageType.groupInviteResponse &&
+            e.payload['inviteId'] == 'invite-auto-reject' &&
+            e.payload['accepted'] == false,
+      ),
+      isTrue,
+    );
+  });
+
   test('人员和群聊备注本地生效，不覆盖原始名称', () async {
     final directory = await Directory.systemTemp.createTemp(
       'neko-chat-controller-remarks-',

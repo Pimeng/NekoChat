@@ -90,6 +90,7 @@ class AppController extends ChangeNotifier {
   static const _notificationModeSetting = 'notification_mode';
   static const _notificationAnchorSetting = 'notification_anchor';
   static const _lanDiscoverySetting = 'lan_discovery_enabled';
+  static const _rejectAllNewRequestsSetting = 'reject_all_new_requests';
   static const _pairingSecretSetting = 'pairing_secret';
   static const _blockFriendRequestsSetting = 'block_friend_requests';
   static const _bossKeySetting = 'boss_key_enabled';
@@ -266,6 +267,10 @@ class AppController extends ChangeNotifier {
   /// 是否广播本机并监听局域网内其他 NekoChat 设备，默认开启。
   bool lanDiscoveryEnabled = true;
 
+  /// 是否自动拒绝所有新的好友申请（含口令申请）与新群聊邀请，默认关闭。
+  /// 已验证好友的正常聊天与重连不受影响。
+  bool rejectAllNewRequests = false;
+
   /// 是否屏蔽陌生人的加好友申请（防骚扰）。开启后忽略普通申请，
   /// 但用本机口令发起的申请与已验证好友不受影响。默认关闭。
   bool blockFriendRequests = false;
@@ -388,6 +393,10 @@ class AppController extends ChangeNotifier {
     lanDiscoveryEnabled = _settingBool(
       await _database.loadSetting(_lanDiscoverySetting),
       fallback: true,
+    );
+    rejectAllNewRequests = _settingBool(
+      await _database.loadSetting(_rejectAllNewRequestsSetting),
+      fallback: false,
     );
     // 口令词表是 assets 数据，启动时加载一次；失败则应用启动失败并报错。
     await _pairingWordList.load();
@@ -734,6 +743,18 @@ class AppController extends ChangeNotifier {
       _historySyncedDevices.clear();
       peers = [];
     }
+    notifyListeners();
+  }
+
+  /// 开关“拒绝所有新申请”。开启后自动拒绝所有新的好友申请（含口令申请）
+  /// 以及新的群聊邀请；已验证好友的正常聊天不受影响。
+  Future<void> setRejectAllNewRequests(bool value) async {
+    if (rejectAllNewRequests == value) return;
+    await _database.saveSetting(
+      _rejectAllNewRequestsSetting,
+      value.toString(),
+    );
+    rejectAllNewRequests = value;
     notifyListeners();
   }
 
@@ -3099,6 +3120,18 @@ class AppController extends ChangeNotifier {
       return;
     }
 
+    if (rejectAllNewRequests) {
+      _log.info('已自动拒绝来自 $deviceId 的新好友申请（已开启“拒绝所有新申请”）');
+      await _sendToAddress(
+        packet.remoteAddress,
+        ProtocolEnvelope(
+          type: MessageType.chatReject,
+          payload: {'requestId': requestId, 'deviceId': identity!.deviceId},
+        ),
+      );
+      return;
+    }
+
     final viaPaired = _verifyPairingProof(payload, requestId);
     // 屏蔽加好友申请：开启后忽略陌生人的申请；但“用你口令来加你的人”仍放行
     // （口令本就是你给出的），已验证好友的自动恢复在上面已处理。
@@ -3677,6 +3710,23 @@ class AppController extends ChangeNotifier {
     if (trustedPeers[inviterDeviceId] == null ||
         trustedPeers[inviterDeviceId]!.blocked ||
         groupInvitations.containsKey(inviteId)) {
+      return;
+    }
+    if (rejectAllNewRequests) {
+      _log.info('已自动拒绝来自 $inviterDeviceId 的新群聊邀请（已开启“拒绝所有新申请”）');
+      await _sendToAddress(
+        packet.remoteAddress,
+        ProtocolEnvelope(
+          type: MessageType.groupInviteResponse,
+          payload: {
+            'inviteId': inviteId,
+            'groupId': groupId,
+            'accepted': false,
+            'deviceId': identity!.deviceId,
+            'displayName': identity!.displayName,
+          },
+        ),
+      );
       return;
     }
     groupInvitations[inviteId] = GroupInvitation(

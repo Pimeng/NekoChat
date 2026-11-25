@@ -40,17 +40,7 @@ class SettingsPage extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
             children: [
               const SettingsSectionTitle('在线探测'),
-              Card(
-                child: SwitchListTile(
-                  secondary: const Icon(Icons.wifi_find_outlined),
-                  title: const Text('在线探测'),
-                  subtitle: const Text(
-                    '开启后与同一局域网内的 NekoChat 设备保持在线探测、互相可见；关闭后将无法收发消息',
-                  ),
-                  value: controller.lanDiscoveryEnabled,
-                  onChanged: controller.setLanDiscoveryEnabled,
-                ),
-              ),
+              _LanCommunicationCard(controller: controller),
               const SizedBox(height: 12),
               PairingCodeCard(controller: controller),
               const SizedBox(height: 12),
@@ -1057,17 +1047,7 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
     final controller = widget.controller;
     return switch (widget.section) {
       SettingsSection.lan => [
-        Card(
-          child: SwitchListTile(
-            secondary: const Icon(Icons.wifi_find_outlined),
-            title: const Text('在线探测'),
-            subtitle: const Text(
-              '开启后与同一局域网内的 NekoChat 设备保持在线探测、互相可见；关闭后将无法收发消息',
-            ),
-            value: controller.lanDiscoveryEnabled,
-            onChanged: controller.setLanDiscoveryEnabled,
-          ),
-        ),
+        _LanCommunicationCard(controller: controller),
         const SizedBox(height: 12),
         PairingCodeCard(controller: controller),
         const SizedBox(height: 12),
@@ -1227,6 +1207,45 @@ class _SettingsSectionPaneState extends State<SettingsSectionPane> {
         const SettingsVersionFooter(),
       ],
     };
+  }
+}
+
+class _LanCommunicationCard extends StatelessWidget {
+  const _LanCommunicationCard({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = controller.lanDiscoveryEnabled;
+    return Card(
+      child: Column(
+        children: [
+          SwitchListTile(
+            secondary: const Icon(Icons.wifi_find_outlined),
+            title: const Text('启用交流'),
+            subtitle: const Text(
+              '开启后与同一局域网内的 NekoChat 设备保持在线探测、互相可见；关闭后将无法收发消息',
+            ),
+            value: enabled,
+            onChanged: controller.setLanDiscoveryEnabled,
+          ),
+          const Divider(height: 1, indent: 56),
+          SwitchListTile(
+            key: const ValueKey('reject-all-new-requests-switch'),
+            secondary: const Icon(Icons.do_not_disturb_on_outlined),
+            title: const Text('拒绝所有新申请'),
+            subtitle: Text(
+              enabled
+                  ? '开启后自动拒绝所有新的好友申请（含口令申请）与新群聊邀请；已验证好友不受影响'
+                  : '开启“启用交流”后可用',
+            ),
+            value: controller.rejectAllNewRequests,
+            onChanged: enabled ? controller.setRejectAllNewRequests : null,
+          ),
+        ],
+      ),
+    );
   }
 }
 

@@ -90,11 +90,15 @@ void main() {
     await tester.tap(settingsNav);
     await tester.pumpAndSettle();
 
-    final lanSwitch = find.widgetWithText(SwitchListTile, '在线探测');
+    final lanSwitch = find.widgetWithText(SwitchListTile, '启用交流');
+    final rejectAllSwitch = find.widgetWithText(SwitchListTile, '拒绝所有新申请');
     expect(tester.widget<SwitchListTile>(lanSwitch).value, isTrue);
+    expect(tester.widget<SwitchListTile>(rejectAllSwitch).value, isFalse);
+    expect(tester.widget<SwitchListTile>(rejectAllSwitch).onChanged, isNotNull);
     await tester.tap(lanSwitch);
     await tester.pumpAndSettle();
     expect(tester.widget<SwitchListTile>(lanSwitch).value, isFalse);
+    expect(tester.widget<SwitchListTile>(rejectAllSwitch).onChanged, isNull);
 
     // 切换到完整主界面并验证模拟会话渲染
     final mainShellNav = find.byKey(const ValueKey('preview-nav-main-shell'));

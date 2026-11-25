@@ -72,13 +72,15 @@ class _BlacklistTestController extends AppController {
 }
 
 void main() {
-  testWidgets('在线探测开关默认开启', (tester) async {
+  testWidgets('启用交流开关默认开启，子项拒绝所有新申请默认关闭', (tester) async {
     final controller = AppController();
     await tester.pumpWidget(
       MaterialApp(home: SettingsPage(controller: controller)),
     );
 
     expect(find.text('在线探测'), findsWidgets);
+    expect(find.text('启用交流'), findsOneWidget);
+    expect(find.text('拒绝所有新申请'), findsOneWidget);
     expect(
       find.text(
         '开启后与同一局域网内的 NekoChat 设备保持在线探测、互相可见；关闭后将无法收发消息',
@@ -88,10 +90,18 @@ void main() {
     expect(
       tester
           .widget<SwitchListTile>(
-            find.widgetWithText(SwitchListTile, '在线探测'),
+            find.widgetWithText(SwitchListTile, '启用交流'),
           )
           .value,
       isTrue,
+    );
+    expect(
+      tester
+          .widget<SwitchListTile>(
+            find.widgetWithText(SwitchListTile, '拒绝所有新申请'),
+          )
+          .value,
+      isFalse,
     );
   });
 
@@ -139,6 +149,8 @@ void main() {
       MaterialApp(home: SettingsPage(controller: controller)),
     );
 
+    await tester.scrollUntilVisible(find.text('快捷键'), 200);
+    await tester.pumpAndSettle();
     expect(find.text('Alt + F'), findsOneWidget);
     await tester.tap(find.text('快捷键'));
     await tester.pumpAndSettle();
