@@ -269,12 +269,14 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     return RepaintBoundary(
       child: Material(
         key: const ValueKey('group-info-drawer'),
       elevation: 12,
-      shadowColor: Colors.black26,
+      shadowColor: isDark ? Colors.black54 : Colors.black26,
       color: colorScheme.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
@@ -898,8 +900,11 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
         const Divider(height: 1),
         Expanded(
           child: filtered.isEmpty
-              ? const Center(
-                  child: Text('没有匹配的群成员', style: TextStyle(color: Colors.grey)),
+              ? Center(
+                  child: Text(
+                    '没有匹配的群成员',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
                 )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(vertical: 6),
@@ -919,6 +924,7 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
                     final removable = _canRemove(member);
                     final confirmingThis =
                         _confirmingRemoveDeviceId == member.deviceId;
+                    final isDark = Theme.of(context).brightness == Brightness.dark;
 
                     return ListTile(
                       dense: true,
@@ -941,7 +947,11 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
                               width: 9,
                               height: 9,
                               decoration: BoxDecoration(
-                                color: online ? Colors.green : Colors.grey,
+                                color: online
+                                    ? (isDark
+                                          ? const Color(0xFF4ADE80)
+                                          : Colors.green)
+                                    : colorScheme.outline,
                                 shape: BoxShape.circle,
                                 border: Border.all(
                                   color: colorScheme.surface,
@@ -1052,13 +1062,15 @@ class _GroupInfoDrawerState extends State<GroupInfoDrawer> {
         const Divider(height: 1),
         Expanded(
           child: available.isEmpty
-              ? const Center(
+              ? Center(
                   child: Padding(
-                    padding: EdgeInsets.all(24),
+                    padding: const EdgeInsets.all(24),
                     child: Text(
                       '暂无可邀请的已验证在线设备',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 )
@@ -1362,7 +1374,9 @@ class _MemberGridItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     return InkWell(
       borderRadius: BorderRadius.circular(10),
       onTap: onTap,
@@ -1382,7 +1396,9 @@ class _MemberGridItem extends StatelessWidget {
                     width: 9,
                     height: 9,
                     decoration: BoxDecoration(
-                      color: online ? Colors.green : Colors.grey,
+                      color: online
+                          ? (isDark ? const Color(0xFF4ADE80) : Colors.green)
+                          : colorScheme.outline,
                       shape: BoxShape.circle,
                       border: Border.all(
                         color: colorScheme.surfaceContainerLow,
@@ -1399,7 +1415,9 @@ class _MemberGridItem extends StatelessWidget {
                       padding: const EdgeInsets.all(2),
                       decoration: BoxDecoration(
                         color: role == GroupRole.owner
-                            ? const Color(0xFFFFE9B8)
+                            ? (isDark
+                                  ? const Color(0xFF4A3610)
+                                  : const Color(0xFFFFE9B8))
                             : colorScheme.tertiaryContainer,
                         shape: BoxShape.circle,
                       ),
@@ -1409,7 +1427,9 @@ class _MemberGridItem extends StatelessWidget {
                             : Icons.shield_outlined,
                         size: 10,
                         color: role == GroupRole.owner
-                            ? const Color(0xFF8A5A00)
+                            ? (isDark
+                                  ? const Color(0xFFFFD685)
+                                  : const Color(0xFF8A5A00))
                             : colorScheme.onTertiaryContainer,
                       ),
                     ),

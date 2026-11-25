@@ -118,4 +118,70 @@ void main() {
     expect(find.text('机房联调群'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('组件预览工作台支持切换到深色模式并正常渲染页面与组件', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 860));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(const ComponentPreviewApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('preview-theme-dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('主题：深色').last);
+    await tester.pumpAndSettle();
+
+    final darkContext = tester.element(find.text('NekoChat 组件预览'));
+    expect(Theme.of(darkContext).brightness, Brightness.dark);
+
+    final sidebarScrollable = find.descendant(
+      of: find.byKey(const ValueKey('preview-sidebar-list')),
+      matching: find.byType(Scrollable),
+    );
+    final mainShellNav = find.byKey(const ValueKey('preview-nav-main-shell'));
+    await tester.scrollUntilVisible(
+      mainShellNav,
+      200,
+      scrollable: sidebarScrollable,
+    );
+    await tester.ensureVisible(mainShellNav);
+    await tester.pumpAndSettle();
+    await tester.tap(mainShellNav);
+    await tester.pumpAndSettle();
+
+    final shellContext = tester.element(
+      find.byKey(const ValueKey('nav-rail-messages')),
+    );
+    expect(Theme.of(shellContext).brightness, Brightness.dark);
+
+    // 左下角设置齿轮上方提供一键切换深浅色按钮
+    final themeToggle = find.byKey(const ValueKey('nav-rail-theme-toggle'));
+    final settingsButton = find.byKey(const ValueKey('nav-rail-settings'));
+    expect(themeToggle, findsOneWidget);
+    expect(
+      tester.getCenter(themeToggle).dy,
+      lessThan(tester.getCenter(settingsButton).dy),
+    );
+    expect(find.byIcon(Icons.light_mode_outlined), findsOneWidget);
+
+    await tester.tap(themeToggle);
+    await tester.pumpAndSettle();
+    expect(
+      Theme.of(
+        tester.element(find.byKey(const ValueKey('nav-rail-messages'))),
+      ).brightness,
+      Brightness.light,
+    );
+    expect(find.byIcon(Icons.dark_mode_outlined), findsOneWidget);
+
+    await tester.tap(themeToggle);
+    await tester.pumpAndSettle();
+    expect(
+      Theme.of(
+        tester.element(find.byKey(const ValueKey('nav-rail-messages'))),
+      ).brightness,
+      Brightness.dark,
+    );
+    expect(tester.takeException(), isNull);
+  });
 }

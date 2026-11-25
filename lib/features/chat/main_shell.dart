@@ -8,10 +8,12 @@ import 'package:flutter/services.dart';
 import 'package:multiview_desktop/multiview_desktop.dart';
 
 import '../../app/app_controller.dart';
+import '../../app/neko_chat_app.dart';
 import '../../core/config/network_config.dart';
 import '../../core/models/models.dart';
 import '../../core/protocol/protocol.dart';
 import '../../core/text/pinyin_search.dart';
+import '../../core/theme/window_theme_channel.dart';
 import '../common/neko_context_menu.dart';
 import '../common/smooth_dialog.dart';
 import '../settings/settings_page.dart';
@@ -41,17 +43,43 @@ Future<void> openConversationInWindow(
 
   final title = _conversationWindowTitle(controller, conversationId);
   if (title == null) return;
-  final parentTheme = Theme.of(context);
   try {
     final viewId = await openWindow(
-      (_, publicId) => MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: parentTheme,
-        home: _DetachedConversationWindow(
-          controller: controller,
-          conversationId: conversationId,
-          viewId: publicId,
-        ),
+      (_, publicId) => ValueListenableBuilder<int>(
+        valueListenable: controller.appearanceRevision,
+        builder: (context, _, _) {
+          final fontStack = controller.resolveFontStack();
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            themeMode: controller.themeMode,
+            theme: buildNekoChatTheme(
+              fontFamily: fontStack.family,
+              fontFamilyFallback: fontStack.fallback,
+              bold: controller.boldText,
+              brightness: Brightness.light,
+            ),
+            darkTheme: buildNekoChatTheme(
+              fontFamily: fontStack.family,
+              fontFamilyFallback: fontStack.fallback,
+              bold: controller.boldText,
+              brightness: Brightness.dark,
+            ),
+            builder: (context, child) {
+              final mediaQuery = MediaQuery.of(context);
+              return MediaQuery(
+                data: mediaQuery.copyWith(
+                  textScaler: TextScaler.linear(controller.fontScale),
+                ),
+                child: child!,
+              );
+            },
+            home: _DetachedConversationWindow(
+              controller: controller,
+              conversationId: conversationId,
+              viewId: publicId,
+            ),
+          );
+        },
       ),
       options: WindowOptions(
         title: '$title - NekoChat',
@@ -71,6 +99,12 @@ Future<void> openConversationInWindow(
       parentContext: context,
     );
     _detachedConversationWindowIds[conversationId] = viewId;
+    unawaited(
+      WindowThemeChannel.instance.syncViewThemeMode(
+        viewId,
+        controller.themeMode,
+      ),
+    );
   } on Object catch (error) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context)
@@ -383,7 +417,9 @@ class _MainShellState extends State<MainShell> {
   }
 
   Widget _buildNavRail(AppController controller) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final identity = controller.identity!;
     final totalUnread =
         controller.chats.fold<int>(0, (sum, chat) => sum + chat.unreadCount) +
@@ -468,6 +504,21 @@ class _MainShellState extends State<MainShell> {
             onTap: () => _showCreateGroup(controller),
           ),
           const Spacer(),
+          _NavRailButton(
+            key: const ValueKey('nav-rail-theme-toggle'),
+            tooltip: isDark ? '切换为浅色模式' : '切换为深色模式',
+            icon: isDark
+                ? Icons.light_mode_outlined
+                : Icons.dark_mode_outlined,
+            selected: false,
+            badgeCount: 0,
+            onTap: () => unawaited(
+              controller.setThemeMode(
+                isDark ? ThemeMode.light : ThemeMode.dark,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
           _NavRailButton(
             key: const ValueKey('nav-rail-settings'),
             tooltip: '设置',
@@ -894,6 +945,9 @@ class _MainShellState extends State<MainShell> {
       trustedPeer: trusted,
       avatarPath: controller.peerAvatarPath(trusted.deviceId),
     );
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onSecondaryTapDown: (details) =>
@@ -915,10 +969,12 @@ class _MainShellState extends State<MainShell> {
                 width: 10,
                 height: 10,
                 decoration: BoxDecoration(
-                  color: online ? Colors.green : Colors.grey,
+                  color: online
+                      ? (isDark ? const Color(0xFF4ADE80) : Colors.green)
+                      : colorScheme.outline,
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: Theme.of(context).colorScheme.surface,
+                    color: colorScheme.surface,
                     width: 1.5,
                   ),
                 ),
@@ -933,7 +989,11 @@ class _MainShellState extends State<MainShell> {
             ),
             if (!trusted.blocked) ...[
               const SizedBox(width: 4),
-              const Icon(Icons.verified, color: Colors.blue, size: 15),
+              Icon(
+                Icons.verified,
+                color: isDark ? const Color(0xFF60A5FA) : Colors.blue,
+                size: 15,
+              ),
             ],
           ],
         ),
@@ -1474,11 +1534,11 @@ class _MainShellState extends State<MainShell> {
                           (message) => errorText = message,
                         ),
                 ),
-                const Align(
+                Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
                     '头像与昵称会同步给局域网内的其他设备；对端离线时会在其上线后补同步。',
-                    style: TextStyle(fontSize: 12, color: Colors.black54),
+                    style: Theme.of(dialogContext).textTheme.bodySmall,
                   ),
                 ),
               ],
@@ -1591,7 +1651,14 @@ class _MainShellState extends State<MainShell> {
                 const Text('邀请已验证且在线的设备'),
                 const SizedBox(height: 6),
                 if (available.isEmpty)
-                  const Text('暂无可邀请设备', style: TextStyle(color: Colors.grey))
+                  Text(
+                    '暂无可邀请设备',
+                    style: TextStyle(
+                      color: Theme.of(
+                        dialogContext,
+                      ).colorScheme.onSurfaceVariant,
+                    ),
+                  )
                 else
                   SizedBox(
                     height: 180,
@@ -1933,13 +2000,21 @@ class _MainShellState extends State<MainShell> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(row.$1, size: 18, color: Colors.grey),
+                      Icon(
+                        row.$1,
+                        size: 18,
+                        color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
+                      ),
                       const SizedBox(width: 10),
                       SizedBox(
                         width: 72,
                         child: Text(
                           row.$2,
-                          style: const TextStyle(color: Colors.grey),
+                          style: TextStyle(
+                            color: Theme.of(
+                              dialogContext,
+                            ).colorScheme.onSurfaceVariant,
+                          ),
                         ),
                       ),
                       Expanded(
@@ -2270,9 +2345,9 @@ class _MainShellState extends State<MainShell> {
                 onChanged: (value) => remark = value,
                 onFieldSubmitted: (_) => Navigator.pop(dialogContext, true),
               ),
-              const Text(
+              Text(
                 '备注只保存在本机，不会发送给对方。',
-                style: TextStyle(color: Colors.black54, fontSize: 12),
+                style: Theme.of(dialogContext).textTheme.bodySmall,
               ),
             ],
           ),
@@ -2594,6 +2669,7 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                       color: theme.colorScheme.primaryContainer,
                       child: ListTile(
                         dense: true,
+                        textColor: theme.colorScheme.onPrimaryContainer,
                         leading: NamedAvatar(
                           imagePath: controller.peerAvatarPath(
                             matched.deviceId,
@@ -2606,7 +2682,13 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        subtitle: Text('口令匹配 · ${matched.ip}'),
+                        subtitle: Text(
+                          '口令匹配 · ${matched.ip}',
+                          style: TextStyle(
+                            color: theme.colorScheme.onPrimaryContainer
+                                .withValues(alpha: 0.78),
+                          ),
+                        ),
                         trailing: matchedCooldown > Duration.zero
                             ? Text(
                                 _cooldownLabel(matchedCooldown),
@@ -2758,18 +2840,19 @@ class RoleTag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final (Color background, Color foreground) = switch (role) {
-      GroupRole.owner => (
-        const Color(0xFFFFE9B8),
-        const Color(0xFF8A5A00),
-      ),
+      GroupRole.owner => isDark
+          ? (const Color(0xFF4A3610), const Color(0xFFFFD685))
+          : (const Color(0xFFFFE9B8), const Color(0xFF8A5A00)),
       GroupRole.admin => (
-        Theme.of(context).colorScheme.tertiaryContainer,
-        Theme.of(context).colorScheme.onTertiaryContainer,
+        theme.colorScheme.tertiaryContainer,
+        theme.colorScheme.onTertiaryContainer,
       ),
       GroupRole.member => (
-        Theme.of(context).colorScheme.surfaceContainerHighest,
-        Theme.of(context).colorScheme.onSurfaceVariant,
+        theme.colorScheme.surfaceContainerHighest,
+        theme.colorScheme.onSurfaceVariant,
       ),
     };
     return Container(
@@ -2870,18 +2953,21 @@ class EmptyHint extends StatelessWidget {
   final IconData icon;
   final String text;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-    child: Row(
-      children: [
-        Icon(icon, size: 18, color: Colors.grey),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(text, style: const TextStyle(color: Colors.grey)),
-        ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(text, style: TextStyle(color: muted)),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class UnifiedPeerEntry {
@@ -2919,6 +3005,9 @@ class UnifiedPeerTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final peer = entry.peer;
     final chat = entry.chat;
     final blocked = entry.trustedPeer?.blocked == true;
@@ -2945,10 +3034,12 @@ class UnifiedPeerTile extends StatelessWidget {
                 width: 11,
                 height: 11,
                 decoration: BoxDecoration(
-                  color: online ? Colors.green : Colors.grey,
+                  color: online
+                      ? (isDark ? const Color(0xFF4ADE80) : Colors.green)
+                      : colorScheme.outline,
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: Theme.of(context).colorScheme.surface,
+                    color: colorScheme.surface,
                     width: 2,
                   ),
                 ),
@@ -2963,7 +3054,11 @@ class UnifiedPeerTile extends StatelessWidget {
             ),
             if (entry.trustedPeer != null && !blocked) ...[
               const SizedBox(width: 4),
-              const Icon(Icons.verified, color: Colors.blue, size: 16),
+              Icon(
+                Icons.verified,
+                color: isDark ? const Color(0xFF60A5FA) : Colors.blue,
+                size: 16,
+              ),
             ],
           ],
         ),
@@ -4110,17 +4205,22 @@ class _ConversationPaneState extends State<_ConversationPane> {
         ),
         Expanded(
           child: messages.isEmpty
-              ? const Center(
+              ? Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
                         Icons.chat_bubble_outline,
                         size: 42,
-                        color: Colors.grey,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
-                      SizedBox(height: 12),
-                      Text('还没有消息，打个招呼吧', style: TextStyle(color: Colors.grey)),
+                      const SizedBox(height: 12),
+                      Text(
+                        '还没有消息，打个招呼吧',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
                     ],
                   ),
                 )
@@ -5020,59 +5120,75 @@ class MessageBubble extends StatelessWidget {
 
   /// 气泡本体。常规时间已挪到居中时间条与悬停展示，这里仅在需要时显示发送状态。
   Widget _buildBubble(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final foregroundColor = mine
+        ? colorScheme.onPrimaryContainer
+        : colorScheme.onSurface;
+    final mutedForeground = mine
+        ? colorScheme.onPrimaryContainer.withValues(alpha: 0.72)
+        : colorScheme.onSurfaceVariant;
     final showStatusRow =
         mine &&
         (message.status != MessageStatus.sent ||
             message.kind == MessageKind.file);
-    final body = Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: message.isReply
-          ? CrossAxisAlignment.stretch
-          : CrossAxisAlignment.start,
-      children: [
-        if (message.isReply) _unselectable(_buildQuoted(context)),
-        if (message.kind == MessageKind.text)
-          Text(message.content, textAlign: TextAlign.left)
-        else
-          _buildAttachment(context),
-        if (showStatusRow) ...[
-          const SizedBox(height: 4),
-          _unselectable(
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  _statusIcon(message.status),
-                  size: 13,
-                  color:
-                      message.status == MessageStatus.failed ||
-                          message.status == MessageStatus.rejected
-                      ? Theme.of(context).colorScheme.error
-                      : Theme.of(context).colorScheme.onSurfaceVariant,
+    final body = DefaultTextStyle.merge(
+      style: TextStyle(color: foregroundColor),
+      child: IconTheme.merge(
+        data: IconThemeData(color: foregroundColor),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: message.isReply
+              ? CrossAxisAlignment.stretch
+              : CrossAxisAlignment.start,
+          children: [
+            if (message.isReply) _unselectable(_buildQuoted(context)),
+            if (message.kind == MessageKind.text)
+              Text(message.content, textAlign: TextAlign.left)
+            else
+              _buildAttachment(context),
+            if (showStatusRow) ...[
+              const SizedBox(height: 4),
+              _unselectable(
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _statusIcon(message.status),
+                      size: 13,
+                      color:
+                          message.status == MessageStatus.failed ||
+                              message.status == MessageStatus.rejected
+                          ? colorScheme.error
+                          : mutedForeground,
+                    ),
+                    if (message.kind != MessageKind.text) ...[
+                      const SizedBox(width: 4),
+                      Text(
+                        _statusLabel(message.status, mine: mine),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: mutedForeground,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                if (message.kind != MessageKind.text) ...[
-                  const SizedBox(width: 4),
-                  Text(
-                    _statusLabel(message.status, mine: mine),
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ],
+              ),
+            ],
+          ],
+        ),
+      ),
     );
     return Container(
       constraints: const BoxConstraints(maxWidth: 560),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: mine
-            ? Theme.of(context).colorScheme.primaryContainer
-            : Theme.of(context).colorScheme.surfaceContainerHighest,
+            ? colorScheme.primaryContainer
+            : colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(14),
         border: mentioned
-            ? Border.all(color: Theme.of(context).colorScheme.error, width: 1.6)
+            ? Border.all(color: colorScheme.error, width: 1.6)
             : null,
       ),
       child: message.isReply ? IntrinsicWidth(child: body) : body,
@@ -5236,10 +5352,16 @@ class MessageBubble extends StatelessWidget {
   /// 引用块：展示被引用消息的发送者、摘要，图片还能直接看到缩略图。
   /// 点击后跳回被引用的原消息。
   Widget _buildQuoted(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final quoted = resolveMessage?.call(message.replyToMessageId!);
     final leading = quoted == null
         ? null
         : _quoteLeading(context, quoted, size: 44);
+    final quoteBg = mine
+        ? colorScheme.surface.withValues(alpha: isDark ? 0.30 : 0.55)
+        : colorScheme.surface.withValues(alpha: isDark ? 0.45 : 0.72);
     return GestureDetector(
       onTap: onJumpToReply == null
           ? null
@@ -5252,12 +5374,11 @@ class MessageBubble extends StatelessWidget {
           margin: const EdgeInsets.only(bottom: 6),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest
-                .withValues(alpha: .7),
+            color: quoteBg,
             // 左侧是一整条竖线，不加圆角，避免圆角把竖线截断。
             border: Border(
               left: BorderSide(
-                color: Theme.of(context).colorScheme.primary,
+                color: colorScheme.primary,
                 width: 3,
               ),
             ),
@@ -5746,7 +5867,11 @@ class _FloatingDrawerOverlayState extends State<_FloatingDrawerOverlay>
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: widget.open ? widget.onDismiss : null,
-                child: const ColoredBox(color: Colors.black12),
+                child: ColoredBox(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.black.withValues(alpha: 0.45)
+                      : Colors.black12,
+                ),
               ),
             ),
             Positioned(
@@ -6143,9 +6268,12 @@ class ContactDetailPane extends StatelessWidget {
                             ),
                             if (!blocked) ...[
                               const SizedBox(width: 6),
-                              const Icon(
+                              Icon(
                                 Icons.verified,
-                                color: Colors.blue,
+                                color: Theme.of(context).brightness ==
+                                        Brightness.dark
+                                    ? const Color(0xFF60A5FA)
+                                    : Colors.blue,
                                 size: 20,
                               ),
                             ],
@@ -6158,13 +6286,23 @@ class ContactDetailPane extends StatelessWidget {
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Icon(row.$1, size: 18, color: Colors.grey),
+                                Icon(
+                                  row.$1,
+                                  size: 18,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
                                 const SizedBox(width: 10),
                                 SizedBox(
                                   width: 72,
                                   child: Text(
                                     row.$2,
-                                    style: const TextStyle(color: Colors.grey),
+                                    style: TextStyle(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onSurfaceVariant,
+                                    ),
                                   ),
                                 ),
                                 Expanded(
@@ -6465,16 +6603,24 @@ class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
             const Divider(height: 1),
             Flexible(
               child: matchedPeers.isEmpty && matchedGroups.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 48),
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 48),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.search_off, size: 42, color: Colors.grey),
-                          SizedBox(height: 10),
+                          Icon(
+                            Icons.search_off,
+                            size: 42,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(height: 10),
                           Text(
                             '没有找到匹配的联系人或群聊',
-                            style: TextStyle(color: Colors.grey),
+                            style: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                            ),
                           ),
                         ],
                       ),
@@ -6503,9 +6649,12 @@ class _GlobalSearchDialogState extends State<_GlobalSearchDialog> {
                                   ),
                                   if (entry.trustedPeer != null) ...[
                                     const SizedBox(width: 4),
-                                    const Icon(
+                                    Icon(
                                       Icons.verified,
-                                      color: Colors.blue,
+                                      color: Theme.of(context).brightness ==
+                                              Brightness.dark
+                                          ? const Color(0xFF60A5FA)
+                                          : Colors.blue,
                                       size: 15,
                                     ),
                                   ],

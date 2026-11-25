@@ -918,7 +918,7 @@ class _StickerContextMenuOverlayState extends State<_StickerContextMenuOverlay>
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.08),
+                        color: Colors.white.withValues(alpha: 0.14),
                       ),
                     ),
                     child: Column(

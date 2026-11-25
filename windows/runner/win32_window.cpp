@@ -293,17 +293,46 @@ void Win32Window::OnDestroy() {
   // No-op; provided for subclasses.
 }
 
-void Win32Window::UpdateTheme(HWND const window) {
-  DWORD light_mode;
-  DWORD light_mode_size = sizeof(light_mode);
-  LSTATUS result = RegGetValue(HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,
-                               kGetPreferredBrightnessRegValue,
-                               RRF_RT_REG_DWORD, nullptr, &light_mode,
-                               &light_mode_size);
+void Win32Window::SetDarkModeOverride(std::optional<bool> dark_mode) {
+  dark_mode_override_ = dark_mode;
+  if (window_handle_ != nullptr) {
+    ApplyImmersiveDarkMode(window_handle_, dark_mode_override_);
+  }
+}
 
-  if (result == ERROR_SUCCESS) {
-    BOOL enable_dark_mode = light_mode == 0;
-    DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+void Win32Window::ApplyImmersiveDarkMode(
+    HWND window,
+    std::optional<bool> dark_mode_override) {
+  if (window == nullptr) {
+    return;
+  }
+  bool enable_dark = false;
+  if (dark_mode_override.has_value()) {
+    enable_dark = *dark_mode_override;
+  } else {
+    DWORD light_mode = 1;
+    DWORD light_mode_size = sizeof(light_mode);
+    LSTATUS result = RegGetValue(
+        HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,
+        kGetPreferredBrightnessRegValue, RRF_RT_REG_DWORD, nullptr,
+        &light_mode, &light_mode_size);
+    enable_dark = (result == ERROR_SUCCESS && light_mode == 0);
+  }
+
+  BOOL enable_dark_mode = enable_dark ? TRUE : FALSE;
+  HRESULT hr = DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                     &enable_dark_mode,
+                                     sizeof(enable_dark_mode));
+  if (FAILED(hr)) {
+    constexpr DWORD kDwmwaUseImmersiveDarkModeBefore20H1 = 19;
+    DwmSetWindowAttribute(window, kDwmwaUseImmersiveDarkModeBefore20H1,
                           &enable_dark_mode, sizeof(enable_dark_mode));
   }
+  ::SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                     SWP_FRAMECHANGED);
+}
+
+void Win32Window::UpdateTheme(HWND const window) {
+  ApplyImmersiveDarkMode(window, dark_mode_override_);
 }

@@ -7,8 +7,13 @@ Future<T?> showNekoDialog<T>({
   required WidgetBuilder builder,
   bool barrierDismissible = true,
   bool useRootNavigator = true,
-  Color barrierColor = Colors.black38,
+  Color? barrierColor,
 }) {
+  final effectiveBarrierColor =
+      barrierColor ??
+      (Theme.of(context).brightness == Brightness.dark
+          ? Colors.black54
+          : Colors.black38);
   final themes = InheritedTheme.capture(
     from: context,
     to: Navigator.of(context, rootNavigator: useRootNavigator).context,
@@ -18,7 +23,7 @@ Future<T?> showNekoDialog<T>({
       builder: builder,
       themes: themes,
       barrierDismissible: barrierDismissible,
-      barrierColor: barrierColor,
+      barrierColor: effectiveBarrierColor,
       barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
     ),
   );

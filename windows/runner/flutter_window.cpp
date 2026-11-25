@@ -14,6 +14,33 @@ namespace {
 
 constexpr int kBossKeyHotKeyId = 0x4E4B;
 
+std::optional<bool> ParseDarkModeOverride(const std::string& mode) {
+  if (mode == "dark") return true;
+  if (mode == "light") return false;
+  return std::nullopt;
+}
+
+bool ReadInt64(const flutter::EncodableValue& value, int64_t* output) {
+  if (const auto* int32_value = std::get_if<int32_t>(&value)) {
+    *output = *int32_value;
+    return true;
+  }
+  if (const auto* int64_value = std::get_if<int64_t>(&value)) {
+    *output = *int64_value;
+    return true;
+  }
+  return false;
+}
+
+HWND ResolveSecondaryHostHwnd(int64_t public_view_id) {
+  if (public_view_id <= 0) return nullptr;
+  const int64_t real_id =
+      public_view_id + MultiViewDesktopGetMainViewId() - 1;
+  const HWND flutter_hwnd = MultiViewDesktopGetFlutterHwnd(real_id);
+  if (flutter_hwnd == nullptr) return nullptr;
+  return ::GetAncestor(flutter_hwnd, GA_ROOT);
+}
+
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -147,6 +174,73 @@ bool FlutterWindow::OnCreate() {
         result->Success();
       });
 
+  window_theme_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          messenger_.get(), "neko_chat/window_theme",
+          &flutter::StandardMethodCodec::GetInstance());
+  window_theme_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        const auto* arguments =
+            std::get_if<flutter::EncodableMap>(call.arguments());
+        if (arguments == nullptr) {
+          result->Error("invalid_argument", "expects a map");
+          return;
+        }
+        const auto mode_it = arguments->find(flutter::EncodableValue("mode"));
+        const auto* mode = mode_it == arguments->end()
+                               ? nullptr
+                               : std::get_if<std::string>(&mode_it->second);
+        if (mode == nullptr) {
+          result->Error("invalid_argument", "mode is required");
+          return;
+        }
+        const std::optional<bool> override_dark = ParseDarkModeOverride(*mode);
+
+        if (call.method_name() == "setThemeMode") {
+          SetDarkModeOverride(override_dark);
+          const auto views_it =
+              arguments->find(flutter::EncodableValue("viewIds"));
+          if (views_it != arguments->end()) {
+            if (const auto* view_ids =
+                    std::get_if<flutter::EncodableList>(&views_it->second)) {
+              for (const auto& entry : *view_ids) {
+                int64_t view_id = 0;
+                if (ReadInt64(entry, &view_id)) {
+                  const HWND host_hwnd = ResolveSecondaryHostHwnd(view_id);
+                  if (host_hwnd != nullptr && host_hwnd != GetHandle()) {
+                    Win32Window::ApplyImmersiveDarkMode(host_hwnd,
+                                                        override_dark);
+                  }
+                }
+              }
+            }
+          }
+          result->Success();
+          return;
+        }
+
+        if (call.method_name() == "setViewThemeMode") {
+          const auto view_it =
+              arguments->find(flutter::EncodableValue("viewId"));
+          int64_t view_id = 0;
+          if (view_it == arguments->end() ||
+              !ReadInt64(view_it->second, &view_id)) {
+            result->Error("invalid_argument", "viewId is required");
+            return;
+          }
+          const HWND host_hwnd = ResolveSecondaryHostHwnd(view_id);
+          if (host_hwnd != nullptr) {
+            Win32Window::ApplyImmersiveDarkMode(host_hwnd, override_dark);
+          }
+          result->Success();
+          return;
+        }
+
+        result->NotImplemented();
+      });
+
   return true;
 }
 
@@ -155,6 +249,7 @@ void FlutterWindow::OnDestroy() {
     ::UnregisterHotKey(GetHandle(), kBossKeyHotKeyId);
     boss_key_enabled_ = false;
   }
+  window_theme_channel_ = nullptr;
   boss_key_channel_ = nullptr;
   single_instance_channel_ = nullptr;
   messenger_ = nullptr;

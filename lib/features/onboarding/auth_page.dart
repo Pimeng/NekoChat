@@ -146,6 +146,9 @@ class _AuthPageState extends State<AuthPage> {
 
   /// 组件预览：居中圆角卡片（带入场动画），不控制窗口。
   Widget _buildEmbedded(BuildContext context, Widget form) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final reduceMotion = MediaQuery.of(context).disableAnimations;
     return Scaffold(
       body: Center(
@@ -168,8 +171,18 @@ class _AuthPageState extends State<AuthPage> {
               ),
               child: Material(
                 elevation: 18,
-                shadowColor: _brandIndigo.withValues(alpha: 0.22),
-                borderRadius: BorderRadius.circular(24),
+                color: isDark ? scheme.surfaceContainerLow : scheme.surface,
+                shadowColor: isDark
+                    ? Colors.black.withValues(alpha: 0.48)
+                    : _brandIndigo.withValues(alpha: 0.22),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                  side: isDark
+                      ? BorderSide(
+                          color: scheme.outlineVariant.withValues(alpha: 0.5),
+                        )
+                      : BorderSide.none,
+                ),
                 clipBehavior: Clip.antiAlias,
                 child: LayoutBuilder(
                   builder: (context, constraints) {
@@ -273,12 +286,15 @@ class _AuthHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [_brandIndigo, _brandIndigoDeep],
+          colors: isDark
+              ? const [Color(0xFF334BB8), Color(0xFF1B205C)]
+              : const [_brandIndigo, _brandIndigoDeep],
         ),
       ),
       child: Stack(
@@ -289,7 +305,7 @@ class _AuthHero extends StatelessWidget {
             right: -60,
             child: _Glow(
               size: 220,
-              color: _catOrange.withValues(alpha: 0.55),
+              color: _catOrange.withValues(alpha: isDark ? 0.42 : 0.55),
             ),
           ),
           Positioned(
@@ -297,7 +313,9 @@ class _AuthHero extends StatelessWidget {
             left: -70,
             child: _Glow(
               size: 240,
-              color: const Color(0xFF7E8CF0).withValues(alpha: 0.45),
+              color: const Color(0xFF7E8CF0).withValues(
+                alpha: isDark ? 0.34 : 0.45,
+              ),
             ),
           ),
           Padding(
@@ -483,7 +501,9 @@ class _AuthForm extends StatelessWidget {
               child: FilledButton.icon(
                 onPressed: busy ? null : onSubmit,
                 style: FilledButton.styleFrom(
-                  backgroundColor: _brandIndigo,
+                  backgroundColor: theme.brightness == Brightness.dark
+                      ? const Color(0xFF5572EE)
+                      : _brandIndigo,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
@@ -548,7 +568,7 @@ class _AuthForm extends StatelessWidget {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: _brandIndigo, width: 1.6),
+        borderSide: BorderSide(color: scheme.primary, width: 1.6),
       ),
     );
   }
@@ -602,12 +622,16 @@ class _ErrorBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline_rounded, color: scheme.error, size: 20),
+          Icon(
+            Icons.error_outline_rounded,
+            color: scheme.onErrorContainer,
+            size: 20,
+          ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               message,
-              style: TextStyle(color: scheme.error, height: 1.35),
+              style: TextStyle(color: scheme.onErrorContainer, height: 1.35),
             ),
           ),
         ],

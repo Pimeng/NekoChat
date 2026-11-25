@@ -35,27 +35,45 @@ class ComponentPreviewApp extends StatefulWidget {
 }
 
 class _ComponentPreviewAppState extends State<ComponentPreviewApp> {
-  late ThemeData _theme = buildNekoChatTheme();
+  final ValueNotifier<ThemeMode> _themeMode = ValueNotifier<ThemeMode>(
+    ThemeMode.light,
+  );
+  late ThemeData _lightTheme = buildNekoChatTheme(brightness: Brightness.light);
+  late ThemeData _darkTheme = buildNekoChatTheme(brightness: Brightness.dark);
 
   @override
   void reassemble() {
     super.reassemble();
-    _theme = buildNekoChatTheme();
+    _lightTheme = buildNekoChatTheme(brightness: Brightness.light);
+    _darkTheme = buildNekoChatTheme(brightness: Brightness.dark);
+  }
+
+  @override
+  void dispose() {
+    _themeMode.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'NekoChat · 组件预览开发模式',
-      theme: _theme,
-      home: const ComponentPreviewWorkbench(),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: _themeMode,
+      builder: (context, mode, _) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'NekoChat · 组件预览开发模式',
+        themeMode: mode,
+        theme: _lightTheme,
+        darkTheme: _darkTheme,
+        home: ComponentPreviewWorkbench(themeModeNotifier: _themeMode),
+      ),
     );
   }
 }
 
 class ComponentPreviewWorkbench extends StatefulWidget {
-  const ComponentPreviewWorkbench({super.key});
+  const ComponentPreviewWorkbench({super.key, this.themeModeNotifier});
+
+  final ValueNotifier<ThemeMode>? themeModeNotifier;
 
   @override
   State<ComponentPreviewWorkbench> createState() =>
@@ -80,7 +98,15 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
   void initState() {
     super.initState();
     _controller = PreviewAppController();
+    _controller.appearanceRevision.addListener(_syncRootThemeMode);
     _catalog = buildPreviewCatalog(_controller, onAction: _showActionToast);
+  }
+
+  void _syncRootThemeMode() {
+    final notifier = widget.themeModeNotifier;
+    if (notifier != null && notifier.value != _controller.themeMode) {
+      notifier.value = _controller.themeMode;
+    }
   }
 
   @override
@@ -94,6 +120,7 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
 
   @override
   void dispose() {
+    _controller.appearanceRevision.removeListener(_syncRootThemeMode);
     _searchController.dispose();
     _controller.dispose();
     super.dispose();
@@ -317,12 +344,12 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
                   ],
                 ],
                 if (filteredEntries.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(20),
+                  Padding(
+                    padding: const EdgeInsets.all(20),
                     child: Text(
                       '没有匹配的组件',
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
                     ),
                   ),
               ],
@@ -419,6 +446,26 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
                 if (value != null) setState(() => _background = value);
               },
             ),
+            DropdownButton<ThemeMode>(
+              key: const ValueKey('preview-theme-dropdown'),
+              value: _controller.themeMode,
+              isDense: true,
+              underline: const SizedBox.shrink(),
+              items: const [
+                DropdownMenuItem(value: ThemeMode.light, child: Text('主题：浅色')),
+                DropdownMenuItem(value: ThemeMode.dark, child: Text('主题：深色')),
+                DropdownMenuItem(
+                  value: ThemeMode.system,
+                  child: Text('主题：跟随系统'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  _controller.setThemeMode(value);
+                  setState(() {});
+                }
+              },
+            ),
             Container(
               key: const ValueKey('preview-hot-reload-badge'),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -465,7 +512,7 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
         ? _buildOverviewGallery(context, catalog)
         : _buildSingleEntryStage(context, selectedEntry);
 
-    // 预览画布跟随“外观”设置（字体族 / 字重 / 字号），与真实应用保持一致；
+    // 预览画布跟随“外观”设置（主题模式 / 字体族 / 字重 / 字号），与真实应用保持一致；
     // 工具栏缩放 _textScale 与设置里的字号相乘叠加。
     final scaled = AnimatedBuilder(
       animation: _controller,
@@ -473,11 +520,18 @@ class _ComponentPreviewWorkbenchState extends State<ComponentPreviewWorkbench> {
       builder: (context, inner) {
         final effectiveScale = _textScale * _controller.fontScale;
         final fontStack = _controller.resolveFontStack();
+        final platformBrightness = MediaQuery.platformBrightnessOf(context);
+        final brightness = switch (_controller.themeMode) {
+          ThemeMode.light => Brightness.light,
+          ThemeMode.dark => Brightness.dark,
+          ThemeMode.system => platformBrightness,
+        };
         final themed = Theme(
           data: buildNekoChatTheme(
             fontFamily: fontStack.family,
             fontFamilyFallback: fontStack.fallback,
             bold: _controller.boldText,
+            brightness: brightness,
           ),
           child: inner!,
         );
@@ -767,6 +821,7 @@ class _CanvasSurface extends StatelessWidget {
       _CanvasBackground.white => ColoredBox(color: Colors.white, child: child),
       _CanvasBackground.grid => CustomPaint(
         painter: _GridBackgroundPainter(
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           lineColor: Theme.of(context).dividerColor.withValues(alpha: .35),
         ),
         child: child,
@@ -776,12 +831,16 @@ class _CanvasSurface extends StatelessWidget {
 }
 
 class _GridBackgroundPainter extends CustomPainter {
-  const _GridBackgroundPainter({required this.lineColor});
+  const _GridBackgroundPainter({
+    required this.backgroundColor,
+    required this.lineColor,
+  });
+  final Color backgroundColor;
   final Color lineColor;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final bgPaint = Paint()..color = const Color(0xfff9fafd);
+    final bgPaint = Paint()..color = backgroundColor;
     canvas.drawRect(Offset.zero & size, bgPaint);
 
     final paint = Paint()
@@ -798,6 +857,7 @@ class _GridBackgroundPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _GridBackgroundPainter oldDelegate) =>
+      oldDelegate.backgroundColor != backgroundColor ||
       oldDelegate.lineColor != lineColor;
 }
 

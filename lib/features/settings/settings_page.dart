@@ -12,7 +12,7 @@ enum SettingsSection {
   lan('联机与好友', '启用交流、口令与好友验证', Icons.wifi_find_outlined),
   chat('聊天', '表情联想与输入体验', Icons.chat_bubble_outline),
   notifications('消息通知', '独立弹窗、系统通知与测试', Icons.notifications_outlined),
-  appearance('外观与字体', '字体大小、字体与字重', Icons.text_fields_outlined),
+  appearance('外观与字体', '深色模式、字体大小、字体与字重', Icons.palette_outlined),
   privacy('隐私与安全', '老板键、快捷键与黑名单', Icons.visibility_off_outlined),
   storage('存储', '数据文件夹、文件接收与备份还原', Icons.folder_outlined),
   about('关于', '应用信息与当前版本', Icons.info_outline);
@@ -262,7 +262,7 @@ class PairingCodeCard extends StatelessWidget {
   }
 }
 
-/// 外观设置卡片组：实时预览 + 字体大小、字体、加粗，供嵌入式面板与独立设置页共用。
+/// 外观设置卡片组：主题模式 + 实时预览 + 字体大小、字体、加粗，供嵌入式面板与独立设置页共用。
 class AppearanceSettingsCards extends StatelessWidget {
   const AppearanceSettingsCards({super.key, required this.controller});
 
@@ -270,12 +270,74 @@ class AppearanceSettingsCards extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final textTheme = theme.textTheme;
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final scaleEntries = AppController.fontScaleOptions.entries.toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      isDark
+                          ? Icons.dark_mode_outlined
+                          : Icons.light_mode_outlined,
+                    ),
+                    const SizedBox(width: 12),
+                    Text('外观模式', style: textTheme.titleSmall),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '切换浅色、深色或跟随系统深浅色外观，所有窗口与控件会同步生效。',
+                  style: textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: SegmentedButton<ThemeMode>(
+                    key: const ValueKey('settings-theme-mode-selector'),
+                    showSelectedIcon: false,
+                    style: const ButtonStyle(
+                      padding: WidgetStatePropertyAll(
+                        EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                    ),
+                    segments: const [
+                      ButtonSegment<ThemeMode>(
+                        value: ThemeMode.light,
+                        icon: Icon(Icons.light_mode_outlined, size: 16),
+                        label: Text('浅色'),
+                      ),
+                      ButtonSegment<ThemeMode>(
+                        value: ThemeMode.dark,
+                        icon: Icon(Icons.dark_mode_outlined, size: 16),
+                        label: Text('深色'),
+                      ),
+                      ButtonSegment<ThemeMode>(
+                        value: ThemeMode.system,
+                        icon: Icon(Icons.brightness_auto_outlined, size: 16),
+                        label: Text('跟随系统'),
+                      ),
+                    ],
+                    selected: {controller.themeMode},
+                    onSelectionChanged: (selection) =>
+                        controller.setThemeMode(selection.first),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -295,7 +357,7 @@ class AppearanceSettingsCards extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '在这里可以直观看到字号、字体与字重的效果。',
+                  '在这里可以直观看到深浅主题、字号、字体与字重的效果。',
                   style: textTheme.bodySmall,
                 ),
               ],
@@ -618,11 +680,11 @@ class _BossKeyShortcutPageState extends State<BossKeyShortcutPage> {
                   const SizedBox(height: 18),
                   Text(_hint, textAlign: TextAlign.center),
                   const SizedBox(height: 8),
-                  const Text(
+                  Text(
                     '支持字母、数字、F1–F12 和常用功能键，'
                     '至少需要一个修饰键。',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.black54, fontSize: 12),
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 20),
                   TextButton.icon(
@@ -687,10 +749,12 @@ class BlockedPeersPage extends StatelessWidget {
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 8),
-                      const Text(
+                      Text(
                         '被拉黑的联系人会显示在这里，你可以随时解除拉黑。',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.black54),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -1184,12 +1248,12 @@ class _BossKeyFootNote extends StatelessWidget {
   const _BossKeyFootNote();
 
   @override
-  Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
     child: Text(
       '隐藏后不显示任务栏入口或系统通知，再按当前快捷键 '
       '或重新启动 NekoChat 即可恢复。进程仍会在任务管理器中显示。',
-      style: TextStyle(color: Colors.black54, fontSize: 12),
+      style: Theme.of(context).textTheme.bodySmall,
     ),
   );
 }
@@ -1243,11 +1307,11 @@ class _StorageFootNote extends StatelessWidget {
   const _StorageFootNote();
 
   @override
-  Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
     child: Text(
       '聊天记录、身份数据、收藏表情包和已接收附件都保存在本机；定期备份可避免重置或换机导致数据丢失。',
-      style: TextStyle(color: Colors.black54, fontSize: 12),
+      style: Theme.of(context).textTheme.bodySmall,
     ),
   );
 }
@@ -1421,13 +1485,19 @@ class _NotificationSettingsCard extends StatelessWidget {
     required List<DropdownMenuItem<T>> items,
     required ValueChanged<T?> onChanged,
   }) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
       decoration: BoxDecoration(
         color: enabled
-            ? colorScheme.surfaceContainerLow
-            : colorScheme.surfaceContainerLowest,
+            ? (isDark
+                  ? colorScheme.surfaceContainerHigh
+                  : colorScheme.surfaceContainerLow)
+            : (isDark
+                  ? colorScheme.surfaceContainer
+                  : colorScheme.surfaceContainerLowest),
         border: Border.all(
           color: enabled
               ? colorScheme.outlineVariant

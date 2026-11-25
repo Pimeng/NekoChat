@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:neko_chat/app/app_controller.dart';
+import 'package:neko_chat/app/neko_chat_app.dart';
 import 'package:neko_chat/core/backup/data_backup_service.dart';
 import 'package:neko_chat/core/models/models.dart';
 import 'package:neko_chat/features/onboarding/auth_page.dart';
@@ -314,5 +315,56 @@ void main() {
     expect(controller.stage, AppStage.locked);
     expect(find.text('解锁 NekoChat'), findsOneWidget);
     expect(find.textContaining('已从备份还原数据'), findsOneWidget);
+  });
+
+  testWidgets('设置页外观与字体支持切换深浅色与跟随系统，并实时切换应用深色主题', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(373, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final controller = AppController();
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      ValueListenableBuilder<int>(
+        valueListenable: controller.appearanceRevision,
+        builder: (context, _, _) => MaterialApp(
+          themeMode: controller.themeMode,
+          theme: buildNekoChatTheme(brightness: Brightness.light),
+          darkTheme: buildNekoChatTheme(brightness: Brightness.dark),
+          home: Scaffold(
+            body: SettingsSectionPane(
+              controller: controller,
+              section: SettingsSection.appearance,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('外观模式'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('settings-theme-mode-selector')),
+      findsOneWidget,
+    );
+    expect(controller.themeMode, ThemeMode.light);
+
+    await tester.tap(find.text('深色'));
+    await tester.pumpAndSettle();
+    expect(controller.themeMode, ThemeMode.dark);
+    final darkContext = tester.element(find.text('外观模式'));
+    expect(Theme.of(darkContext).brightness, Brightness.dark);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('跟随系统'));
+    await tester.pumpAndSettle();
+    expect(controller.themeMode, ThemeMode.system);
+
+    await tester.tap(find.text('浅色'));
+    await tester.pumpAndSettle();
+    expect(controller.themeMode, ThemeMode.light);
+    final lightContext = tester.element(find.text('外观模式'));
+    expect(Theme.of(lightContext).brightness, Brightness.light);
+    expect(tester.takeException(), isNull);
   });
 }

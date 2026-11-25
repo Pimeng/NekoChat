@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../core/notifications/standalone_notification_service.dart';
 import '../core/single_instance/single_instance_service.dart';
+import '../core/theme/window_theme_channel.dart';
 import '../features/chat/main_shell.dart';
 import '../features/onboarding/auth_page.dart';
 import 'app_controller.dart';
@@ -14,15 +15,17 @@ import 'app_controller.dart';
 /// 构建应用主题。
 ///
 /// [fontFamily] 为 null 时使用系统默认字体；[bold] 为 true 时各字号字重上调一档
-/// （内置单字重字体由 Flutter 合成伪粗体）。
+/// （内置单字重字体由 Flutter 合成伪粗体）；[brightness] 控制浅色或深色主题。
 ThemeData buildNekoChatTheme({
   String? fontFamily = AppController.defaultFontFamily,
   List<String>? fontFamilyFallback,
   bool bold = false,
+  Brightness brightness = Brightness.light,
 }) {
+  final isDark = brightness == Brightness.dark;
   final colorScheme = ColorScheme.fromSeed(
     seedColor: const Color(0xff4666e5),
-    brightness: Brightness.light,
+    brightness: brightness,
   );
 
   // 加粗时把字重按 FontWeight 档位上调一级（封顶 w900）。
@@ -44,12 +47,22 @@ ThemeData buildNekoChatTheme({
     color: color,
   );
 
+  final dividerColor = colorScheme.outlineVariant.withValues(
+    alpha: isDark ? 0.55 : 0.85,
+  );
+
   return ThemeData(
     useMaterial3: true,
+    brightness: brightness,
     fontFamily: fontFamily,
     fontFamilyFallback: fontFamilyFallback,
     colorScheme: colorScheme,
-    scaffoldBackgroundColor: const Color(0xfff7f8fc),
+    scaffoldBackgroundColor: isDark
+        ? colorScheme.surfaceContainerLowest
+        : const Color(0xfff7f8fc),
+    canvasColor: isDark ? colorScheme.surfaceContainerHigh : null,
+    dividerColor: dividerColor,
+    dividerTheme: DividerThemeData(color: dividerColor),
     textTheme: TextTheme(
       headlineMedium: styled(fontSize: 22, fontWeight: FontWeight.w600),
       headlineSmall: styled(fontSize: 20, fontWeight: FontWeight.w600),
@@ -72,6 +85,10 @@ ThemeData buildNekoChatTheme({
       ),
     ),
     appBarTheme: AppBarTheme(
+      backgroundColor: colorScheme.surface,
+      foregroundColor: colorScheme.onSurface,
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 0,
       titleTextStyle: styled(
         fontSize: 17,
         fontWeight: FontWeight.w600,
@@ -79,6 +96,16 @@ ThemeData buildNekoChatTheme({
       ),
     ),
     dialogTheme: DialogThemeData(
+      backgroundColor: isDark ? colorScheme.surfaceContainerHigh : null,
+      surfaceTintColor: isDark ? Colors.transparent : null,
+      shape: isDark
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+              side: BorderSide(
+                color: colorScheme.outlineVariant.withValues(alpha: 0.45),
+              ),
+            )
+          : null,
       titleTextStyle: styled(
         fontSize: 17,
         fontWeight: FontWeight.w600,
@@ -86,6 +113,9 @@ ThemeData buildNekoChatTheme({
       ),
     ),
     listTileTheme: ListTileThemeData(
+      selectedTileColor: colorScheme.primaryContainer.withValues(
+        alpha: isDark ? 0.34 : 0.28,
+      ),
       titleTextStyle: styled(
         fontSize: 14,
         fontWeight: FontWeight.w500,
@@ -104,6 +134,11 @@ ThemeData buildNekoChatTheme({
     ),
     inputDecorationTheme: InputDecorationTheme(
       border: const OutlineInputBorder(),
+      enabledBorder: isDark
+          ? OutlineInputBorder(
+              borderSide: BorderSide(color: colorScheme.outlineVariant),
+            )
+          : null,
       hintStyle: styled(
         fontSize: 13,
         fontWeight: FontWeight.w400,
@@ -115,7 +150,27 @@ ThemeData buildNekoChatTheme({
         color: colorScheme.onSurfaceVariant,
       ),
     ),
-    cardTheme: const CardThemeData(margin: EdgeInsets.zero),
+    cardTheme: CardThemeData(
+      margin: EdgeInsets.zero,
+      color: isDark ? colorScheme.surfaceContainerLow : null,
+      elevation: isDark ? 0 : null,
+      shape: isDark
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(
+                color: colorScheme.outlineVariant.withValues(alpha: 0.45),
+              ),
+            )
+          : null,
+    ),
+    bannerTheme: MaterialBannerThemeData(
+      backgroundColor: colorScheme.errorContainer,
+      contentTextStyle: styled(
+        fontSize: 13,
+        fontWeight: FontWeight.w400,
+        color: colorScheme.onErrorContainer,
+      ),
+    ),
   );
 }
 
@@ -129,7 +184,7 @@ class NekoChatApp extends StatefulWidget {
   State<NekoChatApp> createState() => _NekoChatAppState();
 }
 
-class _NekoChatAppState extends State<NekoChatApp> {
+class _NekoChatAppState extends State<NekoChatApp> with WidgetsBindingObserver {
   final _log = Logger('NekoChatApp');
   late final AppController controller;
   late final SingleInstanceService _singleInstance;
@@ -137,10 +192,12 @@ class _NekoChatAppState extends State<NekoChatApp> {
 
   /// 已应用的窗口形态：true=登录态无边框紧凑窗口，false=主界面正常窗口。
   bool? _authWindowApplied;
+  ThemeMode? _syncedWindowThemeMode;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     Logger.root.level = Level.ALL;
     Logger.root.onRecord.listen((record) {
       debugPrint(
@@ -152,12 +209,36 @@ class _NekoChatAppState extends State<NekoChatApp> {
       onBossKeyVisibilityChanged: _setSecondaryWindowsHidden,
     )..initialize();
     controller.addListener(_syncWindowToStage);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncWindowToStage());
+    controller.appearanceRevision.addListener(_syncWindowTheme);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncWindowToStage();
+      _syncWindowTheme(force: true);
+    });
     _singleInstance = widget.singleInstanceService ?? SingleInstanceService();
     _singleInstanceSubscription = _singleInstance.onAlreadyRunning.listen(
       (_) => _bringWindowToFront(),
     );
     unawaited(_singleInstance.initialize());
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    if (controller.themeMode == ThemeMode.system) {
+      _syncWindowTheme(force: true);
+    }
+  }
+
+  void _syncWindowTheme({bool force = false}) {
+    final mode = controller.themeMode;
+    if (!force && _syncedWindowThemeMode == mode) return;
+    _syncedWindowThemeMode = mode;
+    final viewIds = MultiViewDesktop.allWindowViewIds
+        .where(
+          (viewId) =>
+              !StandaloneNotificationService.isNotificationViewId(viewId),
+        )
+        .toList();
+    unawaited(WindowThemeChannel.instance.syncThemeMode(mode, viewIds: viewIds));
   }
 
   /// 根据当前阶段切换窗口形态：登录/解锁（含启动）用无边框紧凑窗口，
@@ -191,6 +272,7 @@ class _NekoChatAppState extends State<NekoChatApp> {
         await windowManager.setSize(const Size(1024, 720));
         await windowManager.center();
       }
+      _syncWindowTheme(force: true);
     } on Object catch (error, stack) {
       _log.warning('切换窗口形态失败', error, stack);
     }
@@ -227,7 +309,9 @@ class _NekoChatAppState extends State<NekoChatApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     controller.removeListener(_syncWindowToStage);
+    controller.appearanceRevision.removeListener(_syncWindowTheme);
     _singleInstanceSubscription?.cancel();
     unawaited(_singleInstance.dispose());
     controller.dispose();
@@ -243,10 +327,18 @@ class _NekoChatAppState extends State<NekoChatApp> {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           title: 'NekoChat 局域网聊天',
+          themeMode: controller.themeMode,
           theme: buildNekoChatTheme(
             fontFamily: fontStack.family,
             fontFamilyFallback: fontStack.fallback,
             bold: controller.boldText,
+            brightness: Brightness.light,
+          ),
+          darkTheme: buildNekoChatTheme(
+            fontFamily: fontStack.family,
+            fontFamilyFallback: fontStack.fallback,
+            bold: controller.boldText,
+            brightness: Brightness.dark,
           ),
           builder: (context, child) {
             final mediaQuery = MediaQuery.of(context);

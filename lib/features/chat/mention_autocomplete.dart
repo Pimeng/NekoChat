@@ -242,20 +242,22 @@ class _MentionAutocompleteState extends State<MentionAutocomplete> {
   }
 
   Widget _buildSuggestions(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final count = _filteredCandidates.length;
     return Container(
       key: const ValueKey('mention-suggestions'),
       constraints: const BoxConstraints(maxHeight: 240),
       margin: const EdgeInsets.only(bottom: 6),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        color: theme.colorScheme.surfaceContainerHigh,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Theme.of(context).dividerColor),
-        boxShadow: const [
+        border: Border.all(color: theme.dividerColor),
+        boxShadow: [
           BoxShadow(
-            color: Colors.black26,
+            color: isDark ? Colors.black54 : Colors.black26,
             blurRadius: 12,
-            offset: Offset(0, 4),
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -286,8 +288,9 @@ class _MentionAutocompleteState extends State<MentionAutocomplete> {
                     onTap: () => _insertCandidate(candidate),
                     child: ColoredBox(
                       color: selected
-                          ? Theme.of(context).colorScheme.primary
-                                .withValues(alpha: .14)
+                          ? theme.colorScheme.primary.withValues(
+                              alpha: isDark ? .22 : .14,
+                            )
                           : Colors.transparent,
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 10),

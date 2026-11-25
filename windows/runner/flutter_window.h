@@ -41,6 +41,9 @@ class FlutterWindow : public Win32Window {
   // Registers the global Alt+F shortcut and reports hidden/visible changes.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       boss_key_channel_;
+  // Syncs DWM dark mode title bars for main and detached windows.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      window_theme_channel_;
   bool boss_key_enabled_ = false;
   UINT boss_key_modifiers_ = MOD_ALT;
   UINT boss_key_virtual_key_ = 'F';

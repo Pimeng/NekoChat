@@ -186,6 +186,7 @@ class _MessageComposerState extends State<MessageComposer>
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: widget.controller,
               builder: (context, value, _) {
+                final isDark = theme.brightness == Brightness.dark;
                 final ready =
                     widget.enabled &&
                     (value.text.trim().isNotEmpty || widget.hasAttachments);
@@ -193,15 +194,23 @@ class _MessageComposerState extends State<MessageComposer>
                     ? colorScheme.onSurface.withValues(alpha: 0.1)
                     : ready
                     ? colorScheme.primary
-                    : colorScheme.primary.withValues(alpha: 0.45);
+                    : colorScheme.primary.withValues(
+                        alpha: isDark ? 0.30 : 0.45,
+                      );
                 final foregroundColor = !widget.enabled
                     ? colorScheme.onSurface.withValues(alpha: 0.38)
                     : ready
                     ? colorScheme.onPrimary
-                    : colorScheme.onPrimary.withValues(alpha: 0.8);
+                    : (isDark
+                          ? colorScheme.onSurface.withValues(alpha: 0.65)
+                          : colorScheme.onPrimary.withValues(alpha: 0.8));
                 final arrowColor = !widget.enabled
                     ? colorScheme.onSurface.withValues(alpha: 0.38)
-                    : colorScheme.onPrimary.withValues(alpha: ready ? 1.0 : 0.9);
+                    : ready
+                    ? colorScheme.onPrimary
+                    : (isDark
+                          ? colorScheme.onSurface.withValues(alpha: 0.72)
+                          : colorScheme.onPrimary.withValues(alpha: 0.9));
                 return ScaleTransition(
                   scale: _sendScale,
                   child: ClipRRect(

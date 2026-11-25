@@ -99,11 +99,22 @@ class AppController extends ChangeNotifier {
   static const _fontScaleSetting = 'font_scale';
   static const _fontFamilySetting = 'font_family';
   static const _boldTextSetting = 'bold_text';
+  static const _themeModeSetting = 'theme_mode';
+  static const _cachedThemeModeFileName = '.theme_mode';
   static const _stickerSuggestionsEnabledSetting =
       'sticker_suggestions_enabled';
   static const _sendOnCtrlEnterSetting = 'send_on_ctrl_enter';
   static const _fontSeparateSetting = 'font_separate';
   static const _fontFamilyLatinSetting = 'font_family_latin';
+
+  /// 把持久化字符串解码为 [ThemeMode]；未知或空值默认回退浅色。
+  static ThemeMode decodeThemeMode(String? value) => switch (value) {
+    'dark' => ThemeMode.dark,
+    'system' => ThemeMode.system,
+    _ => ThemeMode.light,
+  };
+
+  static String encodeThemeMode(ThemeMode mode) => mode.name;
 
   /// 字体大小档位：展示名 → 文字缩放系数，供外观设置与 clamp 共用。
   static const fontScaleOptions = <String, double>{
@@ -304,13 +315,16 @@ class AppController extends ChangeNotifier {
   /// 是否整体加粗（主题各字号字重上调一档）。
   bool boldText = false;
 
+  /// 应用主题模式：浅色 / 深色 / 跟随系统，默认浅色。
+  ThemeMode themeMode = ThemeMode.light;
+
   /// 是否在聊天输入框中启用收藏表情备注联想。
   bool stickerSuggestionsEnabled = true;
 
   /// 是否使用 Ctrl + Enter 发送消息（关闭时为 Enter 发送、Ctrl + Enter 换行）。
   bool sendOnCtrlEnter = false;
 
-  /// 仅当外观（字体）设置变化时自增，供根部重建主题/缩放；
+  /// 仅当外观（主题/字体）设置变化时自增，供根部重建主题/缩放；
   /// 避免高频 [notifyListeners] 都触发 MaterialApp 重建。
   final ValueNotifier<int> appearanceRevision = ValueNotifier<int>(0);
 
@@ -326,6 +340,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> initialize() async {
     try {
+      await _loadCachedThemeMode();
       stage = await _keyProvider.hasExistingKey()
           ? AppStage.locked
           : AppStage.setup;
@@ -464,6 +479,11 @@ class AppController extends ChangeNotifier {
       await _database.loadSetting(_boldTextSetting),
       fallback: false,
     );
+    themeMode = decodeThemeMode(await _database.loadSetting(_themeModeSetting));
+    if (_notifications case final AdaptiveDesktopNotificationService adaptive) {
+      adaptive.setThemeMode(themeMode);
+    }
+    await _writeCachedThemeMode(themeMode);
     stickerSuggestionsEnabled = _settingBool(
       await _database.loadSetting(_stickerSuggestionsEnabledSetting),
       fallback: true,
@@ -962,6 +982,50 @@ class AppController extends ChangeNotifier {
     boldText = value;
     appearanceRevision.value++;
     notifyListeners();
+  }
+
+  /// 设置主题模式（浅色 / 深色 / 跟随系统），并同步独立通知浮窗与启动缓存。
+  Future<void> setThemeMode(ThemeMode value) async {
+    if (themeMode == value) return;
+    if (_database.directoryPath != null) {
+      await _database.saveSetting(_themeModeSetting, encodeThemeMode(value));
+      await _writeCachedThemeMode(value);
+    }
+    themeMode = value;
+    if (_notifications case final AdaptiveDesktopNotificationService adaptive) {
+      adaptive.setThemeMode(value);
+    }
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  /// 启动解锁前读取非敏感的主题模式缓存，避免深色模式下登录/解锁页先闪白。
+  Future<void> _loadCachedThemeMode() async {
+    try {
+      final directory = await _database.resolveDirectory();
+      final file = File(p.join(directory.path, _cachedThemeModeFileName));
+      if (!await file.exists()) return;
+      final raw = (await file.readAsString()).trim();
+      if (raw.isEmpty) return;
+      final cached = decodeThemeMode(raw);
+      if (themeMode != cached) {
+        themeMode = cached;
+        appearanceRevision.value++;
+      }
+    } on Object {
+      // 缓存读取失败不影响启动流程，解锁后会从数据库读取正式设置。
+    }
+  }
+
+  Future<void> _writeCachedThemeMode(ThemeMode mode) async {
+    final base = _database.directoryPath;
+    if (base == null) return;
+    try {
+      final file = File(p.join(base, _cachedThemeModeFileName));
+      await file.writeAsString(encodeThemeMode(mode), flush: true);
+    } on Object {
+      // 缓存写入为最佳努力，不阻塞设置保存。
+    }
   }
 
   Future<void> setStickerSuggestionsEnabled(bool value) async {

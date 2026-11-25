@@ -1914,6 +1914,54 @@ void main() {
     setup.transport.emit(request('rate-3'));
     await _waitUntil(() => setup.controller.chatRequests.containsKey('rate-3'));
   });
+
+  test('深色模式设置持久化并在下次重启解锁前生效', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'neko-chat-theme-mode-',
+    );
+    final first = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 30),
+    );
+    addTearDown(() async {
+      await directory.delete(recursive: true);
+    });
+
+    await first.controller.initialize();
+    await first.controller.setup(displayName: '本机', password: '1234');
+    expect(first.controller.themeMode, ThemeMode.light);
+
+    final beforeRevision = first.controller.appearanceRevision.value;
+    await first.controller.setThemeMode(ThemeMode.dark);
+    expect(first.controller.themeMode, ThemeMode.dark);
+    expect(first.controller.appearanceRevision.value, beforeRevision + 1);
+    expect(await first.database.loadSetting('theme_mode'), 'dark');
+
+    await first.database.close();
+    first.controller.dispose();
+
+    final second = createController(
+      directory,
+      requestTimeout: const Duration(seconds: 30),
+      hasExistingKey: true,
+    );
+    addTearDown(() async {
+      await second.database.close();
+      second.controller.dispose();
+    });
+
+    // 启动初始化（未解锁前）即从本地缓存恢复深色模式，避免解锁页闪白。
+    await second.controller.initialize();
+    expect(second.controller.stage, AppStage.locked);
+    expect(second.controller.themeMode, ThemeMode.dark);
+
+    // 解锁后从数据库加载并维持深色模式，且切换为跟随系统也会持久化。
+    await second.controller.unlock('1234');
+    expect(second.controller.themeMode, ThemeMode.dark);
+
+    await second.controller.setThemeMode(ThemeMode.system);
+    expect(await second.database.loadSetting('theme_mode'), 'system');
+  });
 }
 
 Future<void> _waitUntil(

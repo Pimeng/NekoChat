@@ -732,9 +732,11 @@ class PreviewAppController extends AppController {
     final existing = _previewStandaloneNotifications;
     if (existing != null) {
       existing.anchor = notificationAnchor;
+      existing.themeMode = themeMode;
       return existing;
     }
-    final service = StandaloneNotificationService(anchor: notificationAnchor);
+    final service = StandaloneNotificationService(anchor: notificationAnchor)
+      ..themeMode = themeMode;
     _previewStandaloneNotifications = service;
     return service;
   }
@@ -771,6 +773,15 @@ class PreviewAppController extends AppController {
   @override
   Future<void> setBoldText(bool value) async {
     boldText = value;
+    appearanceRevision.value++;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setThemeMode(ThemeMode value) async {
+    if (themeMode == value) return;
+    themeMode = value;
+    _previewStandaloneNotifications?.themeMode = value;
     appearanceRevision.value++;
     notifyListeners();
   }

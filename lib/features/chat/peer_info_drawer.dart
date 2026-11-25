@@ -165,11 +165,13 @@ class _PeerInfoDrawerState extends State<PeerInfoDrawer> {
       ),
     ];
 
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return RepaintBoundary(
       child: Material(
         key: const ValueKey('peer-info-drawer'),
         elevation: 12,
-        shadowColor: Colors.black26,
+        shadowColor: isDark ? Colors.black54 : Colors.black26,
         color: colorScheme.surface,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
@@ -215,9 +217,11 @@ class _PeerInfoDrawerState extends State<PeerInfoDrawer> {
                               ),
                               if (isVerified) ...[
                                 const SizedBox(width: 4),
-                                const Icon(
+                                Icon(
                                   Icons.verified,
-                                  color: Colors.blue,
+                                  color: isDark
+                                      ? const Color(0xFF60A5FA)
+                                      : Colors.blue,
                                   size: 15,
                                 ),
                               ],

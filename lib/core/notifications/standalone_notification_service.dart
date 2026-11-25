@@ -41,6 +41,7 @@ class StandaloneNotificationService
   final _log = Logger('StandaloneNotificationService');
 
   NotificationAnchor _anchor;
+  ThemeMode _themeMode = ThemeMode.system;
   bool _listening = false;
   bool _focused = true;
   bool _disposed = false;
@@ -61,6 +62,26 @@ class StandaloneNotificationService
     if (!_controller.isEmpty) {
       _scheduleWindowSync();
     }
+  }
+
+  ThemeMode get themeMode => _themeMode;
+
+  set themeMode(ThemeMode value) {
+    if (_themeMode == value) return;
+    _themeMode = value;
+    _lastDarkModeCheck = null;
+    if (value == ThemeMode.dark) {
+      _darkMode.value = true;
+    } else if (value == ThemeMode.light) {
+      _darkMode.value = false;
+    } else if (_isWindowVisible) {
+      unawaited(_refreshSystemDarkMode());
+    }
+  }
+
+  Future<void> _refreshSystemDarkMode() async {
+    _lastDarkModeCheck = DateTime.now();
+    _darkMode.value = await _windowChannel.isSystemDarkMode();
   }
 
   @override
@@ -94,12 +115,17 @@ class StandaloneNotificationService
     if (!_listening) {
       await initialize();
     }
-    final now = DateTime.now();
-    if (!_isWindowVisible ||
-        _lastDarkModeCheck == null ||
-        now.difference(_lastDarkModeCheck!) > const Duration(seconds: 3)) {
-      _lastDarkModeCheck = now;
-      _darkMode.value = await _windowChannel.isSystemDarkMode();
+    if (_themeMode == ThemeMode.dark) {
+      _darkMode.value = true;
+    } else if (_themeMode == ThemeMode.light) {
+      _darkMode.value = false;
+    } else {
+      final now = DateTime.now();
+      if (!_isWindowVisible ||
+          _lastDarkModeCheck == null ||
+          now.difference(_lastDarkModeCheck!) > const Duration(seconds: 3)) {
+        await _refreshSystemDarkMode();
+      }
     }
     _controller.show(
       identifier: identifier,
@@ -474,6 +500,10 @@ class AdaptiveDesktopNotificationService implements SystemNotificationService {
 
   void setAnchor(NotificationAnchor value) {
     _standalone.anchor = value;
+  }
+
+  void setThemeMode(ThemeMode value) {
+    _standalone.themeMode = value;
   }
 
   @override
